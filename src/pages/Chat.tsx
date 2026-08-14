@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
 import { Play, ExternalLink, RefreshCw } from "lucide-react";
 import type { ServerStatus } from "../types";
 
+let persistentIframe: HTMLIFrameElement | null = null;
+
 export default function Chat() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const poll = async () => {
@@ -21,6 +24,33 @@ export default function Chat() {
   }, []);
 
   const port = status.type === "running" ? status.port : null;
+  const chatUrl = port ? `http://127.0.0.1:${port}` : "";
+
+  // Create persistent iframe once, reattach on mount
+  useEffect(() => {
+    if (status.type !== "running" || !port || !containerRef.current) return;
+
+    if (!persistentIframe) {
+      persistentIframe = document.createElement("iframe");
+      persistentIframe.className = "flex-1 w-full border-0";
+      persistentIframe.allow = "clipboard-write";
+      persistentIframe.title = "llama.cpp Chat";
+    }
+
+    if (persistentIframe.src !== chatUrl) {
+      persistentIframe.src = chatUrl;
+    }
+
+    if (!persistentIframe.parentNode) {
+      containerRef.current.appendChild(persistentIframe);
+    }
+
+    return () => {
+      if (persistentIframe?.parentNode) {
+        persistentIframe.parentNode.removeChild(persistentIframe);
+      }
+    };
+  }, [status.type === "running" ? "running" : "not", port]);
 
   if (status.type === "starting") {
     return (
@@ -53,8 +83,6 @@ export default function Chat() {
     );
   }
 
-  const chatUrl = `http://127.0.0.1:${port}`;
-
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
@@ -67,12 +95,7 @@ export default function Chat() {
           Pop out
         </button>
       </div>
-      <iframe
-        src={chatUrl}
-        className="flex-1 w-full border-0"
-        allow="clipboard-write"
-        title="llama.cpp Chat"
-      />
+      <div ref={containerRef} className="flex-1 flex flex-col min-h-0" />
     </div>
   );
 }
