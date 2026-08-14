@@ -1,8 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+
 import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
@@ -10,15 +9,10 @@ import {
   Database,
   Play,
   MessageSquare,
-  Minus,
-  Square,
-  Layers,
-  X,
-  ArrowUpCircle,
-  RefreshCw,
 } from "lucide-react";
 import { clsx } from "clsx";
 import CatapultIcon from "./CatapultIcon";
+import WindowControls from "./WindowControls";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -28,91 +22,18 @@ const navItems = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
 ];
 
-type Update = Awaited<ReturnType<typeof check>>;
-
 function VersionInfo() {
   const [version, setVersion] = useState<string | null>(null);
-  const [update, setUpdate] = useState<Update>(null);
-  const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
     getVersion().then(setVersion);
-    check().then(setUpdate).catch(() => {});
   }, []);
-
-  const handleUpdate = async () => {
-    if (!update || installing) return;
-    setInstalling(true);
-    try {
-      await update.downloadAndInstall();
-      await relaunch();
-    } catch {
-      setInstalling(false);
-    }
-  };
 
   if (!version) return null;
 
   return (
     <div className="relative z-10 flex items-center gap-1.5 ml-2">
       <span className="text-xs text-gray-500 select-none tabular-nums">v{version}</span>
-      {update && (
-        <button
-          onClick={handleUpdate}
-          disabled={installing}
-          className="flex items-center text-primary-light hover:text-primary transition-colors disabled:opacity-50"
-          title={installing ? "Installing update…" : `v${update.version} available — click to install & restart`}
-        >
-          {installing
-            ? <RefreshCw size={13} className="animate-spin" />
-            : <ArrowUpCircle size={14} />}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function WindowControls() {
-  const appWindow = getCurrentWindow();
-  const [maximized, setMaximized] = useState(false);
-
-  useEffect(() => {
-    let debounce: ReturnType<typeof setTimeout>;
-    const unlisten = appWindow.onResized(() => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        appWindow.isMaximized().then(setMaximized);
-      }, 100);
-    });
-    return () => {
-      clearTimeout(debounce);
-      unlisten.then((f) => f());
-    };
-  }, []);
-
-  return (
-    <div className="flex items-center">
-      <button
-        onClick={() => appWindow.minimize()}
-        className="w-10 h-11 flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors"
-        title="Minimize"
-      >
-        <Minus size={14} />
-      </button>
-      <button
-        onClick={() => appWindow.toggleMaximize()}
-        className="w-10 h-11 flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors"
-        title={maximized ? "Restore" : "Maximize"}
-      >
-        {maximized ? <Layers size={12} /> : <Square size={11} />}
-      </button>
-      <button
-        onClick={() => appWindow.close()}
-        className="w-10 h-11 flex items-center justify-center text-gray-400 hover:text-white hover:bg-red-600 transition-colors"
-        title="Close"
-      >
-        <X size={14} />
-      </button>
     </div>
   );
 }

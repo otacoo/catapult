@@ -227,7 +227,7 @@ export default function Runtime() {
   };
 
   useEffect(() => {
-    loadData().then(() => checkUpdate());
+    loadData();
   }, []);
 
   const managed = appConfig?.managed_runtimes ?? [];

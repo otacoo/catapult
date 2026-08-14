@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useNavigate } from "react-router-dom";
 import {
   Cpu,
@@ -17,6 +18,7 @@ import {
   ChevronLeft,
 } from "lucide-react";
 import CatapultIcon from "../components/CatapultIcon";
+import WindowControls from "../components/WindowControls";
 import type {
   SystemInfo,
   RuntimeInfo,
@@ -92,6 +94,8 @@ export default function Wizard() {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [customBuilds, setCustomBuilds] = useState<CustomBuild[] | null>(null);
+  const [checkingBuilds, setCheckingBuilds] = useState(false);
+  const [checkedBuilds, setCheckedBuilds] = useState(false);
 
   // Step 2 state
   const [recommended, setRecommended] = useState<RecommendedModel[]>([]);
@@ -101,7 +105,7 @@ export default function Wizard() {
   const [modelsError, setModelsError] = useState<Record<string, string>>({});
   const [downloading, setDownloading] = useState(false);
 
-  // Load system info + runtime status + release info on mount
+  // Load local info on mount (no network calls)
   useEffect(() => {
     const load = async () => {
       const [sys, rt] = await Promise.all([
@@ -111,14 +115,6 @@ export default function Wizard() {
       setSystem(sys);
       setRuntime(rt);
       if (rt?.installed) setRuntimeDone(true);
-
-      try {
-        const rel = await invoke<ReleaseInfo>("check_latest_release");
-        setRelease(rel);
-        if (rel.available_assets.length > 0) {
-          setSelectedAsset(rel.available_assets[0].name);
-        }
-      } catch {}
 
       try {
         const models = await invoke<RecommendedModel[]>("get_recommended_models");
@@ -159,6 +155,7 @@ export default function Wizard() {
     };
   }, []);
 
+  const cudaBackend = system?.available_backends.find((b) => b.id === "cuda" && b.available);
   const totalVram = system?.gpus.reduce((s, g) => s + g.vram_mb, 0) ?? 0;
   const totalRam = system?.available_ram_mb ?? 0;
 
@@ -173,6 +170,23 @@ export default function Wizard() {
   };
 
   // ── Step 1: Runtime ──────────────────────────────────────────
+
+  const checkForBuilds = async () => {
+    setCheckingBuilds(true);
+    setRuntimeError(null);
+    try {
+      const rel = await invoke<ReleaseInfo>("check_latest_release");
+      setRelease(rel);
+      if (rel.available_assets.length > 0) {
+        setSelectedAsset(rel.available_assets[0].name);
+      }
+      setCheckedBuilds(true);
+    } catch (e) {
+      setRuntimeError(String(e));
+    } finally {
+      setCheckingBuilds(false);
+    }
+  };
 
   const downloadRuntime = async () => {
     if (!selectedAsset) return;
@@ -300,17 +314,25 @@ export default function Wizard() {
 
   return (
     <div className="h-full flex flex-col bg-surface-0">
-      {/* Header */}
-      <div className="flex items-center justify-between px-8 py-5 border-b border-border">
-        <div className="flex items-center gap-3">
+      {/* Header / Title bar */}
+      <div className="relative flex items-center justify-between px-8 h-14 border-b border-border shrink-0 bg-surface-0">
+        {/* Drag region */}
+        <div
+          className="absolute inset-0"
+          onMouseDown={(e) => {
+            if (e.button === 0) getCurrentWindow().startDragging();
+          }}
+          onDoubleClick={() => getCurrentWindow().toggleMaximize()}
+        />
+        <div className="relative z-10 flex items-center gap-3">
           <div className="w-8 h-8 bg-primary flex items-center justify-center">
             <CatapultIcon size={16} className="text-white" />
           </div>
-          <span className="font-semibold text-gray-100 text-lg">
+          <span className="font-semibold text-gray-100 text-lg select-none">
             Catapult Setup
           </span>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="relative z-10 flex items-center gap-4">
           <div className="flex items-center gap-2 text-xs text-gray-500">
             <span
               className={`w-6 h-6 flex items-center justify-center border ${
@@ -335,6 +357,7 @@ export default function Wizard() {
           <button className="btn-ghost text-xs" onClick={skip}>
             Skip wizard
           </button>
+          <WindowControls />
         </div>
       </div>
 
@@ -404,7 +427,7 @@ export default function Wizard() {
                   <div>
                     <p className="text-xs text-gray-500">Backend</p>
                     <p className="text-xs font-medium text-gray-200 uppercase">
-                      {system.recommended_backend}
+                      {system.recommended_backend}{cudaBackend?.version ? ` ${cudaBackend.version}` : ""}
                     </p>
                   </div>
                 </div>
@@ -481,36 +504,76 @@ export default function Wizard() {
             {/* Asset selection (only if runtime not yet installed) */}
             {!runtimeDone && !runtimeProgress && (
               <>
-                {topAssets.length > 0 && (
-                  <div className="space-y-1.5">
-                    {topAssets.map((asset) => (
-                      <AssetRow
-                        key={asset.name}
-                        asset={asset}
-                        selected={selectedAsset === asset.name}
-                        onSelect={() => setSelectedAsset(asset.name)}
-                      />
-                    ))}
-                  </div>
-                )}
-                <div className="flex items-center gap-3">
-                  {selectedAsset && (
+                {!checkedBuilds ? (
+                  <div className="flex items-center gap-3">
                     <button
                       className="btn-primary text-sm"
-                      onClick={downloadRuntime}
+                      onClick={checkForBuilds}
+                      disabled={checkingBuilds}
                     >
-                      <Download size={14} />
-                      Download
+                      {checkingBuilds ? (
+                        <><RefreshCw size={14} className="animate-spin" /> Checking…</>
+                      ) : (
+                        <Download size={14} />
+                      )}
+                      Check for available builds
                     </button>
-                  )}
-                  <button
-                    className="btn-ghost text-sm"
-                    onClick={browseCustom}
-                  >
-                    <FolderOpen size={14} />
-                    Use existing installation
-                  </button>
-                </div>
+                    <button
+                      className="btn-ghost text-sm"
+                      onClick={browseCustom}
+                    >
+                      <FolderOpen size={14} />
+                      Use existing installation
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {topAssets.length > 0 && (
+                      <div className="space-y-1.5">
+                        {topAssets.map((asset) => (
+                          <AssetRow
+                            key={asset.name}
+                            asset={asset}
+                            selected={selectedAsset === asset.name}
+                            onSelect={() => setSelectedAsset(asset.name)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3">
+                      {topAssets.length === 0 ? (
+                        <p className="text-sm text-gray-500">No builds found for your system.</p>
+                      ) : (
+                        <>
+                          {selectedAsset && (
+                            <button
+                              className="btn-primary text-sm"
+                              onClick={downloadRuntime}
+                            >
+                              <Download size={14} />
+                              Download
+                            </button>
+                          )}
+                          <button
+                            className="btn-ghost text-sm"
+                            onClick={checkForBuilds}
+                            disabled={checkingBuilds}
+                          >
+                            <RefreshCw size={14} className={checkingBuilds ? "animate-spin" : ""} />
+                            Refresh
+                          </button>
+                        </>
+                      )}
+                      <button
+                        className="btn-ghost text-sm"
+                        onClick={browseCustom}
+                      >
+                        <FolderOpen size={14} />
+                        Use existing installation
+                      </button>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
