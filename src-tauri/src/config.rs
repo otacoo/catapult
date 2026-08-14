@@ -36,7 +36,7 @@ pub enum ActiveRuntime {
     None,
 }
 
-fn default_true() -> bool { true }
+fn default_false() -> bool { false }
 
 // ── App config ───────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ pub struct AppConfig {
     // ── Updates ──
     pub last_update_check: Option<i64>,
     pub latest_known_build: Option<u32>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub auto_check_updates: bool,
 
     // ── Preferences ──
@@ -99,7 +99,7 @@ impl AppConfig {
         if !path.exists() {
             let default_dir = Self::default_models_dir()?;
             return Ok(Self {
-                auto_check_updates: true,
+                auto_check_updates: false,
                 model_dirs: vec![default_dir.clone()],
                 download_dir: Some(default_dir),
                 ..Default::default()

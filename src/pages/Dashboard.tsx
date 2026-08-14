@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
 import { useNavigate } from "react-router-dom";
 import {
   Cpu,
@@ -15,6 +17,8 @@ import {
   Trash2,
   CheckCircle,
   Eye,
+  RefreshCw,
+  ArrowUpCircle,
 } from "lucide-react";
 import type {
   SystemInfo,
@@ -26,6 +30,7 @@ import type {
 } from "../types";
 
 import { mbToGb, shortCpuName, shortGpuName, quantColor } from "../utils/format";
+import Toggle from "../components/Toggle";
 
 function StatusDot({ ok }: { ok: boolean }) {
   return (
@@ -49,6 +54,13 @@ export default function Dashboard() {
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  // ── App updates ──
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<boolean>(false);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [checkedUpdate, setCheckedUpdate] = useState(false);
 
   const loadData = async () => {
     const [sys, rt, mdls, srv, cfg] = await Promise.all([
@@ -79,10 +91,44 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    getVersion().then(setAppVersion);
+  }, []);
+
+  useEffect(() => {
+    if (appConfig?.auto_check_updates) {
+      checkForUpdate();
+    }
+  }, [appConfig?.auto_check_updates]);
+
   const selectedModel = models.find(
     (m) => m.path === appConfig?.selected_model
   );
   const launchModel = selectedModel ?? models[0];
+
+  const checkForUpdate = async () => {
+    setCheckingUpdate(true);
+    setCheckedUpdate(false);
+    setError(null);
+    try {
+      const update = await check();
+      setUpdateAvailable(update != null);
+      setUpdateVersion(update?.version ?? null);
+    } catch {
+      // noop
+    } finally {
+      setCheckingUpdate(false);
+      setCheckedUpdate(true);
+    }
+  };
+
+  const setAutoCheckUpdates = async (enabled: boolean) => {
+    try {
+      await invoke("set_auto_check_updates", { enabled });
+      const cfg = await invoke<AppConfig>("get_config");
+      setAppConfig(cfg);
+    } catch {}
+  };
 
   const quickLaunch = async () => {
     if (!launchModel || !runtime?.installed) return;
@@ -430,6 +476,43 @@ export default function Dashboard() {
             <p className="text-xs text-gray-500">Not running</p>
           )}
         </button>
+      </div>
+
+      {/* Check for Updates */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="section-title mb-0">App Updates</h2>
+          {appVersion && (
+            <span className="text-xs text-gray-500 tabular-nums">v{appVersion}</span>
+          )}
+        </div>
+        <div className="space-y-3">
+          <Toggle label="Check for updates on app start"
+            checked={appConfig?.auto_check_updates ?? false}
+            onChange={setAutoCheckUpdates} />
+          <div className="flex items-center gap-3">
+            <button
+              className="btn-secondary text-xs"
+              onClick={checkForUpdate}
+              disabled={checkingUpdate}
+            >
+              <RefreshCw size={13} className={checkingUpdate ? "animate-spin" : ""} />
+              Check now
+            </button>
+            {checkingUpdate && (
+              <span className="text-xs text-gray-500">Checking…</span>
+            )}
+            {checkedUpdate && updateAvailable && (
+              <span className="flex items-center gap-1.5 text-xs text-accent-yellow">
+                <ArrowUpCircle size={13} />
+                v{updateVersion} available
+              </span>
+            )}
+            {checkedUpdate && !updateAvailable && (
+              <span className="text-xs text-accent-green">Up to date</span>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Quick start */}

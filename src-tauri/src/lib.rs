@@ -253,6 +253,13 @@ async fn set_auto_delete_runtimes(enabled: bool, state: State<'_, AppState>) -> 
 }
 
 #[tauri::command]
+async fn set_auto_check_updates(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.auto_check_updates = enabled;
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_available_backends(_state: State<'_, AppState>) -> Result<Vec<BackendInfo>, String> {
     let system = hardware::get_system_info().map_err(|e| e.to_string())?;
     Ok(system.available_backends)
@@ -743,6 +750,7 @@ pub fn run() {
             delete_managed_runtime,
             remove_custom_runtime,
             set_auto_delete_runtimes,
+            set_auto_check_updates,
             get_available_backends,
             // Models
             list_installed_models,
