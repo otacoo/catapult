@@ -9,6 +9,7 @@ import {
   Database,
   Play,
   MessageSquare,
+  Plug,
 } from "lucide-react";
 import { clsx } from "clsx";
 import CatapultIcon from "./CatapultIcon";
@@ -19,6 +20,7 @@ const navItems = [
   { to: "/runtime", label: "Runtime", icon: Download },
   { to: "/models", label: "Models", icon: Database },
   { to: "/server", label: "Run", icon: Play },
+  { to: "/api", label: "API", icon: Plug },
   { to: "/chat", label: "Chat", icon: MessageSquare },
 ];
 

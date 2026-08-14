@@ -547,6 +547,20 @@ async fn get_server_status(state: State<'_, AppState>) -> Result<ServerStatus, S
 }
 
 #[tauri::command]
+async fn get_server_info(state: State<'_, AppState>) -> Result<server::ServerInfo, String> {
+    let (port, config) = {
+        let s = state.server.lock().unwrap();
+        match &s.status {
+            ServerStatus::Running { port, .. } => (*port, s.config.clone()),
+            _ => return Err("Server is not running".to_string()),
+        }
+    };
+    server::fetch_server_info(&state.http_client, port, config.as_ref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_server_logs(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     Ok(state.server.lock().unwrap().log_lines.clone())
 }
@@ -796,6 +810,7 @@ pub fn run() {
             start_server,
             stop_server,
             get_server_status,
+            get_server_info,
             get_server_logs,
             suggest_server_config,
             estimate_model_memory,

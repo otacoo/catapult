@@ -97,6 +97,8 @@ pub struct ServerState {
     pub process: Option<Child>,
     pub status: ServerStatus,
     pub log_lines: Vec<String>,
+    /// Config of the currently running server (cleared when it stops).
+    pub config: Option<ServerConfig>,
 }
 
 impl ServerState {
@@ -105,6 +107,7 @@ impl ServerState {
             process: None,
             status: ServerStatus::Stopped,
             log_lines: Vec::new(),
+            config: None,
         }
     }
 
@@ -241,6 +244,7 @@ pub async fn start_server(
         s.process = Some(child);
         s.status = ServerStatus::Starting;
         s.log_lines.clear();
+        s.config = Some(config.clone());
         // Add commandline as first log entry (after clear)
         s.log_lines.push(format!("$ {}", cmdline));
     }
@@ -338,6 +342,7 @@ pub async fn start_server(
                 Ok(Some(status)) => {
                     let mut s = state_clone3.lock().unwrap();
                     s.process = None;
+                    s.config = None;
                     if s.status == ServerStatus::Stopped {
                         // Already marked stopped by stop_server
                     } else if status.success() {
@@ -355,6 +360,7 @@ pub async fn start_server(
                 Err(e) => {
                     let mut s = state_clone3.lock().unwrap();
                     s.process = None;
+                    s.config = None;
                     let msg = format!("Server process error: {}", e);
                     s.log_lines.push(format!("[error] {}", msg));
                     s.status = ServerStatus::Error { message: msg.clone() };
@@ -373,6 +379,7 @@ pub async fn stop_server(state: &SharedServerState) -> Result<()> {
     let mut child = {
         let mut s = state.lock().unwrap();
         s.status = ServerStatus::Stopped;
+        s.config = None;
         s.process.take()
     };
 
@@ -415,6 +422,91 @@ pub async fn stop_server(state: &SharedServerState) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Information about the currently running server, gathered from its HTTP
+/// endpoints plus the config Catapult started it with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerInfo {
+    /// OpenAI-compatible base URL, e.g. http://127.0.0.1:8080/v1
+    pub base_url: String,
+    /// Model id as reported by /v1/models
+    pub model_id: String,
+    pub model_alias: String,
+    pub model_path: String,
+    pub n_ctx: u64,
+    pub n_predict: i64,
+    pub total_slots: u64,
+    pub slots_idle: u64,
+    pub api_key: Option<String>,
+}
+
+/// Fetch live info about the running server from its HTTP API.
+pub async fn fetch_server_info(
+    client: &reqwest::Client,
+    port: u16,
+    config: Option<&ServerConfig>,
+) -> Result<ServerInfo> {
+    let base = format!("http://127.0.0.1:{}", port);
+
+    // /props — model path, alias, slot count
+    let mut model_path = String::new();
+    let mut model_alias = String::new();
+    let mut total_slots: u64 = 1;
+    if let Ok(resp) = client.get(format!("{}/props", base)).send().await {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            model_path = json.get("model_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            model_alias = json.get("model_alias").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            total_slots = json.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(1);
+        }
+    }
+
+    // /v1/models — model id for OpenAI clients
+    let mut model_id = String::new();
+    if let Ok(resp) = client.get(format!("{}/v1/models", base)).send().await {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
+                if let Some(first) = data.first() {
+                    model_id = first.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                }
+            }
+        }
+    }
+    if model_id.is_empty() {
+        model_id = model_alias.clone();
+    }
+
+    // /slots — context size, n_predict, idle count
+    let mut n_ctx: u64 = 0;
+    let mut n_predict: i64 = -1;
+    let mut slots_idle: u64 = 0;
+    if let Ok(resp) = client.get(format!("{}/slots", base)).send().await {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            if let Some(slots) = json.as_array() {
+                if let Some(first) = slots.first() {
+                    n_ctx = first.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(0);
+                    n_predict = first.get("n_predict").and_then(|v| v.as_i64()).unwrap_or(-1);
+                }
+                slots_idle = slots.iter().filter(|s| s.get("is_processing").and_then(|v| v.as_bool()).unwrap_or(true) == false).count() as u64;
+            }
+        }
+    }
+
+    let api_key = config
+        .and_then(|c| c.extra_params.get("api-key").map(|k| k.clone()))
+        .filter(|k| !k.is_empty());
+
+    Ok(ServerInfo {
+        base_url: format!("{}/v1", base),
+        model_id,
+        model_alias,
+        model_path,
+        n_ctx,
+        n_predict,
+        total_slots,
+        slots_idle,
+        api_key,
+    })
 }
 
 /// Synchronous kill for use during app exit — sends SIGTERM/TerminateProcess

@@ -207,6 +207,18 @@ export type ServerStatus =
   | { type: "running"; port: number; pid: number }
   | { type: "error"; message: string };
 
+export interface ServerInfo {
+  base_url: string;
+  model_id: string;
+  model_alias: string;
+  model_path: string;
+  n_ctx: number;
+  n_predict: number;
+  total_slots: number;
+  slots_idle: number;
+  api_key: string | null;
+}
+
 // ── Downloads ─────────────────────────────────────────────────────────────────
 
 export interface DownloadProgress {
