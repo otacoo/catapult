@@ -325,9 +325,10 @@ async fn validate_hf_owner(
 async fn search_hf_models(
     query: String,
     owner: Option<String>,
+    sort: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<HfModel>, String> {
-    huggingface::search_models(&state.http_client, &query, owner.as_deref())
+    huggingface::search_models(&state.http_client, &query, owner.as_deref(), sort.as_deref())
         .await
         .map_err(|e| e.to_string())
 }

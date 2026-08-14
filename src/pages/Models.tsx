@@ -28,6 +28,7 @@ import type {
 
 type Tab = "installed" | "recommended" | "browse" | "settings";
 type SortCol = "name" | "params" | "quant" | "size" | "ctx";
+type HfSort = "downloads" | "likes" | "lastModified";
 type SortDir = "asc" | "desc";
 
 
@@ -46,6 +47,7 @@ export default function Models() {
   const [owners, setOwners] = useState<KnownOwner[]>([]);
   const [selectedOwner, setSelectedOwner] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<HfSort>("downloads");
   const [searching, setSearching] = useState(false);
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({});
   const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
@@ -130,6 +132,7 @@ export default function Models() {
       const results = await invoke<HfModel[]>("search_hf_models", {
         query: searchQuery.trim(),
         owner: selectedOwner || null,
+        sort: sortBy,
       });
       setSearchResults(results);
     } catch (e) {
@@ -138,6 +141,13 @@ export default function Models() {
       setSearching(false);
     }
   };
+
+  // Re-run search when sort changes (but only if results already exist)
+  useEffect(() => {
+    if (searchResults.length > 0 && (searchQuery.trim() || selectedOwner)) {
+      doSearch();
+    }
+  }, [sortBy]);
 
   const toggleRepo = async (repoId: string) => {
     if (expandedRepo === repoId) {
@@ -613,6 +623,15 @@ export default function Models() {
                   onKeyDown={(e) => e.key === "Enter" && doSearch()}
                 />
               </div>
+              <select
+                className="input w-40"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as HfSort)}
+              >
+                <option value="downloads">By downloads</option>
+                <option value="likes">By stars</option>
+                <option value="lastModified">Newest</option>
+              </select>
               <select
                 className="input w-48"
                 value={selectedOwner}

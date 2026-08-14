@@ -207,16 +207,20 @@ pub async fn search_models(
     client: &reqwest::Client,
     query: &str,
     owner: Option<&str>,
+    sort: Option<&str>,
 ) -> Result<Vec<HfModel>> {
+    let sort_by = sort.unwrap_or("downloads");
     let mut url = format!(
-        "https://huggingface.co/api/models?search={}&filter=gguf&limit=30&sort=downloads",
-        urlencoding_simple(query)
+        "https://huggingface.co/api/models?search={}&filter=gguf&limit=30&sort={}",
+        urlencoding_simple(query),
+        sort_by,
     );
     if let Some(owner) = owner {
         url = format!(
-            "https://huggingface.co/api/models?author={}&search={}&filter=gguf&limit=50&sort=downloads",
+            "https://huggingface.co/api/models?author={}&search={}&filter=gguf&limit=50&sort={}",
             owner,
-            urlencoding_simple(query)
+            urlencoding_simple(query),
+            sort_by,
         );
     }
 
