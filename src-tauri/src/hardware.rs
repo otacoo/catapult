@@ -97,6 +97,165 @@ pub struct SuggestedConfig {
     pub notes: Vec<String>,
 }
 
+/// Estimated memory breakdown for a model + settings on the current machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEstimate {
+    pub model_mb: u64,
+    pub kv_cache_mb: u64,
+    pub overhead_mb: u64,
+    pub total_mb: u64,
+    /// Total GPU VRAM in MB
+    pub vram_total_mb: u64,
+    /// Available system RAM in MB
+    pub ram_available_mb: u64,
+    /// Estimated VRAM usage in MB
+    pub vram_used_mb: u64,
+    /// Estimated RAM usage in MB
+    pub ram_used_mb: u64,
+    // Per-resource breakdown for visualization
+    pub vram_model_mb: u64,
+    pub vram_kv_mb: u64,
+    pub vram_overhead_mb: u64,
+    pub ram_model_mb: u64,
+    pub ram_kv_mb: u64,
+    pub ram_overhead_mb: u64,
+    /// True if the estimate fits in VRAM + available RAM
+    pub fits: bool,
+    pub notes: Vec<String>,
+}
+
+fn cache_bytes_per_element(cache_type: &str) -> u64 {
+    match cache_type {
+        "f32" => 4,
+        "q8_0" => 1,
+        "q4_0" | "q4_1" | "iq4_nl" | "q5_0" | "q5_1" => 1, // sub-byte, treat as 1
+        _ => 2, // f16, bf16, and anything unknown
+    }
+}
+
+/// KV bytes per token (across all layers) for the given dimensions.
+pub fn kv_bytes_per_token(layers: u64, kv_embd: u64, cache_type_k: &str, cache_type_v: &str) -> u64 {
+    layers
+        .saturating_mul(kv_embd)
+        .saturating_mul(cache_bytes_per_element(cache_type_k) + cache_bytes_per_element(cache_type_v))
+}
+
+/// KV cache size in MB for the given model dimensions and context.
+/// `kv_embd` is the effective per-layer KV dimension (embd × kv_heads/heads).
+/// `--ctx-size` is the total budget shared across server slots, so this does
+/// not scale with `--parallel`.
+fn kv_cache_mb(layers: u64, kv_embd: u64, ctx: u64, cache_type_k: &str, cache_type_v: &str) -> u64 {
+    kv_bytes_per_token(layers, kv_embd, cache_type_k, cache_type_v)
+        .saturating_mul(ctx)
+        / (1024 * 1024)
+}
+
+/// Estimate the memory footprint of running a model with the given settings.
+/// `model_size_mb` is the GGUF file size; layer/embedding info is read from
+/// the file header when available, with sensible fallbacks otherwise.
+pub fn estimate_memory(
+    model_path: &str,
+    model_size_mb: u64,
+    n_ctx: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    n_gpu_layers: i32,
+) -> Result<MemoryEstimate> {
+    let system = get_system_info()?;
+    let vram_total_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
+    let ram_available_mb = system.available_ram_mb;
+    let mut notes = Vec::new();
+
+    let meta = crate::models::read_model_metadata(std::path::Path::new(model_path));
+    let layers = meta.as_ref().and_then(|m| m.block_count).unwrap_or(32);
+    let embd = meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096);
+    let model_ctx = meta.as_ref().and_then(|m| m.context_length);
+
+    // GQA factor: the KV cache stores only the KV-head dimensions per layer,
+    // i.e. embd × kv_heads / heads. Without GQA (kv_heads == heads) this is 1.
+    let gqa_factor = match (meta.as_ref().and_then(|m| m.attention_head_count),
+                            meta.as_ref().and_then(|m| m.attention_head_count_kv)) {
+        (Some(heads), Some(kv_heads)) if heads > 0 => kv_heads as f64 / heads as f64,
+        _ => 1.0,
+    };
+    let kv_embd = (embd as f64 * gqa_factor).max(1.0) as u64;
+
+    // Effective context: 0 means "use model default"
+    let effective_ctx = if n_ctx > 0 {
+        n_ctx as u64
+    } else {
+        model_ctx.unwrap_or(4096)
+    };
+    if n_ctx == 0 {
+        notes.push(format!("Context: model default ({})", effective_ctx));
+    }
+
+    // KV cache: per layer, K and V each n_ctx × kv_embd × bytes-per-element.
+    let kv_cache_mb = kv_cache_mb(layers, kv_embd, effective_ctx, cache_type_k, cache_type_v);
+
+    // Split model weights between VRAM and RAM based on offload layers
+    let offload_layers = if n_gpu_layers < 0 {
+        layers as i64 // -1 = all layers
+    } else {
+        n_gpu_layers as i64
+    };
+    let offload_ratio = (offload_layers as f64 / layers as f64).clamp(0.0, 1.0);
+    let model_in_vram_mb = (model_size_mb as f64 * offload_ratio) as u64;
+    let model_in_ram_mb = model_size_mb - model_in_vram_mb;
+
+    // Compute overhead & KV cache placement: on GPU when offloading
+    let overhead_mb = 512;
+    let gpu_offload = n_gpu_layers != 0;
+    let kv_in_vram_mb = if gpu_offload { kv_cache_mb } else { 0 };
+    let kv_in_ram_mb = kv_cache_mb - kv_in_vram_mb;
+    let overhead_in_vram_mb = if gpu_offload { overhead_mb } else { 0 };
+    let overhead_in_ram_mb = overhead_mb - overhead_in_vram_mb;
+
+    let vram_used_mb = model_in_vram_mb + kv_in_vram_mb + overhead_in_vram_mb;
+    let ram_used_mb = model_in_ram_mb + kv_in_ram_mb + overhead_in_ram_mb;
+
+    let fits = vram_used_mb <= vram_total_mb.max(1) && ram_used_mb <= ram_available_mb.max(1);
+    if !fits {
+        if vram_used_mb > vram_total_mb && vram_total_mb > 0 {
+            notes.push(format!(
+                "Estimated VRAM usage ({:.1} GB) exceeds available VRAM ({:.1} GB).",
+                vram_used_mb as f64 / 1024.0,
+                vram_total_mb as f64 / 1024.0
+            ));
+        }
+        if ram_used_mb > ram_available_mb {
+            notes.push(format!(
+                "Estimated RAM usage ({:.1} GB) exceeds available RAM ({:.1} GB).",
+                ram_used_mb as f64 / 1024.0,
+                ram_available_mb as f64 / 1024.0
+            ));
+        }
+        notes.push(
+            "llama-server --fit (default: on) auto-reduces context and GPU layers to fit device memory at launch."
+                .to_string(),
+        );
+    }
+
+    Ok(MemoryEstimate {
+        model_mb: model_size_mb,
+        kv_cache_mb,
+        overhead_mb,
+        total_mb: model_size_mb + kv_cache_mb + overhead_mb,
+        vram_total_mb,
+        ram_available_mb,
+        vram_used_mb,
+        ram_used_mb,
+        vram_model_mb: model_in_vram_mb,
+        vram_kv_mb: kv_in_vram_mb,
+        vram_overhead_mb: overhead_in_vram_mb,
+        ram_model_mb: model_in_ram_mb,
+        ram_kv_mb: kv_in_ram_mb,
+        ram_overhead_mb: overhead_in_ram_mb,
+        fits,
+        notes,
+    })
+}
+
 pub fn get_system_info() -> Result<SystemInfo> {
     let mut sys = System::new_all();
     sys.refresh_all();
@@ -544,6 +703,14 @@ fn pick_best_backend(backends: &[BackendInfo], gpus: &[GpuInfo]) -> String {
 }
 
 pub fn suggest_config(model_size_mb: u64, system: &SystemInfo) -> SuggestedConfig {
+    suggest_config_with_layers(model_size_mb, None, system)
+}
+
+pub fn suggest_config_with_layers(
+    model_size_mb: u64,
+    layers: Option<u32>,
+    system: &SystemInfo,
+) -> SuggestedConfig {
     let total_vram_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
     let total_ram_mb = system.available_ram_mb;
     let mut notes = Vec::new();
@@ -555,12 +722,14 @@ pub fn suggest_config(model_size_mb: u64, system: &SystemInfo) -> SuggestedConfi
             (-1i32, true) // -1 = all layers
         } else if model_size_mb <= usable_vram + total_ram_mb {
             // Partial offload: estimate layers
+            let total_layers = layers.unwrap_or(32) as f64;
             let ratio = usable_vram as f64 / model_size_mb as f64;
-            let estimated_layers = (ratio * 32.0) as i32; // assume ~32 layers typical
+            let estimated_layers = (ratio * total_layers).floor() as i32;
             notes.push(format!(
-                "Model partially fits in VRAM ({:.0}%). Offloading ~{} layers to GPU.",
+                "Model partially fits in VRAM ({:.0}%). Offloading ~{} of {} layers to GPU.",
                 ratio * 100.0,
-                estimated_layers
+                estimated_layers,
+                total_layers
             ));
             (estimated_layers, false)
         } else {
@@ -737,5 +906,32 @@ mod tests {
         let mut cmd = silent_cmd("nonexistent-binary-12345");
         let result = cmd.output();
         assert!(result.is_err(), "nonexistent binary should fail");
+    }
+
+    // ── KV cache estimation ─────────────────────────────────────────────────
+
+    #[test]
+    fn kv_cache_scales_with_ctx_not_parallel() {
+        // 32 layers, 2560 embd, full heads (no GQA), f16/f16, ctx 32768
+        // = 32 × 32768 × 2560 × 4 / 1MiB = 10240 MiB
+        assert_eq!(kv_cache_mb(32, 2560, 32768, "f16", "f16"), 10240);
+        // Doubling ctx doubles the cache
+        assert_eq!(kv_cache_mb(32, 2560, 65536, "f16", "f16"), 20480);
+        // Parallel slots share the ctx budget — same total
+        assert_eq!(kv_cache_mb(32, 2560, 32768, "f16", "f16"), kv_cache_mb(32, 2560, 32768, "f16", "f16"));
+    }
+
+    #[test]
+    fn kv_cache_gqa_reduces_size() {
+        // GQA 32 heads / 8 kv heads → kv_embd = 2560 × 8/32 = 640
+        // 32 × 32768 × 640 × 4 / 1MiB = 2560 MiB
+        assert_eq!(kv_cache_mb(32, 640, 32768, "f16", "f16"), 2560);
+        // 4x smaller than full-embd cache
+        assert_eq!(kv_cache_mb(32, 2560, 32768, "f16", "f16"), kv_cache_mb(32, 640, 32768, "f16", "f16") * 4);
+    }
+
+    #[test]
+    fn kv_cache_q8_halves_f16() {
+        assert_eq!(kv_cache_mb(32, 640, 32768, "q8_0", "q8_0"), 1280);
     }
 }

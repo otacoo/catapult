@@ -14,8 +14,11 @@ import {
   FolderOpen,
   Trash2,
   Eye,
+  Zap,
 } from "lucide-react";
-import type { ModelInfo, ServerConfig, ServerStatus } from "../types";
+import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig } from "../types";
+import Toggle from "../components/Toggle";
+import MemoryVisualizer from "../components/MemoryVisualizer";
 
 // ── Utility components ──────────────────────────────────────────────────────
 
@@ -80,23 +83,6 @@ function NumberInput({ label, hint, value, min, max, step = 1, onChange }: {
         onFocus={() => { editing.current = true; }}
         onChange={handleChange}
         onBlur={handleBlur} />
-    </div>
-  );
-}
-
-function Toggle({ label, hint, checked, onChange }: {
-  label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-start gap-3">
-      <button role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
-        className={`relative shrink-0 w-8 h-4 rounded-full transition-colors mt-0.5 ${checked ? "bg-primary" : "bg-surface-4"}`}>
-        <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${checked ? "translate-x-4" : ""}`} />
-      </button>
-      <div>
-        <p className="text-xs font-medium text-gray-300">{label}</p>
-        {hint && <p className="text-xs text-gray-600">{hint}</p>}
-      </div>
     </div>
   );
 }
@@ -176,6 +162,7 @@ const DEFAULT_CONFIG: ServerConfig = {
 
 // Session-storage helpers to retain config across page navigation
 const SESSION_CONFIG_KEY = "catapult_server_config";
+const SESSION_ESTIMATE_KEY = "catapult_server_estimate";
 const SESSION_PRESET_KEY = "catapult_server_preset";
 const SESSION_TAB_KEY = "catapult_server_tab";
 const SESSION_STATUS_KEY = "catapult_server_status";
@@ -236,6 +223,17 @@ function loadSessionStatus(): ServerStatus {
   } catch { return { type: "stopped" }; }
 }
 
+function loadSessionEstimate(): MemoryEstimate | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_ESTIMATE_KEY);
+    if (!raw) return null;
+    const stored = JSON.parse(raw) as { modelPath: string; estimate: MemoryEstimate };
+    const cfg = loadSessionConfig();
+    if (cfg && cfg.model_path === stored.modelPath) return stored.estimate;
+  } catch {}
+  return null;
+}
+
 export default function Server() {
   const navigate = useNavigate();
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -260,6 +258,10 @@ export default function Server() {
   const [showPresetMenu, setShowPresetMenu] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [autoMmproj, setAutoMmproj] = useState(true);
+  const [memoryEstimate, setMemoryEstimate] = useState<MemoryEstimate | null>(loadSessionEstimate);
+  const [suggestionNotes, setSuggestionNotes] = useState<string[] | null>(null);
+  const [estimating, setEstimating] = useState(false);
 
   // Wrappers that persist to sessionStorage
   const setConfig: typeof setConfigRaw = useCallback((v) => {
@@ -490,6 +492,27 @@ export default function Server() {
     };
   }, []);
 
+  // Live memory estimate — debounced as settings change
+  useEffect(() => {
+    if (!config.model_path) { setMemoryEstimate(null); return; }
+    const model = models.find((m) => m.path === config.model_path);
+    const timer = setTimeout(async () => {
+      try {
+        const est = await invoke<MemoryEstimate>("estimate_model_memory", {
+          modelPath: config.model_path,
+          modelSizeMb: Math.round((model?.size_bytes ?? 0) / (1024 * 1024)),
+          nCtx: config.n_ctx,
+          cacheTypeK: config.cache_type_k,
+          cacheTypeV: config.cache_type_v,
+          nGpuLayers: config.n_gpu_layers,
+        });
+        setMemoryEstimate(est);
+        sessionStorage.setItem(SESSION_ESTIMATE_KEY, JSON.stringify({ modelPath: config.model_path, estimate: est }));
+      } catch {}
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [config.model_path, config.n_ctx, config.parallel, config.cache_type_k, config.cache_type_v, config.n_gpu_layers, models]);
+
   const applyModelConfig = async (modelPath: string) => {
     const model = models.find((m) => m.path === modelPath);
     if (!model) return;
@@ -506,11 +529,41 @@ export default function Server() {
     } catch {}
   };
 
+  const autoEstimate = async () => {
+    const model = models.find((m) => m.path === config.model_path);
+    if (!model) { setError("Select a model first."); return; }
+    setEstimating(true);
+    setError(null);
+    try {
+      const suggested = await invoke<ServerConfig>("suggest_server_config", {
+        modelPath: config.model_path,
+        modelSizeMb: Math.round(model.size_bytes / (1024 * 1024)),
+      });
+      const notes = await invoke<SuggestedConfig>("suggest_model_config", {
+        modelSizeMb: Math.round(model.size_bytes / (1024 * 1024)),
+      });
+      setSuggestionNotes(notes.notes);
+      // Apply hardware-dependent settings; preserve sampling/user preferences
+      setConfig((prev) => ({
+        ...prev,
+        n_ctx: suggested.n_ctx,
+        n_gpu_layers: suggested.n_gpu_layers,
+        flash_attn: suggested.flash_attn,
+        cache_type_k: suggested.cache_type_k,
+        cache_type_v: suggested.cache_type_v,
+      }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setEstimating(false);
+    }
+  };
+
   const handleModelChange = async (m: ModelInfo) => {
     setConfig((c) => ({
       ...c,
       model_path: m.path,
-      mmproj_path: m.is_vision && m.mmproj_path ? m.mmproj_path : null,
+      mmproj_path: autoMmproj && m.is_vision && m.mmproj_path ? m.mmproj_path : null,
     }));
     // Check if there's a saved preset for this model; if so, use it
     try {
@@ -606,6 +659,11 @@ export default function Server() {
                 <Save size={12} />
               </button>
             )}
+            <button className="btn-secondary text-xs py-1 px-2" onClick={autoEstimate} disabled={estimating}
+              title="Estimate optimal GPU offload and cache settings for the selected model">
+              <Zap size={12} className={estimating ? "animate-pulse" : ""} />
+              Auto-estimate
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -719,6 +777,44 @@ export default function Server() {
           })()}
         </div>
 
+        {/* Memory estimate */}
+        {config.model_path && (
+          <div className="card">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="section-title mb-0">Memory Estimate</h2>
+              {suggestionNotes && (
+                <span className="text-xs text-gray-500">from last auto-estimate</span>
+              )}
+            </div>
+            <MemoryVisualizer estimate={memoryEstimate} />
+          </div>
+        )}
+
+        {/* Server logs */}
+        <div className="card">
+          <button className="w-full flex items-center justify-between" onClick={() => setShowLogs(!showLogs)}>
+            <div className="flex items-center gap-2">
+              <Terminal size={15} className="text-gray-400" />
+              <span className="text-sm font-medium text-gray-300">Server Logs</span>
+              {logs.length > 0 && <span className="badge-gray text-[10px]">{logs.length}</span>}
+            </div>
+            {showLogs ? <ChevronUp size={14} className="text-gray-500" /> : <ChevronDown size={14} className="text-gray-500" />}
+          </button>
+          {showLogs && (
+            <div ref={logsRef} className="mt-3 bg-surface-0 p-3 h-48 overflow-y-auto font-mono text-xs text-gray-400 space-y-0.5 select-text">
+              {logs.length === 0 ? (
+                <span className="text-gray-600">No logs yet…</span>
+              ) : logs.map((line, i) => (
+                <div key={i} className={
+                  line.toLowerCase().includes("error") ? "text-accent-red" :
+                  line.toLowerCase().includes("warn") ? "text-accent-yellow" :
+                  line.includes("[stderr]") ? "text-gray-600" : "text-gray-400"
+                }>{line}</div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Tab bar */}
         <div className="flex border-b border-border -mb-3">
           {TABS.map((tab) => (
@@ -738,9 +834,38 @@ export default function Server() {
           {/* ════════════════════════ CONTEXT ════════════════════════ */}
           {activeTab === "Context" && <>
             <Section title="Context & Prediction" />
+            {(() => {
+              const selectedModel = models.find((m) => m.path === config.model_path);
+              const maxCtx = Math.max(selectedModel?.context_length ?? 131072, 131072);
+              const overrideCtx = config.n_ctx !== 0;
+              return (
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <label className="label">Context Size</label>
+                    <div className="mt-1">
+                      <Toggle label="Override default"
+                        hint={overrideCtx ? undefined : "Auto (model default)"}
+                        checked={overrideCtx}
+                        onChange={(v) => setConfig((c) => ({ ...c, n_ctx: v ? maxCtx : 0 }))} />
+                    </div>
+                    {overrideCtx && (
+                      <div className="flex items-center gap-3 mt-2">
+                        <input type="range" min={512} max={maxCtx} step={512}
+                          value={config.n_ctx}
+                          onChange={(e) => setConfig((c) => ({ ...c, n_ctx: Number(e.target.value) }))}
+                          className="flex-1 accent-primary" />
+                        <span className="text-xs text-gray-300 font-mono w-20 text-right">
+                          {config.n_ctx >= 1024
+                            ? `${(config.n_ctx / 1024).toFixed(0)}K`
+                            : String(config.n_ctx)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Context Size" hint="0 = auto (model default)" value={config.n_ctx} min={0} max={1048576} step={512}
-                onChange={(v) => setConfig((c) => ({ ...c, n_ctx: v ?? 0 }))} />
               <NumberInput label="Max Tokens" hint="-1 = unlimited" value={config.n_predict} min={-1}
                 onChange={(v) => setConfig((c) => ({ ...c, n_predict: v ?? -1 }))} />
               <NumberInput label="Batch Size" hint="Logical max batch (default: 2048)" value={config.n_batch} min={1} max={16384} step={32}

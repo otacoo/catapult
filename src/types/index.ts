@@ -35,6 +35,25 @@ export interface SuggestedConfig {
   notes: string[];
 }
 
+export interface MemoryEstimate {
+  model_mb: number;
+  kv_cache_mb: number;
+  overhead_mb: number;
+  total_mb: number;
+  vram_total_mb: number;
+  ram_available_mb: number;
+  vram_used_mb: number;
+  ram_used_mb: number;
+  vram_model_mb: number;
+  vram_kv_mb: number;
+  vram_overhead_mb: number;
+  ram_model_mb: number;
+  ram_kv_mb: number;
+  ram_overhead_mb: number;
+  fits: boolean;
+  notes: string[];
+}
+
 // ── Runtime ───────────────────────────────────────────────────────────────────
 
 export interface RuntimeInfo {

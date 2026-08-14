@@ -561,6 +561,27 @@ async fn suggest_server_config(
     Ok(server::suggest_server_config(&model_path, model_size_mb, &system))
 }
 
+#[tauri::command]
+async fn estimate_model_memory(
+    model_path: String,
+    model_size_mb: u64,
+    n_ctx: u32,
+    cache_type_k: String,
+    cache_type_v: String,
+    n_gpu_layers: i32,
+    _state: State<'_, AppState>,
+) -> Result<hardware::MemoryEstimate, String> {
+    hardware::estimate_memory(
+        &model_path,
+        model_size_mb,
+        n_ctx,
+        &cache_type_k,
+        &cache_type_v,
+        n_gpu_layers,
+    )
+    .map_err(|e| e.to_string())
+}
+
 // ── Chat window ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -777,6 +798,7 @@ pub fn run() {
             get_server_status,
             get_server_logs,
             suggest_server_config,
+            estimate_model_memory,
             open_chat_window,
             // Config
             get_config,

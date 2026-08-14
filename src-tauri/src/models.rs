@@ -29,12 +29,22 @@ pub struct ModelInfo {
 
 /// Metadata extracted from a GGUF file header.
 #[derive(Debug, Default)]
-struct GgufMeta {
-    name: Option<String>,
-    architecture: Option<String>,
-    size_label: Option<String>,
-    context_length: Option<u64>,
-    tags: Vec<String>,
+pub struct GgufMeta {
+    pub name: Option<String>,
+    pub architecture: Option<String>,
+    pub size_label: Option<String>,
+    pub context_length: Option<u64>,
+    pub block_count: Option<u64>,
+    pub embedding_length: Option<u64>,
+    pub attention_head_count: Option<u64>,
+    pub attention_head_count_kv: Option<u64>,
+    pub tags: Vec<String>,
+}
+
+/// Read GGUF header metadata from a model file. Returns None if the file
+/// is not a valid GGUF or cannot be read.
+pub fn read_model_metadata(path: &Path) -> Option<GgufMeta> {
+    read_gguf_metadata(path)
 }
 
 fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
@@ -91,6 +101,14 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                 let val = u32::from_le_bytes(buf4);
                 if key.ends_with(".context_length") {
                     meta.context_length = Some(val as u64);
+                } else if key.ends_with(".block_count") {
+                    meta.block_count = Some(val as u64);
+                } else if key.ends_with(".embedding_length") {
+                    meta.embedding_length = Some(val as u64);
+                } else if key.ends_with(".attention.head_count") {
+                    meta.attention_head_count = Some(val as u64);
+                } else if key.ends_with(".attention.head_count_kv") {
+                    meta.attention_head_count_kv = Some(val as u64);
                 }
             }
             10 | 11 => {
@@ -99,6 +117,14 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                 let val = u64::from_le_bytes(buf8);
                 if key.ends_with(".context_length") {
                     meta.context_length = Some(val);
+                } else if key.ends_with(".block_count") {
+                    meta.block_count = Some(val);
+                } else if key.ends_with(".embedding_length") {
+                    meta.embedding_length = Some(val);
+                } else if key.ends_with(".attention.head_count") {
+                    meta.attention_head_count = Some(val);
+                } else if key.ends_with(".attention.head_count_kv") {
+                    meta.attention_head_count_kv = Some(val);
                 }
             }
             0 | 1 => { let mut b = [0u8; 1]; f.read_exact(&mut b).ok()?; }
@@ -996,6 +1022,7 @@ mod tests {
         let test_paths = [
             "/mnt/win/k/models/GLM-4.6V-Flash-Q4_K_M.gguf",
             "/mnt/win/h/models/Falcon-H1R-7B-Q8_0.gguf",
+            r"H:\models\LLM\lmstudio-community\Bonsai-27B-GGUF\Bonsai-27B-Q1_0.gguf",
         ];
         for path_str in &test_paths {
             let path = std::path::Path::new(path_str);
@@ -1009,6 +1036,12 @@ mod tests {
             if meta.architecture.is_some() {
                 assert!(meta.context_length.is_some(),
                     "should have context_length for {}", path_str);
+            }
+            if path_str.ends_with("Bonsai-27B-Q1_0.gguf") {
+                assert_eq!(meta.block_count, Some(64), "block_count");
+                assert_eq!(meta.embedding_length, Some(5120), "embedding_length");
+                assert_eq!(meta.attention_head_count, Some(24), "head_count");
+                assert_eq!(meta.attention_head_count_kv, Some(4), "head_count_kv");
             }
         }
     }
