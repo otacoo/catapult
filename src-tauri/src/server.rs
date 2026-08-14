@@ -271,7 +271,8 @@ pub async fn start_server(
                     // Detect server ready
                     if matches!(s.status, ServerStatus::Starting)
                         && (line.contains("HTTP server listening")
-                            || line.contains("server is listening"))
+                            || line.contains("server is listening")
+                            || line.contains("listening on"))
                     {
                         s.status = ServerStatus::Running { port, pid };
                         log::info!("Server ready on port {}", port);
@@ -304,11 +305,11 @@ pub async fn start_server(
                     }
                     if matches!(s.status, ServerStatus::Starting)
                         && (line.contains("HTTP server listening")
-                            || line.contains("server is listening"))
+                            || line.contains("server is listening")
+                            || line.contains("listening on"))
                     {
                         s.status = ServerStatus::Running { port, pid };
                     }
-                    drop(s);
                     log_cb_clone(format!("[stderr] {}", line));
                 }
                 Err(e) => {
