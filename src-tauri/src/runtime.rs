@@ -167,6 +167,7 @@ pub fn find_file_recursive(dir: &Path, name: &str, max_depth: u32) -> Option<Pat
 pub async fn fetch_latest_release(
     client: &reqwest::Client,
     available_backend_ids: &[String],
+    cuda_version: Option<&str>,
 ) -> Result<ReleaseInfo> {
     let url = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
     let response = client
@@ -182,10 +183,10 @@ pub async fn fetch_latest_release(
     }
 
     let release: GithubRelease = response.json().await.context("Failed to parse GitHub release JSON")?;
-    parse_release(release, available_backend_ids)
+    parse_release(release, available_backend_ids, cuda_version)
 }
 
-fn parse_release(release: GithubRelease, available_backend_ids: &[String]) -> Result<ReleaseInfo> {
+fn parse_release(release: GithubRelease, available_backend_ids: &[String], cuda_version: Option<&str>) -> Result<ReleaseInfo> {
     let build = release
         .tag_name
         .trim_start_matches('b')
@@ -199,7 +200,7 @@ fn parse_release(release: GithubRelease, available_backend_ids: &[String]) -> Re
         .assets
         .iter()
         .filter(|a| a.name.ends_with(".zip") || a.name.ends_with(".tar.gz"))
-        .filter_map(|a| score_asset(&a.name, os, arch, a.browser_download_url.clone(), a.size, available_backend_ids))
+        .filter_map(|a| score_asset(&a.name, os, arch, a.browser_download_url.clone(), a.size, available_backend_ids, cuda_version))
         .collect();
 
     // Sort by score descending
@@ -222,6 +223,7 @@ fn score_asset(
     url: String,
     size: u64,
     available_backend_ids: &[String],
+    cuda_version: Option<&str>,
 ) -> Option<AssetOption> {
     let lower = name.to_lowercase();
 
@@ -258,7 +260,19 @@ fn score_asset(
     // CPU variants are always usable; accelerated backends need a match.
     let backend_available = backend_id.starts_with("cpu")
         || available_backend_ids.iter().any(|b| backend_id.starts_with(b.as_str()));
-    let score = if backend_available { base_score } else { base_score - 200 };
+
+    let mut score = if backend_available { base_score } else { base_score - 200 };
+
+    // If CUDA is available but the asset CUDA version doesn't match the installed one,
+    // knock the score below 90 so it doesn't get a "Recommended" badge.
+    if backend_id == "cuda" && score >= 90 {
+        if let Some(sys_ver) = cuda_version {
+            let asset_ver = extract_cuda_version(&lower);
+            if asset_ver.as_deref().map(|v| v.trim()) != Some(sys_ver.trim()) {
+                score = 80;
+            }
+        }
+    }
 
     let size_mb = size / (1024 * 1024);
 
@@ -310,8 +324,9 @@ fn detect_asset_backend(lower: &str, os: &str) -> (String, String, i32) {
 }
 
 fn extract_cuda_version(lower: &str) -> Option<String> {
-    // Match patterns like "cu12.4", "cu124", "cu11.8"
-    let re = regex::Regex::new(r"cu(\d+)\.?(\d*)").ok()?;
+    // Match patterns like "cu12.4", "cu124", "cu11.8" (older naming),
+    // and "cuda-13.3", "cuda13.3" (newer naming).
+    let re = regex::Regex::new(r"(?:cu|cuda)[-_]?(\d+)\.?(\d*)").ok()?;
     let caps = re.captures(lower)?;
     let major = caps.get(1)?.as_str();
     let minor = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -705,6 +720,7 @@ mod tests {
             "https://example.com/asset.zip".to_string(),
             100 * 1024 * 1024,
             &["cuda".to_string()],
+            None,
         );
         let opt = result.expect("should match linux x64 cuda");
         assert_eq!(opt.backend_id, "cuda");
@@ -714,17 +730,82 @@ mod tests {
     }
 
     #[test]
+    fn score_asset_cuda_version_match_gets_100() {
+        // Matching CUDA version (12.4 == 12.4) keeps score at 100
+        let result = score_asset(
+            "llama-b5000-bin-linux-x64-cuda-cu12.4.zip",
+            "linux", "x86_64", String::new(), 0,
+            &["cuda".to_string()],
+            Some("12.4"),
+        );
+        let opt = result.expect("should match");
+        assert_eq!(opt.score, 100);
+    }
+
+    #[test]
+    fn score_asset_cuda_version_match_new_naming() {
+        // New naming format (cuda-13.3) with matching system version
+        let result = score_asset(
+            "llama-b10199-bin-win-cuda-13.3-x64.zip",
+            "windows", "x86_64", String::new(), 0,
+            &["cuda".to_string()],
+            Some("13.3"),
+        );
+        let opt = result.expect("should match");
+        assert_eq!(opt.score, 100);
+    }
+
+    #[test]
+    fn score_asset_cuda_version_mismatch_drops_below_90() {
+        // Mismatched CUDA version (asset 12.4, system 12.2) drops score to 80
+        let result = score_asset(
+            "llama-b5000-bin-linux-x64-cuda-cu12.4.zip",
+            "linux", "x86_64", String::new(), 0,
+            &["cuda".to_string()],
+            Some("12.2"),
+        );
+        let opt = result.expect("should match");
+        assert_eq!(opt.score, 80);
+    }
+
+    #[test]
+    fn score_asset_cuda_version_mismatch_new_naming() {
+        // New naming format with mismatched version
+        let result = score_asset(
+            "llama-b10199-bin-win-cuda-13.3-x64.zip",
+            "windows", "x86_64", String::new(), 0,
+            &["cuda".to_string()],
+            Some("12.6"),
+        );
+        let opt = result.expect("should match");
+        assert_eq!(opt.score, 80);
+    }
+
+    #[test]
+    fn score_asset_cuda_no_system_version_stays_100() {
+        // No system CUDA version known → keep score at 100
+        let result = score_asset(
+            "llama-b5000-bin-linux-x64-cuda-cu12.4.zip",
+            "linux", "x86_64", String::new(), 0,
+            &["cuda".to_string()],
+            None,
+        );
+        let opt = result.expect("should match");
+        assert_eq!(opt.score, 100);
+    }
+
+    #[test]
     fn score_asset_rejects_wrong_os() {
         // Windows asset on Linux
         assert!(score_asset(
             "llama-b5000-bin-win-x64-cuda.zip",
-            "linux", "x86_64", String::new(), 0, &[],
+            "linux", "x86_64", String::new(), 0, &[], None,
         ).is_none());
 
         // Linux asset on macOS
         assert!(score_asset(
             "llama-b5000-bin-linux-x64-cuda.zip",
-            "macos", "aarch64", String::new(), 0, &[],
+            "macos", "aarch64", String::new(), 0, &[], None,
         ).is_none());
     }
 
@@ -732,7 +813,7 @@ mod tests {
     fn score_asset_rejects_wrong_arch() {
         assert!(score_asset(
             "llama-b5000-bin-linux-arm64-cuda.zip",
-            "linux", "x86_64", String::new(), 0, &[],
+            "linux", "x86_64", String::new(), 0, &[], None,
         ).is_none());
     }
 
@@ -742,6 +823,7 @@ mod tests {
             "llama-b5000-bin-linux-x64-cuda-cu12.4.zip",
             "linux", "x86_64", String::new(), 0,
             &["cpu".to_string()], // no CUDA available
+            None,
         );
         let opt = result.expect("should still return, just penalized");
         assert!(opt.score < 0, "score should be negative: {}", opt.score);
@@ -753,6 +835,7 @@ mod tests {
             "llama-b5000-bin-linux-x64-avx2.zip",
             "linux", "x86_64", String::new(), 0,
             &[], // no backends available
+            None,
         );
         let opt = result.expect("CPU assets should always be accepted");
         assert!(opt.score > 0);
@@ -763,11 +846,11 @@ mod tests {
     fn score_asset_skips_sha_and_source() {
         assert!(score_asset(
             "llama-b5000-sha256sums.txt",
-            "linux", "x86_64", String::new(), 0, &[],
+            "linux", "x86_64", String::new(), 0, &[], None,
         ).is_none());
         assert!(score_asset(
             "llama-b5000-source.tar.gz",
-            "linux", "x86_64", String::new(), 0, &[],
+            "linux", "x86_64", String::new(), 0, &[], None,
         ).is_none());
     }
 
@@ -797,9 +880,15 @@ mod tests {
 
     #[test]
     fn extract_cuda_version_patterns() {
+        // Old naming: cuX.Y
         assert_eq!(extract_cuda_version("llama-cu12.4-x64"), Some(" 12.4".to_string()));
         assert_eq!(extract_cuda_version("llama-cu11.8"), Some(" 11.8".to_string()));
         assert_eq!(extract_cuda_version("llama-cu124"), Some(" 124".to_string()));
+        // New naming: cuda-X.Y
+        assert_eq!(extract_cuda_version("llama-cuda-13.3-x64"), Some(" 13.3".to_string()));
+        assert_eq!(extract_cuda_version("llama-cuda13.3"), Some(" 13.3".to_string()));
+        assert_eq!(extract_cuda_version("llama-cuda-12.6"), Some(" 12.6".to_string()));
+        // No match
         assert_eq!(extract_cuda_version("llama-nocuda"), None);
         assert_eq!(extract_cuda_version("llama-generic"), None);
     }

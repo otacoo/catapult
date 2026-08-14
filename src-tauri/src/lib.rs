@@ -59,7 +59,10 @@ async fn check_latest_release(state: State<'_, AppState>) -> Result<ReleaseInfo,
         .filter(|b| b.available)
         .map(|b| b.id.clone())
         .collect();
-    runtime::fetch_latest_release(&state.http_client, &available_ids)
+    let cuda_version: Option<String> = system.available_backends.iter()
+        .find(|b| b.id == "cuda" && b.available)
+        .and_then(|b| b.version.clone());
+    runtime::fetch_latest_release(&state.http_client, &available_ids, cuda_version.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -77,7 +80,10 @@ async fn download_runtime(
         .filter(|b| b.available)
         .map(|b| b.id.clone())
         .collect();
-    let release = runtime::fetch_latest_release(&state.http_client, &available_ids)
+    let cuda_version: Option<String> = system.available_backends.iter()
+        .find(|b| b.id == "cuda" && b.available)
+        .and_then(|b| b.version.clone());
+    let release = runtime::fetch_latest_release(&state.http_client, &available_ids, cuda_version.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 

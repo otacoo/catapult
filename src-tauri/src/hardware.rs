@@ -51,6 +51,41 @@ pub struct BackendInfo {
     pub name: String,
     pub available: bool,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+fn get_cuda_version() -> Option<String> {
+    // Prefer nvcc --version (CUDA toolkit — what's actually installed).
+    // Fall back to nvidia-smi (driver-supported CUDA version) if nvcc isn't available.
+    get_cuda_version_from_nvcc().or_else(get_cuda_version_from_nvsmi)
+}
+
+fn get_cuda_version_from_nvcc() -> Option<String> {
+    let output = silent_cmd("nvcc").args(["--version"]).output().ok()?;
+    if !output.status.success() { return None; }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Look for "release X.Y," in the output
+    let marker = "release ";
+    text.lines().find(|line| line.contains(marker)).and_then(|line| {
+        let start = line.find(marker)? + marker.len();
+        let rest = &line[start..];
+        let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
+        if end > 0 { Some(rest[..end].to_string()) } else { None }
+    })
+}
+
+fn get_cuda_version_from_nvsmi() -> Option<String> {
+    let output = silent_cmd("nvidia-smi").output().ok()?;
+    if !output.status.success() { return None; }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let marker = "CUDA Version: ";
+    text.lines().find(|line| line.contains(marker)).and_then(|line| {
+        let start = line.find(marker)? + marker.len();
+        let rest = &line[start..];
+        let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
+        if end > 0 { Some(rest[..end].to_string()) } else { None }
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,11 +398,14 @@ fn get_nvidia_vram_mb() -> Option<u64> {
 
 #[cfg_attr(target_os = "macos", allow(unused_variables))]
 fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
+    let cuda_version = get_cuda_version();
+
     let mut backends = vec![BackendInfo {
         id: "cpu".to_string(),
         name: "CPU".to_string(),
         available: true,
         description: "Run on CPU (AVX2). Slowest but always available.".to_string(),
+        version: None,
     }];
 
     #[cfg(target_os = "linux")]
@@ -380,6 +418,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "CUDA".to_string(),
             available: cuda_available,
             description: "NVIDIA GPU acceleration via CUDA.".to_string(),
+            version: cuda_version.clone(),
         });
 
         // ROCm (AMD)
@@ -391,6 +430,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "ROCm (HIP)".to_string(),
             available: rocm_available,
             description: "AMD GPU acceleration via ROCm/HIP.".to_string(),
+            version: None,
         });
 
         // Vulkan
@@ -403,6 +443,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "Vulkan".to_string(),
             available: vulkan_available,
             description: "GPU acceleration via Vulkan (AMD/NVIDIA/Intel).".to_string(),
+            version: None,
         });
 
         // OpenVINO (Intel)
@@ -414,6 +455,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "OpenVINO".to_string(),
             available: openvino_available,
             description: "Intel GPU/NPU acceleration via OpenVINO.".to_string(),
+            version: None,
         });
     }
 
@@ -427,6 +469,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "CUDA".to_string(),
             available: cuda_available,
             description: "NVIDIA GPU acceleration via CUDA.".to_string(),
+            version: cuda_version.clone(),
         });
 
         // Vulkan
@@ -439,6 +482,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "Vulkan".to_string(),
             available: vulkan_available,
             description: "GPU acceleration via Vulkan (AMD/NVIDIA/Intel).".to_string(),
+            version: None,
         });
 
         // SYCL (Intel oneAPI)
@@ -452,6 +496,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "SYCL (Intel oneAPI)".to_string(),
             available: sycl_available,
             description: "Intel GPU acceleration via SYCL/oneAPI.".to_string(),
+            version: None,
         });
 
         // HIP (AMD on Windows)
@@ -463,6 +508,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "HIP (AMD ROCm)".to_string(),
             available: hip_available,
             description: "AMD GPU acceleration via HIP.".to_string(),
+            version: None,
         });
     }
 
@@ -473,6 +519,7 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             name: "Metal".to_string(),
             available: true,
             description: "Apple GPU acceleration via Metal.".to_string(),
+            version: None,
         });
     }
 

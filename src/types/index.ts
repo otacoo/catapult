@@ -24,6 +24,7 @@ export interface BackendInfo {
   name: string;
   available: boolean;
   description: string;
+  version?: string;
 }
 
 export interface SuggestedConfig {
