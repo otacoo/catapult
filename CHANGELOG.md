@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.6] - 2026-08-14
+
+### Added
+
+- **API tab**: Shows live connection details for the running server — OpenAI-compatible base URL, chat/completions/embeddings endpoints, model ID, alias, path, context size, slots, and API key — all copyable, plus a ready-to-paste client configuration (environment variables) for OpenAI SDKs.
+- **Memory estimate**: The Run page now shows a live visual breakdown of estimated VRAM and RAM usage (model weights / KV cache / overhead) as bars against your hardware, updating as settings change. KV cache sizing accounts for GQA head counts, cache dtypes, and model context.
+- **Auto-estimate button**: One click suggests GPU offload, context size, and cache types that fit your hardware. Context fitting uses the model's real layer/embedding metadata and sizes the KV cache to the VRAM left after offloaded weights.
+- **`--fit` support**: The Fit toggle (Hardware tab) is now wired up — when on, `--fit on` is passed and `--ctx-size`/`--n-gpu-layers` are left to llama-server so it auto-fits context and layers to device memory.
+- **App update settings**: New "App Updates" section on the Dashboard with a "Check for updates on app start" toggle and a manual "Check now" button. Disabled by default — no automatic update checks.
+- **HuggingFace sort options**: Browse tab gained sort dropdown (By downloads / By stars / Newest) next to the owner filter.
+- **CUDA version detection**: Runtime asset selection now prefers `nvcc --version` (falling back to `nvidia-smi`) and penalizes assets whose CUDA version doesn't match the installed toolkit, so a mismatched build never gets the "Recommended" badge. New `cuda-X.Y` asset naming is also parsed.
+- **Wizard window controls**: The first-launch wizard now has a drag region and minimize/maximize/close buttons.
+- **Context size slider**: The Context tab offers a slider from 512 to the model's max context, with an "Override default" toggle (default stays auto).
+- **Shared Toggle component**: Extracted the switch control used across pages.
+
+### Removed
+
+- **TUI**: Removed the terminal interface (`catapult-tui` binary) and its dependencies. Catapult is now GUI-only.
+
+### Fixed
+
+- **Server stuck on "Starting…" forever**: Readiness detection only matched "HTTP server listening" / "server is listening"; newer llama.cpp logs "listening on http://…", which is now also matched.
+- **Chat conversation resetting on tab switch**: The embedded WebUI iframe is now kept alive (module-scoped element) and re-attached instead of being recreated on every visit.
+- **mmproj handling**: Turning "mmproj Auto" off no longer injects `--no-mmproj`; it simply stops auto-selecting a projector. The old "mmproj URL" field (which rejected local paths) is now "mmproj Path" and passes `--mmproj` with a local file path.
+- **Memory estimate massively overshooting**: KV cache was computed with the full embedding dimension (ignoring grouped-query attention) and scaled with `--parallel`; both are now correct, cutting estimates by up to ~8× on GQA models.
+- **Auto-update check on startup**: Removed the automatic updater check that fired on app start (and on the Runtime tab); checks now only happen when the user asks.
+- **Server logs**: Moved below the Memory Estimate card and made selectable for copying.
+
 ## [0.1.5] - 2026-05-18
 
 ### Fixed
