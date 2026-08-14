@@ -27,7 +27,7 @@ npx tsc --noEmit
 # Check Rust
 cargo check --manifest-path src-tauri/Cargo.toml
 
-# Run Rust tests (55 tests)
+# Run Rust tests (109 tests)
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # Run frontend tests (34 tests via Vitest)
