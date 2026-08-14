@@ -479,11 +479,21 @@ pub fn build_args(config: &ServerConfig) -> Vec<String> {
     args.push("--port".to_string());
     args.push(config.port.to_string());
 
-    args.push("--ctx-size".to_string());
-    args.push(config.n_ctx.to_string());
-
-    args.push("--n-gpu-layers".to_string());
-    args.push(config.n_gpu_layers.to_string());
+    // --fit (default: on): llama-server auto-adjusts context size and GPU
+    // layers to fit device memory. Explicit --ctx-size/--n-gpu-layers args
+    // would block this, since fit only adjusts parameters not set by the user.
+    let fit = config.extra_params.get("fit").map(|s| s.as_str()).unwrap_or("on");
+    if fit == "off" {
+        args.push("--ctx-size".to_string());
+        args.push(config.n_ctx.to_string());
+        args.push("--n-gpu-layers".to_string());
+        args.push(config.n_gpu_layers.to_string());
+        args.push("--fit".to_string());
+        args.push("off".to_string());
+    } else {
+        args.push("--fit".to_string());
+        args.push("on".to_string());
+    }
 
     if let Some(threads) = config.n_threads {
         args.push("--threads".to_string());
@@ -566,7 +576,7 @@ pub fn build_args(config: &ServerConfig) -> Vec<String> {
 
     // Extra parameters from the UI
     let mut sorted_params: Vec<_> = config.extra_params.iter()
-        .filter(|(k, _)| k.as_str() != "__raw__" && k.as_str() != "mmproj")
+        .filter(|(k, _)| k.as_str() != "__raw__" && k.as_str() != "mmproj" && k.as_str() != "fit")
         .collect();
     sorted_params.sort_by_key(|(k, _)| (*k).clone());
     for (key, value) in sorted_params {
@@ -664,10 +674,33 @@ mod tests {
         assert!(args.contains(&"127.0.0.1".to_string()));
         assert!(args.contains(&"--port".to_string()));
         assert!(args.contains(&"8080".to_string()));
-        assert!(args.contains(&"--ctx-size".to_string()));
-        assert!(args.contains(&"0".to_string()));
+        // Default fit is ON: ctx-size/ngl are left to llama-server
+        assert!(args.contains(&"--fit".to_string()));
+        assert!(args.contains(&"on".to_string()));
+        assert!(!args.contains(&"--ctx-size".to_string()));
+        assert!(!args.contains(&"--n-gpu-layers".to_string()));
         assert!(args.contains(&"--flash-attn".to_string()));
         assert!(args.contains(&"auto".to_string()));
+    }
+
+    #[test]
+    fn build_args_fit_off_passes_explicit_ctx_and_ngl() {
+        let mut extra = HashMap::new();
+        extra.insert("fit".to_string(), "off".to_string());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            n_ctx: 8192,
+            n_gpu_layers: 20,
+            extra_params: extra,
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        assert!(args.contains(&"--fit".to_string()));
+        assert!(args.contains(&"off".to_string()));
+        let ctx_idx = args.iter().position(|a| a == "--ctx-size").unwrap();
+        assert_eq!(args[ctx_idx + 1], "8192");
+        let ngl_idx = args.iter().position(|a| a == "--n-gpu-layers").unwrap();
+        assert_eq!(args[ngl_idx + 1], "20");
     }
 
     #[test]

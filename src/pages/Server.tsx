@@ -926,7 +926,7 @@ export default function Server() {
                 onChange={(v) => setEpNum("main-gpu", v)} />
               <TextInput label="Device" hint="Devices for offloading, comma-separated" value={getEp("device")}
                 onChange={(v) => setEp("device", v)} />
-              <SelectInput label="Fit" hint="Auto-adjust params to fit device memory" value={getEp("fit") || "on"}
+              <SelectInput label="Fit" hint="Auto-adjust context & GPU layers to fit device memory (default: on — leaves --ctx-size/--n-gpu-layers to llama-server)" value={getEp("fit") || "on"}
                 options={[{ value: "on", label: "On (default)" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setEp("fit", v === "on" ? "" : v)} />
               <TextInput label="Fit Target (MiB)" hint="Target margin per device (default: 1024)" value={getEp("fit-target")} placeholder="1024"
