@@ -455,7 +455,7 @@ export default function Server() {
       setConfig((c) => ({
         ...c,
         model_path: pick.path,
-        mmproj_path: pick.is_vision && pick.mmproj_path ? pick.mmproj_path : null,
+        mmproj_path: autoMmproj && pick.is_vision && pick.mmproj_path ? pick.mmproj_path : null,
       }));
       // Auto-load the last-used preset for this model (on first visit only)
       if (!loadSessionConfig()) {
@@ -1328,8 +1328,8 @@ export default function Server() {
 
             <Section title="Multimodal" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="mmproj URL" value={getEp("mmproj-url")}
-                onChange={(v) => setEp("mmproj-url", v)} />
+              <TextInput label="mmproj Path" hint="Local path to projector file" value={config.mmproj_path ?? ""}
+                onChange={(v) => setConfig((c) => ({ ...c, mmproj_path: v || null }))} />
               <NumberInput label="Image Min Tokens" value={getEpNum("image-min-tokens")} min={0}
                 onChange={(v) => setEpNum("image-min-tokens", v)} />
               <NumberInput label="Image Max Tokens" value={getEpNum("image-max-tokens")} min={0}
@@ -1338,8 +1338,8 @@ export default function Server() {
             <div className="space-y-3 mt-2">
               <Toggle label="mmproj Offload" hint="GPU offload for multimodal projector (default: on)"
                 checked={!hasFlag("no-mmproj-offload")} onChange={(v) => setFlag("no-mmproj-offload", !v)} />
-              <Toggle label="mmproj Auto" hint="Auto-use multimodal projector if available (default: on)"
-                checked={!hasFlag("no-mmproj")} onChange={(v) => setFlag("no-mmproj", !v)} />
+              <Toggle label="mmproj Auto" hint="Auto-select projector when switching models (default: on)"
+                checked={autoMmproj} onChange={(v) => { setAutoMmproj(v); if (!v) setConfig((c) => ({ ...c, mmproj_path: null })); }} />
             </div>
 
             <Section title="TTS / Audio" />
@@ -1399,31 +1399,6 @@ export default function Server() {
                 onChange={(e) => setEp("__raw__", e.target.value)} />
             </div>
           </>}
-        </div>
-
-        {/* Server logs */}
-        <div className="card">
-          <button className="w-full flex items-center justify-between" onClick={() => setShowLogs(!showLogs)}>
-            <div className="flex items-center gap-2">
-              <Terminal size={15} className="text-gray-400" />
-              <span className="text-sm font-medium text-gray-300">Server Logs</span>
-              {logs.length > 0 && <span className="badge-gray text-[10px]">{logs.length}</span>}
-            </div>
-            {showLogs ? <ChevronUp size={14} className="text-gray-500" /> : <ChevronDown size={14} className="text-gray-500" />}
-          </button>
-          {showLogs && (
-            <div ref={logsRef} className="mt-3 bg-surface-0 p-3 h-48 overflow-y-auto font-mono text-xs text-gray-400 space-y-0.5">
-              {logs.length === 0 ? (
-                <span className="text-gray-600">No logs yet…</span>
-              ) : logs.map((line, i) => (
-                <div key={i} className={
-                  line.toLowerCase().includes("error") ? "text-accent-red" :
-                  line.toLowerCase().includes("warn") ? "text-accent-yellow" :
-                  line.includes("[stderr]") ? "text-gray-600" : "text-gray-400"
-                }>{line}</div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     </div>
