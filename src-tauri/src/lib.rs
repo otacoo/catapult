@@ -14,7 +14,7 @@ use server::{ServerConfig, ServerStatus, SharedServerState};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder, WebviewUrl};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 // ── App State ────────────────────────────────────────────────────────────────
 
@@ -596,31 +596,6 @@ async fn estimate_model_memory(
     .map_err(|e| e.to_string())
 }
 
-// ── Chat window ───────────────────────────────────────────────────────────────
-
-#[tauri::command]
-async fn open_chat_window(app: AppHandle, port: u16) -> Result<(), String> {
-    let url = format!("http://127.0.0.1:{}", port);
-    let webview_url = WebviewUrl::External(url.parse().map_err(|e: url::ParseError| e.to_string())?);
-
-    // Reuse an existing chat window if already open
-    if let Some(win) = app.get_webview_window("chat") {
-        win.show().map_err(|e| e.to_string())?;
-        win.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    WebviewWindowBuilder::new(&app, "chat", webview_url)
-        .title("Chat")
-        .inner_size(960.0, 760.0)
-        .min_inner_size(640.0, 480.0)
-        .resizable(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
 // ── Config commands ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -821,7 +796,6 @@ pub fn run() {
             get_server_logs,
             suggest_server_config,
             estimate_model_memory,
-            open_chat_window,
             // Config
             get_config,
             set_models_dir,

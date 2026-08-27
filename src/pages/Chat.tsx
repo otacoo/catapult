@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
-import { Play, ExternalLink, RefreshCw } from "lucide-react";
+import { Play, RefreshCw } from "lucide-react";
 import type { ServerStatus } from "../types";
 
 let persistentIframe: HTMLIFrameElement | null = null;
@@ -87,13 +87,6 @@ export default function Chat() {
     <div className="flex-1 flex flex-col min-h-0">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
         <span className="text-xs text-gray-500 font-mono">{chatUrl}</span>
-        <button
-          className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1"
-          onClick={() => invoke("open_chat_window", { port })}
-        >
-          <ExternalLink size={12} />
-          Pop out
-        </button>
       </div>
       <div ref={containerRef} className="flex-1 flex flex-col min-h-0" />
     </div>
