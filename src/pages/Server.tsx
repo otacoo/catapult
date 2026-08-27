@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
 import {
   Play,
@@ -9,12 +10,13 @@ import {
   ChevronUp,
   HardDrive,
   Terminal,
-  ExternalLink,
+  MessagesSquare,
   Save,
   FolderOpen,
   Trash2,
   Eye,
   Zap,
+  Search,
 } from "lucide-react";
 import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig } from "../types";
 import Toggle from "../components/Toggle";
@@ -117,6 +119,29 @@ function SelectInput({ label, hint, value, options, onChange }: {
   );
 }
 
+function WorkingDirInput({ value, onApply }: { value: string; onApply: (v: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <div>
+      <label className="label">Working Directory</label>
+      <div className="flex gap-2">
+        <input type="text" className="input font-mono text-xs flex-1" value={draft}
+          placeholder="e.g. E:\test" onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => onApply(draft)} />
+        <button className="btn-ghost text-xs shrink-0" onClick={async () => {
+          try {
+            const selected = await open({ directory: true, title: "Select working directory" });
+            if (selected) onApply(typeof selected === "string" ? selected : selected[0]);
+          } catch {}
+        }}>
+          <FolderOpen size={12} className="inline mr-1" />Browse
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Section({ title }: { title: string }) {
   return <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 mt-5 first:mt-0">{title}</p>;
 }
@@ -131,6 +156,7 @@ type Tab = (typeof TABS)[number];
 const DEFAULT_CONFIG: ServerConfig = {
   model_path: "",
   mmproj_path: null,
+  working_dir: null,
   host: "127.0.0.1",
   port: 8080,
   n_ctx: 0,
@@ -157,6 +183,86 @@ const DEFAULT_CONFIG: ServerConfig = {
   parallel: 1,
   extra_params: {},
 };
+
+// ── File tools (mirrors llama.cpp `--tools`) ────────────────────────────────
+
+const KNOWN_TOOLS: { name: string; label: string; hint: string; dangerous?: boolean }[] = [
+  // Only tools available across llama.cpp builds are listed here — some builds
+  // add extra tools (apply_diff, get_datetime) which are *not* offered because
+  // enabling an unknown tool makes the server fail to start.
+  { name: "read_file", label: "Read File", hint: "Read text files (16 KB max per read)" },
+  { name: "grep_search", label: "Grep Search", hint: "Search file contents with regex" },
+  { name: "file_glob_search", label: "File Glob Search", hint: "List files matching a glob pattern" },
+  { name: "get_info", label: "Get Info", hint: "Query file and folder metadata" },
+  { name: "write_file", label: "Write File", hint: "Create or overwrite files" },
+  { name: "edit_file", label: "Edit File", hint: "Apply line-range edits to files" },
+  { name: "exec_shell_command", label: "Shell Command", hint: "Run arbitrary shell commands", dangerous: true },
+];
+
+// Effective set of enabled tools. "all" expands to every known tool; names not
+// in KNOWN_TOOLS are dropped because passing an unknown tool name makes the
+// server fail to start.
+export function effectiveTools(value: string): Set<string> {
+  const sel = new Set<string>();
+  if (!value) return sel;
+  if (value.trim().toLowerCase() === "all") {
+    for (const t of KNOWN_TOOLS) sel.add(t.name);
+    return sel;
+  }
+  for (const name of value.split(",")) {
+    const n = name.trim();
+    if (n && KNOWN_TOOLS.some((t) => t.name === n)) sel.add(n);
+  }
+  return sel;
+}
+
+// Canonical --tools argument for a value: "" (off), "all", or a sorted
+// comma-separated list.
+export function toolsArgValue(value: string): string {
+  const sel = effectiveTools(value);
+  if (sel.size === 0) return "";
+  if (sel.size === KNOWN_TOOLS.length) return "all";
+  return [...sel].sort().join(",");
+}
+
+// Drops tool names not supported by the running llama.cpp build from
+// extra_params["tools"] so stale/session values can't fail server startup.
+export function sanitizeTools(extra: Record<string, string>): Record<string, string> {
+  if (!("tools" in extra)) return extra;
+  const t = toolsArgValue(extra.tools);
+  if (t) extra.tools = t; else delete extra.tools;
+  return extra;
+}
+
+// ── Settings search index ────────────────────────────────────────────────────
+
+type SettingMatch = { el: HTMLElement; text: string; tab: string };
+
+// Builds a searchable list of every setting on the page by scanning the DOM for
+// setting labels (label.label), toggle labels (p.font-medium), and section
+// titles (p.font-semibold). A following hint paragraph is folded into the
+// searchable text so terms like "GPU" or "16 KB" resolve too.
+function indexSettings(root: HTMLElement, q: string): SettingMatch[] {
+  const results: SettingMatch[] = [];
+  const seen = new Set<HTMLElement>();
+  const push = (el: HTMLElement) => {
+    if (seen.has(el)) return;
+    seen.add(el);
+    let text = el.textContent?.trim() ?? "";
+    const hint = el.nextElementSibling;
+    if (hint && hint.tagName === "P") text += " " + (hint.textContent?.trim() ?? "");
+    if (!text.toLowerCase().includes(q)) return;
+    results.push({
+      el,
+      text,
+      tab: el.closest("[data-tab]")?.getAttribute("data-tab") ?? "",
+    });
+  };
+  root.querySelectorAll<HTMLElement>("label.label").forEach(push);
+  root.querySelectorAll<HTMLElement>('p[class*="font-medium"]').forEach(push);
+  root.querySelectorAll<HTMLElement>('p[class*="font-semibold"]').forEach(push);
+  return results;
+}
 
 // ── Main component ───────────────────────────────────────────────────────────
 
@@ -211,7 +317,7 @@ function loadSessionConfig(): ServerConfig | null {
     const raw = sessionStorage.getItem(SESSION_CONFIG_KEY);
     if (!raw) return null;
     const cfg = JSON.parse(raw) as ServerConfig;
-    if (cfg.extra_params) cfg.extra_params = migrateExtraParams(cfg.extra_params);
+    if (cfg.extra_params) cfg.extra_params = sanitizeTools(migrateExtraParams(cfg.extra_params));
     return cfg;
   } catch { return null; }
 }
@@ -246,7 +352,6 @@ export default function Server() {
   });
   const [showLogs, setShowLogs] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [openingChat, setOpeningChat] = useState(false);
   const [showModelList, setShowModelList] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
   const pendingLogs = useRef<string[]>([]);
@@ -262,6 +367,12 @@ export default function Server() {
   const [memoryEstimate, setMemoryEstimate] = useState<MemoryEstimate | null>(loadSessionEstimate);
   const [suggestionNotes, setSuggestionNotes] = useState<string[] | null>(null);
   const [estimating, setEstimating] = useState(false);
+  const settingsRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchIdx, setSearchIdx] = useState(0);
+  const [showResults, setShowResults] = useState(false);
+  const [matches, setMatches] = useState<SettingMatch[]>([]);
 
   // Wrappers that persist to sessionStorage
   const setConfig: typeof setConfigRaw = useCallback((v) => {
@@ -338,6 +449,50 @@ export default function Server() {
     });
   };
 
+  // Working directory — persists to backend config so it survives restarts
+  const setWorkingDir = (v: string) => {
+    const path = v.trim() || null;
+    setConfig((c) => ({ ...c, working_dir: path }));
+    invoke("set_server_working_dir", { path }).catch(() => {});
+  };
+
+  // File tools — gated checkboxes that rebuild the --tools argument
+  const setTool = (name: string, on: boolean) => {
+    const sel = new Set(effectiveTools(getEp("tools")));
+    if (on) sel.add(name); else sel.delete(name);
+    setEp("tools", toolsArgValue([...sel].join(",")));
+  };
+
+  // ── Settings search ─────────────────────────────────────────────────────
+
+  const goToMatch = (m: SettingMatch) => {
+    setActiveTab(m.tab as Tab);
+    setShowResults(false);
+    setQuery("");
+    // Scroll once the target tab is made visible
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      m.el.scrollIntoView({ behavior: "smooth", block: "center" });
+      m.el.style.transition = "background 0.3s";
+      m.el.style.background = "rgba(255, 200, 50, 0.3)";
+      setTimeout(() => { m.el.style.background = ""; m.el.style.transition = ""; }, 1500);
+    }));
+  };
+
+  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setSearchIdx((i) => Math.min(i + 1, matches.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setSearchIdx((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); const m = matches[searchIdx]; if (m) goToMatch(m); }
+    else if (e.key === "Escape") { setShowResults(false); setQuery(""); }
+  };
+
+  useEffect(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) { setMatches([]); setShowResults(false); setSearchIdx(0); return; }
+    setMatches(settingsRef.current ? indexSettings(settingsRef.current, q) : []);
+    setSearchIdx(0);
+    setShowResults(true);
+  }, [query]);
+
   // ── Presets ────────────────────────────────────────────────────────────────
 
   const refreshPresets = async () => {
@@ -347,8 +502,8 @@ export default function Server() {
   const savePreset = async (name: string) => {
     if (!name.trim()) return;
     try {
-      // Exclude model_path and mmproj_path from presets — these are per-session
-      const presetConfig = { ...config, model_path: "", mmproj_path: null };
+      // Exclude model_path, mmproj_path, and working_dir from presets — these are per-session
+      const presetConfig = { ...config, model_path: "", mmproj_path: null, working_dir: null };
       await invoke("save_server_preset", { name: name.trim(), config: presetConfig });
       setActivePreset(name.trim());
       setSaveName("");
@@ -359,12 +514,13 @@ export default function Server() {
   const loadPreset = async (name: string, modelPath?: string) => {
     try {
       const loaded = await invoke<ServerConfig>("load_server_preset", { name });
-      if (loaded.extra_params) loaded.extra_params = migrateExtraParams(loaded.extra_params);
-      // Preserve current model_path and mmproj_path
+      if (loaded.extra_params) loaded.extra_params = sanitizeTools(migrateExtraParams(loaded.extra_params));
+      // Preserve current model_path, mmproj_path, and working_dir
       setConfig((prev) => ({
         ...loaded,
         model_path: prev.model_path,
         mmproj_path: prev.mmproj_path,
+        working_dir: prev.working_dir,
       }));
       setActivePreset(name);
       setShowPresetMenu(false);
@@ -386,7 +542,7 @@ export default function Server() {
 
   const saveAsDefaults = async () => {
     try {
-      const presetConfig = { ...config, model_path: "", mmproj_path: null };
+      const presetConfig = { ...config, model_path: "", mmproj_path: null, working_dir: null };
       await invoke("save_server_preset", { name: "__default__", config: presetConfig });
       setActivePreset(null);
       setShowPresetMenu(false);
@@ -399,7 +555,8 @@ export default function Server() {
     } catch {}
     const modelPath = config.model_path;
     const mmproj = config.mmproj_path;
-    setConfig({ ...DEFAULT_CONFIG, model_path: modelPath, mmproj_path: mmproj });
+    const workingDir = config.working_dir;
+    setConfig({ ...DEFAULT_CONFIG, model_path: modelPath, mmproj_path: mmproj, working_dir: workingDir });
     setActivePreset(null);
     setShowPresetMenu(false);
   };
@@ -407,11 +564,12 @@ export default function Server() {
   const loadDefaults = async () => {
     try {
       const loaded = await invoke<ServerConfig>("load_server_preset", { name: "__default__" });
-      if (loaded.extra_params) loaded.extra_params = migrateExtraParams(loaded.extra_params);
+      if (loaded.extra_params) loaded.extra_params = sanitizeTools(migrateExtraParams(loaded.extra_params));
       setConfig((prev) => ({
         ...loaded,
         model_path: prev.model_path,
         mmproj_path: prev.mmproj_path,
+        working_dir: prev.working_dir,
       }));
     } catch {
       // No saved defaults — use built-in defaults
@@ -427,25 +585,21 @@ export default function Server() {
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
-  const openChat = async () => {
-    if (status.type !== "running") return;
-    setOpeningChat(true);
-    try { await invoke("open_chat_window", { port: status.port }); }
-    catch (e) { setError(String(e)); }
-    finally { setOpeningChat(false); }
-  };
-
   const loadData = async () => {
     const [mdls, srv, cfg] = await Promise.all([
       invoke<ModelInfo[]>("list_installed_models").catch(() => []),
       invoke<ServerStatus>("get_server_status").catch(() => ({ type: "stopped" as const })),
-      invoke<{ favorite_models: string[]; selected_model: string | null; model_presets: Record<string, string> }>(
+      invoke<{ favorite_models: string[]; selected_model: string | null; model_presets: Record<string, string>; server_working_dir: string | null }>(
         "get_config"
-      ).catch(() => ({ favorite_models: [] as string[], selected_model: null, model_presets: {} as Record<string, string> })),
+      ).catch(() => ({ favorite_models: [] as string[], selected_model: null, model_presets: {} as Record<string, string>, server_working_dir: null })),
     ]);
     setFavorites(cfg.favorite_models);
     setModels(mdls);
     setStatus(srv);
+    // Restore the persisted server working directory
+    if (cfg.server_working_dir && !config.working_dir) {
+      setConfig((c) => ({ ...c, working_dir: cfg.server_working_dir }));
+    }
     if (mdls.length > 0 && !config.model_path) {
       // Use the dashboard-selected model if set, otherwise first model
       const selected = cfg.selected_model
@@ -673,8 +827,8 @@ export default function Server() {
                 <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />
                 Running on port {status.port}
               </span>
-              <button className="btn-secondary text-xs" onClick={openChat} disabled={openingChat}>
-                <ExternalLink size={13} /> Open Chat
+              <button className="btn-secondary text-xs" onClick={() => navigate("/chat")}>
+                <MessagesSquare size={13} /> Open Chat
               </button>
             </>
           )}
@@ -695,12 +849,15 @@ export default function Server() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-5">
-        {error && (
+      {error && (
+        <div className="px-6 pt-4">
           <div className="card border-accent-red/30 bg-accent-red/5">
             <p className="text-sm text-accent-red">{error}</p>
           </div>
-        )}
+        </div>
+      )}
+
+      <div className="px-6 pt-4">
 
         {/* Model selection */}
         <div className="card">
@@ -776,6 +933,11 @@ export default function Server() {
             );
           })()}
         </div>
+      </div>
+
+      <div className="flex-1 overflow-hidden flex gap-5 p-6 min-h-0">
+        {/* Left column: memory estimate, server logs */}
+        <div className="w-[450px] shrink-0 overflow-hidden flex flex-col gap-5 pr-2">
 
         {/* Memory estimate */}
         {config.model_path && (
@@ -791,7 +953,7 @@ export default function Server() {
         )}
 
         {/* Server logs */}
-        <div className="card">
+        <div className="card flex flex-col min-h-0 flex-1">
           <button className="w-full flex items-center justify-between" onClick={() => setShowLogs(!showLogs)}>
             <div className="flex items-center gap-2">
               <Terminal size={15} className="text-gray-400" />
@@ -801,7 +963,7 @@ export default function Server() {
             {showLogs ? <ChevronUp size={14} className="text-gray-500" /> : <ChevronDown size={14} className="text-gray-500" />}
           </button>
           {showLogs && (
-            <div ref={logsRef} className="mt-3 bg-surface-0 p-3 h-48 overflow-y-auto font-mono text-xs text-gray-400 space-y-0.5 select-text">
+            <div ref={logsRef} className="mt-3 bg-surface-0 p-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden font-mono text-xs text-gray-400 space-y-0.5 select-text whitespace-pre-wrap break-words">
               {logs.length === 0 ? (
                 <span className="text-gray-600">No logs yet…</span>
               ) : logs.map((line, i) => (
@@ -813,10 +975,14 @@ export default function Server() {
               ))}
             </div>
           )}
+          </div>
         </div>
 
+        {/* Right column: configuration */}
+        <div className="flex-1 min-w-0 overflow-y-auto space-y-5 pr-2">
+
         {/* Tab bar */}
-        <div className="flex border-b border-border -mb-3">
+        <div className="flex border-b border-border mb-3">
           {TABS.map((tab) => (
             <button key={tab}
               className={`px-4 py-2 text-xs font-medium transition-colors ${
@@ -828,11 +994,37 @@ export default function Server() {
           ))}
         </div>
 
+        {/* Settings search */}
+        <div className="relative mb-3">
+          <Search size={14} className="absolute left-2.5 top-2.5 text-gray-500 pointer-events-none" />
+          <input ref={searchInputRef} type="search" value={query}
+            placeholder="Search settings — e.g. temperature, GPU layers, tools, context…"
+            className="input pl-8 text-xs"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onSearchKeyDown}
+            onFocus={() => { if (query.trim()) setShowResults(true); }} />
+          {showResults && (
+            <div className="absolute z-20 mt-1 w-full bg-surface-1 border border-border rounded-md shadow-xl max-h-72 overflow-y-auto">
+              {matches.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-gray-600">No settings match “{query.trim()}”</div>
+              ) : matches.slice(0, 30).map((m, i) => (
+                <button key={`${m.tab}:${i}`}
+                  className={`w-full text-left px-3 py-2 flex items-baseline justify-between gap-2 ${i === searchIdx ? "bg-surface-3" : ""}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => goToMatch(m)}>
+                  <span className="text-xs text-gray-200 truncate">{m.text}</span>
+                  <span className="text-[10px] uppercase text-gray-500 shrink-0">{m.tab}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Tab content */}
-        <div className="card space-y-4">
+        <div ref={settingsRef} className="card space-y-4">
 
           {/* ════════════════════════ CONTEXT ════════════════════════ */}
-          {activeTab === "Context" && <>
+          <div data-tab="Context" className="space-y-4" style={{ display: activeTab === "Context" ? undefined : "none" }}>
             <Section title="Context & Prediction" />
             {(() => {
               const selectedModel = models.find((m) => m.path === config.model_path);
@@ -909,10 +1101,10 @@ export default function Server() {
               <NumberInput label="Checkpoint Interval" hint="Checkpoint every N tokens (-1=disable, default: 8192)" value={getEpNum("checkpoint-every-n-tokens")}
                 onChange={(v) => setEpNum("checkpoint-every-n-tokens", v)} />
             </div>
-          </>}
+          </div>
 
           {/* ════════════════════════ HARDWARE ════════════════════════ */}
-          {activeTab === "Hardware" && <>
+          <div data-tab="Hardware" className="space-y-4" style={{ display: activeTab === "Hardware" ? undefined : "none" }}>
             <Section title="GPU" />
             <div className="grid grid-cols-2 gap-3">
               <NumberInput label="GPU Layers" hint="-1 = all on GPU, 0 = CPU only" value={config.n_gpu_layers} min={-1}
@@ -976,10 +1168,10 @@ export default function Server() {
               <TextInput label="Override KV" hint="KEY=TYPE:VALUE,... e.g. tokenizer.ggml.add_bos_token=bool:false" value={getEp("override-kv")}
                 onChange={(v) => setEp("override-kv", v)} />
             </div>
-          </>}
+          </div>
 
           {/* ════════════════════════ SAMPLING ════════════════════════ */}
-          {activeTab === "Sampling" && <>
+          <div data-tab="Sampling" className="space-y-4" style={{ display: activeTab === "Sampling" ? undefined : "none" }}>
             <Section title="Basic" />
             <Slider label="Temperature" hint="Higher = more creative" value={config.temperature} min={0} max={2} step={0.01}
               onChange={(v) => setConfig((c) => ({ ...c, temperature: v }))} format={(v) => v.toFixed(2)} />
@@ -1069,10 +1261,10 @@ export default function Server() {
               <Toggle label="Ignore EOS" hint="Continue generating past end-of-stream" checked={hasFlag("ignore-eos")} onChange={(v) => setFlag("ignore-eos", v)} />
               <Toggle label="Backend Sampling" hint="Experimental backend sampling" checked={hasFlag("backend-sampling")} onChange={(v) => setFlag("backend-sampling", v)} />
             </div>
-          </>}
+          </div>
 
           {/* ════════════════════════ SERVER ════════════════════════ */}
-          {activeTab === "Server" && <>
+          <div data-tab="Server" className="space-y-4" style={{ display: activeTab === "Server" ? undefined : "none" }}>
             <Section title="Network" />
             <div className="grid grid-cols-2 gap-3">
               <TextInput label="Host" value={config.host} onChange={(v) => setConfig((c) => ({ ...c, host: v }))} />
@@ -1121,8 +1313,40 @@ export default function Server() {
               <Toggle label="Warmup" hint="Perform warmup run on start (default: on)" checked={!hasFlag("no-warmup")} onChange={(v) => setFlag("no-warmup", !v)} />
             </div>
             <div className="grid grid-cols-1 gap-3 mt-2">
-              <TextInput label="Tools (EXPERIMENTAL)" hint="Built-in tools to enable: read_file, file_glob_search, grep_search, exec_shell_command, write_file, edit_file, apply_diff, or 'all'"
-                value={getEp("tools")} onChange={(v) => setEp("tools", v)} />
+              <div>
+                <label className="label">File Tools</label>
+                <p className="text-xs text-gray-600 mb-1">
+                  Built-in tools the LLM can use. Everything off keeps file access disabled.
+                  Enabling tools restricts CORS to localhost and is experimental.
+                </p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                  {KNOWN_TOOLS.filter((t) => !t.dangerous).map((t) => (
+                    <Toggle key={t.name} label={t.label} hint={t.hint}
+                      checked={effectiveTools(getEp("tools")).has(t.name)}
+                      onChange={(on) => setTool(t.name, on)} />
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="label">Dangerous</label>
+                <div className="space-y-3">
+                  {KNOWN_TOOLS.filter((t) => t.dangerous).map((t) => (
+                    <Toggle key={t.name} label={t.label} hint={t.hint}
+                      checked={effectiveTools(getEp("tools")).has(t.name)}
+                      onChange={(on) => {
+                        if (on && !window.confirm(
+                          "Shell Command lets the model execute arbitrary commands on your " +
+                          "computer with your user's permissions. Continue?")) return;
+                        setTool(t.name, on);
+                      }} />
+                  ))}
+                </div>
+              </div>
+              {effectiveTools(getEp("tools")).size > 0 && (
+                <p className="text-xs text-gray-600">
+                  Passing: <code className="font-mono text-gray-300">--tools {toolsArgValue(getEp("tools"))}</code>
+                </p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
               <TextInput label="Embedding Separator" hint="Separator between embeddings (default: \\n)" value={getEp("embd-separator")}
@@ -1149,10 +1373,10 @@ export default function Server() {
               <TextInput label="WebUI Config File" hint="JSON file providing default WebUI settings" value={getEp("webui-config-file")}
                 onChange={(v) => setEp("webui-config-file", v)} />
             </div>
-          </>}
+          </div>
 
           {/* ════════════════════════ CHAT ════════════════════════ */}
-          {activeTab === "Chat" && <>
+          <div data-tab="Chat" className="space-y-4" style={{ display: activeTab === "Chat" ? undefined : "none" }}>
             <Section title="Chat Template" />
             <div className="grid grid-cols-1 gap-3">
               <TextInput label="Chat Template" hint="Jinja template name or inline template" value={getEp("chat-template")}
@@ -1196,10 +1420,10 @@ export default function Server() {
                 options={[{ value: "", label: "Model default" }, { value: "none", label: "None" }, { value: "mean", label: "Mean" }, { value: "cls", label: "CLS" }, { value: "last", label: "Last" }, { value: "rank", label: "Rank" }]}
                 onChange={(v) => setEp("pooling", v)} />
             </div>
-          </>}
+          </div>
 
           {/* ════════════════════════ ADVANCED ════════════════════════ */}
-          {activeTab === "Advanced" && <>
+          <div data-tab="Advanced" className="space-y-4" style={{ display: activeTab === "Advanced" ? undefined : "none" }}>
             <Section title="RoPE" />
             <div className="grid grid-cols-2 gap-3">
               <SelectInput label="RoPE Scaling" value={getEp("rope-scaling") || ""}
@@ -1388,6 +1612,17 @@ export default function Server() {
                 onChange={(v) => setEp("profile-output", v)} />
             </div>
 
+            <Section title="Files & Tools" />
+            <div className="grid grid-cols-1 gap-3">
+              <WorkingDirInput value={config.working_dir ?? ""} onApply={setWorkingDir} />
+              <p className="text-xs text-gray-600 -mt-1">
+                Directory where the LLM's file tools create and modify files. Defaults to Catapult's own
+                directory when empty. This is a <em>default working directory, not a sandbox</em> — the
+                server process can still read and write anywhere your user can. Enable the tools themselves
+                via <em>Tools (EXPERIMENTAL)</em> in the Server tab.
+              </p>
+            </div>
+
             <Section title="Extra Arguments" />
             <div>
               <label className="label">Raw CLI Arguments</label>
@@ -1398,7 +1633,8 @@ export default function Server() {
                 value={getEp("__raw__")} placeholder="e.g. --reverse-prompt '### Human:'"
                 onChange={(e) => setEp("__raw__", e.target.value)} />
             </div>
-          </>}
+          </div>
+        </div>
         </div>
       </div>
     </div>
