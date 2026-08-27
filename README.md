@@ -6,6 +6,11 @@ A Tauri v2 desktop application (Rust backend + React/TypeScript frontend):
 
 <img width="1280" height="808" alt="catapult-ui" src="https://github.com/user-attachments/assets/a39fa2ae-d289-4bdd-a335-2d083666956c" />
 
+## About this fork
+
+> [!NOTE]
+> This repository is a fork of [pwilkin/catapult](https://github.com/pwilkin/catapult) with various changes. It continues development as a maintained GUI launcher for llama.cpp; see the [changelog](CHANGELOG.md) for what has changed from upstream.
+
 ## Features
 
 **Runtime Management**

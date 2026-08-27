@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0] - 2026-08-28
+
+### Added
+
+- **Working directory option**: Server launches now run `llama-server` with a configurable working directory — the CWD your model's built-in tools (`read_file`, `file_glob_search`, `grep_search`, …) operate in. Stored per-app in `AppConfig` and auto-applied on load, it can be overridden per session from the Advanced tab. It's a default directory, not a sandbox: write-access prompts are still handled by llama.cpp's WebUI.
+- **Settings search bar**: A search box under the Run page tab bar finds any setting across all six tabs (Context, Hardware, Sampling, Server, Chat, Advanced), jumps to the match with a highlight, and supports keyboard navigation (arrows + Enter, Escape to close).
+- **Built-in tool picker**: The Advanced tab now offers a checkbox list of llama.cpp's built-in tools with a live canonical `--tools` argument preview. Only tools available across current llama.cpp builds are listed; `exec_shell_command` requires an explicit confirmation before it can be enabled.
+- **Tool gating tests**: 14 unit tests for the tool set normalization, argument collapsing, and sanitization (`src/pages/Server.tools.test.ts`).
+
+### Changed
+
+- **Run page layout**: Two-column layout — the model selector sits above both columns, server configuration tabs occupy the right (larger) column, and Memory Estimate + Server Logs live in a fixed left column. Logs stretch to the window height and long lines now wrap instead of scrolling horizontally.
+- **Single embedded chat**: Removed the separate "Pop out" chat window. "Open Chat" now navigates to the embedded Chat tab, giving one WebUI instance instead of two independent browser contexts. Chat history and settings persist in the webview's localStorage per `host:port` — changing the server port starts a fresh origin.
+
+### Fixed
+
+- **`tools setup failed: unknown tool` on server start**: Stored tool lists that included build-specific tools (`get_datetime`, `apply_diff`) made llama-server exit(1). Tool names are now restricted to the stable set and stale values are sanitized whenever a session, preset, or default config is loaded.
+- **"Cannot parse build number" on runtime updates**: GitHub release listing now fetches enough entries and tolerates semver-style (`v0.2.x`) release tags, so newer llama.cpp builds are detected and installed correctly.
+
 ## [0.1.6] - 2026-08-14
 
 ### Added

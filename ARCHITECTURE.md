@@ -6,7 +6,7 @@ Catapult is a Tauri v2 desktop application serving as a launcher for [llama.cpp]
 
 ```
 catapult/
-├── src-tauri/src/           # Rust backend (~4,300 LOC)
+├── src-tauri/src/           # Rust backend (~5,900 LOC)
 │   ├── lib.rs               # Tauri command registration, AppState, IPC handlers
 │   ├── config.rs            # AppConfig persistence, runtime/model types
 │   ├── hardware.rs          # CPU/RAM/GPU detection, backend scoring, config suggestions
@@ -15,14 +15,16 @@ catapult/
 │   ├── server.rs            # ServerConfig, process spawn/kill, CLI arg builder
 │   ├── huggingface.rs       # HF API search, recommended models, quant extraction, presets.ini fetch
 │   └── main.rs              # Entry point
-├── src/                     # React/TypeScript frontend (4,400+ LOC)
+├── src/                     # React/TypeScript frontend (~5,750 LOC)
 │   ├── App.tsx              # Router (wizard + main layout)
 │   ├── main.tsx             # React entry
 │   ├── pages/
 │   │   ├── Dashboard.tsx    # System overview, quick launch, favorite models
 │   │   ├── Runtime.tsx      # Managed/custom runtime management, downloads
 │   │   ├── Models.tsx       # Model browser, search, columnar list, directories
-│   │   ├── Server.tsx       # Tabbed server configuration, presets, logs
+│   │   ├── Server.tsx       # Two-column Run page: model, tabs+search, memory/logs
+│   │   ├── Server.tools.test.ts  # Tool set normalization/sanitization tests
+│   │   ├── Server.migrate.test.ts # extra_params migration tests
 │   │   ├── Chat.tsx         # Embedded llama.cpp WebUI iframe
 │   │   └── Wizard.tsx       # First-launch setup (runtime + model selection)
 │   ├── components/
@@ -33,12 +35,12 @@ catapult/
 │   └── styles/globals.css   # Tailwind component classes
 └── tests
     ├── (Rust)               # Unit tests in #[cfg(test)] modules
-    └── src/utils/format.test.ts  # Vitest unit tests
+    └── src/*/*.test.ts      # Vitest unit tests (format, tools, migration, components)
 ```
 
 ## IPC pattern
 
-All filesystem, network, and process operations live in Rust. The frontend calls `invoke()` for request/response and `listen()` for streaming events. There are 49 registered Tauri commands spanning hardware detection, runtime management, model operations, server control, configuration, presets, and per-model preset memory.
+All filesystem, network, and process operations live in Rust. The frontend calls `invoke()` for request/response and `listen()` for streaming events. There are 51 registered Tauri commands spanning hardware detection, runtime management, model operations, server control, configuration, presets, and per-model preset memory.
 
 **Events:**
 - `download_progress` (DownloadProgress) — streamed during runtime and model downloads
@@ -116,7 +118,9 @@ Models tagged as vision-capable are paired with compatible mmproj files found in
 ## Server configuration
 
 ### ServerConfig
-Core typed fields: model path, mmproj path, host, port, context size, GPU layers, threads, flash attention mode, KV cache types, sampling parameters (temperature, top-k/p, min-p, seed), batch sizes, memory flags (mlock, mmap), RoPE parameters, parallel slots.
+Core typed fields: model path, mmproj path, working directory, host, port, context size, GPU layers, threads, flash attention mode, KV cache types, sampling parameters (temperature, top-k/p, min-p, seed), batch sizes, memory flags (mlock, mmap), RoPE parameters, parallel slots.
+
+The `working_dir` field sets the default working directory (`current_dir`) for the spawned `llama-server` process — the CWD its built-in tools operate in. It is a default directory, not a sandbox. Persisted app-wide via `AppConfig.server_working_dir` (`set_server_working_dir` command), seeded into the session when unset, and excluded from presets (per-session, like model path).
 
 The Advanced tab covers an extended set of parameters including: MoE CPU offloading (`cpu-moe`, `n-cpu-moe`), weight repacking (`no-repack`), host tensor offload (`no-op-offload`), device bypass (`no-host`), memory auto-fitting (`--fit`, `--fit-margin`, `--fit-ctx`), KV unified buffer (`kv-unified`), N-gram speculation (`spec-ngram-size-n/m`, `spec-ngram-min-hits`), lookup cache files, draft model threading/device params, built-in tools (`tools`), embedding/classification separators, WebUI config overrides, and `reuse-port`.
 
@@ -127,11 +131,19 @@ All additional llama-server parameters are stored in `extra_params: HashMap<Stri
 - Special key `__raw__` holds free-form CLI arguments split by whitespace
 - The `mmproj` key is filtered from extra_params (handled as a typed field)
 
+**Built-in tool picker**: The `tools` key is managed through a checkbox list limited to the tool set available across current llama.cpp builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`). `toolsArgValue` canonicalizes the selection — empty means `--tools` is omitted, the full set collapses to `all`, otherwise a sorted CSV. On every config load path, `sanitizeTools` drops unsupported names, preventing `--tools` from referencing a tool the installed build lacks (which would make llama-server exit with `unknown tool`). `exec_shell_command` requires an explicit confirmation in the UI before it can be enabled.
+
 ### Tabbed UI
-Parameters are organized into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. The Advanced tab includes sub-sections for RoPE, speculative decoding, LoRA/control vectors, multimodal, CPU affinity, logging, and a raw arguments text field.
+Parameters are organized into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. The Advanced tab includes sub-sections for RoPE, speculative decoding, LoRA/control vectors, multimodal, CPU affinity, logging, the working directory, the built-in tool picker, and a raw arguments text field.
+
+### Run page layout
+The Run page is a two-column split:
+- **Top, full-width**: the model selector card with favorites, Auto-estimate, and the server controls (Launch/Stop, Open Chat).
+- **Left column (fixed 450px)**: Memory Estimate visualizer and Server Logs. Logs flex-stretch to the window height (`flex-1 min-h-0`), long lines wrap (`whitespace-pre-wrap break-words`, no horizontal scrollbar), and new output auto-scrolls into view.
+- **Right column (flexible)**: the tab bar, the settings search bar, and the active tab's config card. All six tabs stay mounted (`display:none` wrappers tagged with `data-tab`), which lets the search index settings across every tab via a DOM scan of `label`/`font-medium` toggle labels/`font-semibold` section titles; results jump to the field with a highlight.
 
 ### Presets
-Server configurations are saved as JSON files in `{data_dir}/catapult/presets/`. A special `__default__` preset stores user-customized defaults. Model path and mmproj path are excluded from presets (they're per-session). Loading a preset preserves the current model selection.
+Server configurations are saved as JSON files in `{data_dir}/catapult/presets/`. A special `__default__` preset stores user-customized defaults. Model path, mmproj path, and working directory are excluded from presets (per-session); loading a preset preserves the current model selection, projector, and working directory.
 
 **Per-model preset memory**: Each model can have a last-used preset associated with it. This association is stored in `AppConfig.model_presets` (`HashMap<String, String>`, keyed by model file path). When a model is selected, its saved preset is auto-loaded. When a preset is applied and a server is started, the model→preset association is persisted. Two new Tauri commands support this: `get_model_preset` and `set_model_preset`.
 
@@ -141,7 +153,7 @@ Server configurations are saved as JSON files in `{data_dir}/catapult/presets/`.
 Server configuration, active preset, and active tab are persisted to `sessionStorage` across page navigation within the same session. On initial load, state is restored from sessionStorage with fallback to saved defaults.
 
 ### Model selection (GUI)
-- The model list in the Run page is collapsible (shows selected model name when collapsed)
+- The model selector is a full-width card above the two-column split; the list is collapsible (shows the selected model name when collapsed)
 - Models are sorted with favorites first; vision models display an eye icon
 - Selecting a model checks for a saved preset (`get_model_preset`); if found, the preset is loaded instead of hardware suggestions. Otherwise, auto-applies suggested hardware settings (n_ctx, n_gpu_layers) without overriding user preferences
 
@@ -165,7 +177,9 @@ Controlled by `wizard_completed` in AppConfig. Skippable at any time. Re-runnabl
 
 ## Chat
 
-The Chat page embeds llama.cpp's built-in WebUI in an `<iframe>` pointing at `http://127.0.0.1:{port}`. A "Pop out" button opens it in a separate Tauri window. The CSP in `tauri.conf.json` allows scripts, styles, connections, and WebSocket from `http://127.0.0.1:*` and `http://localhost:*` to support the embedded SvelteKit app.
+The Chat page embeds llama.cpp's built-in WebUI in an `<iframe>` pointing at `http://127.0.0.1:{port}`. It is the single chat surface — "Open Chat" on the Run page navigates to it, and there is no separate chat window. The CSP in `tauri.conf.json` allows scripts, styles, connections, and WebSocket from `http://127.0.0.1:*` and `http://localhost:*` to support the embedded WebUI.
+
+The iframe element is module-scoped in `Chat.tsx` and kept alive across route transitions, so the WebUI document (and its in-progress conversation) survives tab switching. The WebUI persists chat history and settings in the webview's `localStorage`, keyed by origin — which is `http://127.0.0.1:{port}`, so saved chats are per-port; changing the server port starts from a fresh origin.
 
 ## Styling
 - Tailwind CSS with a dark theme (custom colors via `tailwind.config.js`)
@@ -177,6 +191,6 @@ The Chat page embeds llama.cpp's built-in WebUI in an `<iframe>` pointing at `ht
 
 ## Testing
 
-- **Rust:** `cargo test` — 109 unit tests in `#[cfg(test)]` modules covering asset scoring, backend detection, CLI arg building, quant extraction, size estimation, filename parsing, GGUF parsing, hardware config suggestions, split file parsing, imatrix detection, split model consolidation, `presets.ini` parsing, `apply_hf_preset_params`, preset name derivation, and `AppConfig.model_presets` round-tripping.
-- **TypeScript:** `npm test` (Vitest) — 34 utility function tests for CPU/GPU name shortening, size formatting, quant color/sort mapping, imatrix detection, and MXFP quant handling
+- **Rust:** `cargo test` — 120 unit tests in `#[cfg(test)]` modules covering asset scoring, backend detection, CLI arg building, quant extraction, size estimation, filename parsing, GGUF parsing, hardware config suggestions, split file parsing, imatrix detection, split model consolidation, `presets.ini` parsing, `apply_hf_preset_params`, preset name derivation, `AppConfig.model_presets` round-tripping, release-tag parsing, and the working-directory config round-trip.
+- **TypeScript:** `npm test` (Vitest) — 67 tests: formatting utilities for CPU/GPU name shortening, size formatting, quant color/sort mapping, imatrix detection, MXFP quant handling, PreferredOwners UI, `extra_params` migration, and tool-set normalization/sanitization.
 - Tests caught a real bug: `noavx` backend detection was unreachable due to `contains("avx")` matching first

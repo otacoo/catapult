@@ -27,10 +27,10 @@ npx tsc --noEmit
 # Check Rust
 cargo check --manifest-path src-tauri/Cargo.toml
 
-# Run Rust tests (109 tests)
+# Run Rust tests (120 tests)
 cargo test --manifest-path src-tauri/Cargo.toml
 
-# Run frontend tests (34 tests via Vitest)
+# Run frontend tests (67 tests via Vitest)
 npm test
 
 # Watch mode for frontend tests
@@ -40,7 +40,7 @@ npm run test:watch
 ## Architecture
 
 ### IPC pattern
-All file system, network, and process operations live in Rust. The frontend only calls `invoke()` commands and listens for events. No Tauri plugins needed for these; they go through the Rust backend. There are 47 registered Tauri commands.
+All file system, network, and process operations live in Rust. The frontend only calls `invoke()` commands and listens for events. No Tauri plugins needed for these; they go through the Rust backend. There are 51 registered Tauri commands.
 
 ### Rust backend (`src-tauri/src/`)
 - `lib.rs` — registers all Tauri commands, owns `AppState`, CLI flag handling (`--force-wizard`)
@@ -56,7 +56,7 @@ All file system, network, and process operations live in Rust. The frontend only
 - Pages: Wizard (first-launch) → Dashboard → Runtime → Models → Server → Chat
 - `src/types/index.ts` mirrors all Rust `#[derive(Serialize, Deserialize)]` structs — **keep in sync manually**
 - `src/utils/format.ts` — shared formatting utilities (sizes, CPU/GPU name shortening, quant colors)
-- Chat page embeds the llama.cpp WebUI in an `<iframe>` pointing at `http://127.0.0.1:{port}`
+- Chat page embeds the llama.cpp WebUI in an `<iframe>` pointing at `http://127.0.0.1:{port}` — single chat surface, no separate chat window. The iframe is module-scoped and stays alive across route changes; WebUI state persists in localStorage per `host:port` (port change = fresh origin).
 - Events: `download_progress` (DownloadProgress), `server_log` (string)
 
 ### Data dirs (cross-platform via `dirs` crate)
@@ -71,6 +71,7 @@ All file system, network, and process operations live in Rust. The frontend only
 - **Managed runtimes**: Downloaded from GitHub in versioned subdirectories (`runtimes/b5000-cuda/`). Multiple versions coexist; one is active. Old versions optionally auto-deleted.
 - **Custom runtimes**: User-pointed directories scanned recursively. Multiple can be registered.
 - Active runtime switched via `set_active_runtime` command.
+- Release fetching requests `per_page=100` and tolerates semver-style (`v0.2.x`) tags; `parse_build_tag` handles both `b{num}` and `v{num}` forms.
 
 ### Asset scoring (runtime.rs `score_asset`)
 CUDA=100, Metal=95, ROCm=90, Vulkan=70, SYCL=60, CPU AVX-512=30, CPU AVX2=25. Unavailable backends penalized by -200.
@@ -79,7 +80,9 @@ CUDA=100, Metal=95, ROCm=90, Vulkan=70, SYCL=60, CPU AVX-512=30, CPU AVX2=25. Un
 `server.rs::start_server` spawns `llama-server` with `kill_on_drop(true)`. Child stored in `ServerState` (Mutex). Exit monitored via `try_wait()` polling. Stop sends SIGTERM, waits 30s, then SIGKILL. Full command line stored as first log entry.
 
 ### Server configuration
-Core typed fields (model, host, port, context, GPU layers, sampling, etc.) plus `extra_params: HashMap<String, String>` for all additional llama-server flags. Frontend organizes into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. Presets saved as JSON files; `__default__` preset stores user defaults. Model path and mmproj excluded from presets.
+Core typed fields (model, host, port, context, GPU layers, sampling, etc.) plus `extra_params: HashMap<String, String>` for all additional llama-server flags. Frontend organizes into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. Presets saved as JSON files; `__default__` preset stores user defaults. Model path, mmproj, and working directory excluded from presets (per-session; working dir persisted app-wide via `AppConfig.server_working_dir`).
+
+Run page is a two-column split: full-width model selector on top, config tabs + settings search bar on the right, Memory Estimate + Server Logs on the left. Logs flex-stretch to the window height; a search bar under the tab bar indexes every tab via DOM scan and jumps with a highlight.
 
 ### Model management
 - Multiple GGUF directories scanned recursively with deduplication
@@ -96,7 +99,8 @@ Core typed fields (model, host, port, context, GPU layers, sampling, etc.) plus 
 - `--flash-attn` takes a parameter: `on`, `off`, or `auto` (default: `auto`).
 - `--ctx-size 0` means "loaded from model" (the default).
 - `seed: Option<u64>` in Rust — the UI shows `-1` for random, maps to `None` (omits `--seed` flag).
-- Server presets exclude `model_path` and `mmproj_path` (per-session, not config).
+- Server presets exclude `model_path`, `mmproj_path`, and `working_dir` (per-session, not config).
+- Built-in tools are limited to the set supported across llama.cpp builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`); stale/unknown names in stored configs are dropped on load by `sanitizeTools` — passing an unsupported tool aborts llama-server. Full selection collapses to `tools=all`; `exec_shell_command` needs an explicit confirm.
 - The `__raw__` key in `extra_params` holds free-form CLI arguments split by whitespace.
 - GGUF metadata parsing is capped at 128 KV pairs and 1MB strings for safety.
 - Model download temp files use `__downloading__` prefix and are preserved for resume.
