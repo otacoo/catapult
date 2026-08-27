@@ -45,6 +45,10 @@ pub struct ServerConfig {
     pub grp_attn_w: Option<u32>,
     // Slots
     pub parallel: u32,
+    /// Working directory for the llama-server child process. Controls where the
+    /// LLM's file tools (read_file/write_file/...) create and modify files.
+    #[serde(default)]
+    pub working_dir: Option<String>,
     // Additional CLI parameters: key = flag name (without --), value = argument (empty for boolean flags)
     #[serde(default)]
     pub extra_params: HashMap<String, String>,
@@ -79,6 +83,7 @@ impl Default for ServerConfig {
             grp_attn_n: None,
             grp_attn_w: None,
             parallel: 1,
+            working_dir: None,
             extra_params: HashMap::new(),
         }
     }
@@ -225,6 +230,15 @@ pub async fn start_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    // Working directory for the server process — this is where the LLM's file
+    // tools (read_file/write_file/edit_file/exec_shell_command) resolve relative
+    // paths and create/modify files. Create it if it doesn't exist yet.
+    if let Some(dir) = config.working_dir.as_deref().filter(|d| !d.is_empty()) {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create working directory: {}", dir))?;
+        cmd.current_dir(dir);
+    }
     #[cfg(target_os = "windows")]
     {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW

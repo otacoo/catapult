@@ -85,6 +85,10 @@ pub struct AppConfig {
     /// Preferred GGUF source owners on HuggingFace, in priority order.
     #[serde(default)]
     pub preferred_owners: Vec<String>,
+    /// Working directory for the llama-server process (where the LLM's file
+    /// tools create and modify files). Persisted across sessions.
+    #[serde(default)]
+    pub server_working_dir: Option<String>,
 }
 
 impl AppConfig {
@@ -413,6 +417,7 @@ mod tests {
                 m
             },
             preferred_owners: vec!["bartowski".to_string(), "unsloth".to_string()],
+            server_working_dir: Some("E:/test".to_string()),
             ..Default::default()
         }
     }
@@ -465,6 +470,7 @@ mod tests {
         assert_eq!(restored.model_presets.get("/data/models/foo.gguf").map(|s| s.as_str()), Some("fast"));
         assert_eq!(restored.model_presets.get("/data/models/bar.gguf").map(|s| s.as_str()), Some("quality"));
         assert_eq!(restored.preferred_owners, vec!["bartowski", "unsloth"]);
+        assert_eq!(restored.server_working_dir.as_deref(), Some("E:/test"));
     }
 
     /// Legacy fields with skip_serializing must NOT appear in JSON output.

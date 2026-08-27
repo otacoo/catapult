@@ -174,6 +174,7 @@ export interface KnownOwner {
 export interface ServerConfig {
   model_path: string;
   mmproj_path: string | null;
+  working_dir: string | null;
   host: string;
   port: number;
   n_ctx: number;
@@ -248,4 +249,5 @@ export interface AppConfig {
   /** Maps model file path → last-used preset name */
   model_presets: Record<string, string>;
   preferred_owners: string[];
+  server_working_dir: string | null;
 }

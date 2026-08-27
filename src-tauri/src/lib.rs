@@ -664,6 +664,13 @@ async fn set_wizard_completed(completed: bool, state: State<'_, AppState>) -> Re
     config.save().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn set_server_working_dir(path: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.server_working_dir = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    config.save().map_err(|e| e.to_string())
+}
+
 // ── Server config presets ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -821,6 +828,7 @@ pub fn run() {
             toggle_favorite_model,
             set_selected_model,
             set_wizard_completed,
+            set_server_working_dir,
             // Server config presets
             list_server_presets,
             save_server_preset,
