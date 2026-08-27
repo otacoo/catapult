@@ -164,34 +164,55 @@ pub fn find_file_recursive(dir: &Path, name: &str, max_depth: u32) -> Option<Pat
     None
 }
 
+/// Parse a llama.cpp nightly build tag like "b10662" into its build number.
+/// Returns None for non-build tags (e.g. semver tags like "v0.3.0").
+fn parse_build_tag(tag: &str) -> Option<u32> {
+    let digits = tag.strip_prefix('b')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 pub async fn fetch_latest_release(
     client: &reqwest::Client,
     available_backend_ids: &[String],
     cuda_version: Option<&str>,
 ) -> Result<ReleaseInfo> {
-    let url = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
+    // llama.cpp tags binary nightly releases as "b<build>" (e.g. b10662), but
+    // now also publishes semver "stable" releases (v0.x.y) that carry no
+    // binaries. GitHub's "releases/latest" now points at the semver release,
+    // so we list releases and pick the newest b<build> nightly that ships
+    // binaries.
+    let url = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=100";
     let response = client
         .get(url)
         .header("User-Agent", "catapult-launcher/0.1")
         .header("Accept", "application/vnd.github.v3+json")
         .send()
         .await
-        .context("Failed to fetch GitHub release")?;
+        .context("Failed to fetch GitHub releases")?;
 
     if !response.status().is_success() {
         anyhow::bail!("GitHub API returned status {}", response.status());
     }
 
-    let release: GithubRelease = response.json().await.context("Failed to parse GitHub release JSON")?;
+    let releases: Vec<GithubRelease> = response
+        .json()
+        .await
+        .context("Failed to parse GitHub releases JSON")?;
+
+    let release = releases
+        .iter()
+        .find(|r| parse_build_tag(&r.tag_name).is_some())
+        .cloned()
+        .context("No nightly build release found on GitHub")?;
+
     parse_release(release, available_backend_ids, cuda_version)
 }
 
 fn parse_release(release: GithubRelease, available_backend_ids: &[String], cuda_version: Option<&str>) -> Result<ReleaseInfo> {
-    let build = release
-        .tag_name
-        .trim_start_matches('b')
-        .parse::<u32>()
-        .context("Cannot parse build number from tag")?;
+    let build = parse_build_tag(&release.tag_name).context("Cannot parse build number from tag")?;
 
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -350,10 +371,7 @@ pub async fn download_runtime(
     progress_cb: impl Fn(DownloadProgress),
 ) -> Result<DownloadedRuntime> {
     // Parse build number from tag
-    let build = tag_name
-        .trim_start_matches('b')
-        .parse::<u32>()
-        .context("Cannot parse build number from tag")?;
+    let build = parse_build_tag(tag_name).context("Cannot parse build number from tag")?;
 
     // Create versioned subdirectory
     let dir_name = format!("b{}-{}", build, asset.backend_id);
@@ -1225,5 +1243,23 @@ mod tests {
             "vulkan b3000 should NOT be auto-deleted");
         assert!(config.managed_runtimes.iter().any(|r| r.build == 5000 && r.backend_id == "cuda"),
             "new cuda b5000 should be present");
+    }
+
+    #[test]
+    fn parse_build_tag_accepts_build_tags() {
+        assert_eq!(parse_build_tag("b10662"), Some(10662));
+        assert_eq!(parse_build_tag("b1"), Some(1));
+    }
+
+    #[test]
+    fn parse_build_tag_rejects_non_build_tags() {
+        // semver tags used by llama.cpp stable releases
+        assert_eq!(parse_build_tag("v0.3.0"), None);
+        // malformed / unrelated tags
+        assert_eq!(parse_build_tag("b10abc"), None);
+        assert_eq!(parse_build_tag("bb5"), None);
+        assert_eq!(parse_build_tag("b"), None);
+        assert_eq!(parse_build_tag("10662"), None);
+        assert_eq!(parse_build_tag(""), None);
     }
 }
