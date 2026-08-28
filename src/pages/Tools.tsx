@@ -328,6 +328,16 @@ export default function Tools() {
             Saved to <code className="font-mono text-gray-400">{mcp.path}</code> (Cursor-compatible, editable by hand).
           </p>
         )}
+
+        {mcp?.path && (
+          <p className="text-xs text-gray-600 mt-2">
+            Windows note: commands that resolve to a <code className="font-mono text-gray-400">.cmd</code> /
+            <code className="font-mono text-gray-400">.bat</code> shim (e.g. <code className="font-mono text-gray-400">npx</code>) are
+            automatically wrapped through <code className="font-mono text-gray-400">cmd /c</code> at run time
+            (<code className="font-mono text-gray-400">mcp_effective.json</code>), because llama.cpp's process
+            spawner cannot launch script files directly. Real <code className="font-mono text-gray-400">.exe</code> commands are untouched.
+          </p>
+        )}
       </div>
     </div>
   );
