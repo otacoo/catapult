@@ -258,6 +258,15 @@ export interface AppConfig {
 /** UI theme preference: "system" follows the OS light/dark setting. */
 export type AppTheme = "system" | "dark" | "light" | "catapult";
 
+// ── Server tools (live from /tools) ─────────────────────────────────────────
+
+export interface ServerToolInfo {
+  name: string;
+  display_name: string;
+  type: string; // "server" | "mcp"
+  description: string;
+}
+
 // ── MCP servers ────────────────────────────────────────────────────────────────
 
 /** One MCP server as shown/edited on the Tools/MCP page (mirrors `mcp.rs`). */

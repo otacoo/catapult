@@ -516,11 +516,10 @@ async fn start_server(
     // session config carried so stale/unsupported names can't abort startup.
     server::apply_global_tools(&mut config, &app_config.server_tools);
 
-    // MCP servers configured in the Tools tab are attached at run time.
-    let mcp_config_path = mcp::load()
-        .ok()
-        .filter(|cfg| !cfg.servers.is_empty())
-        .and_then(|_| mcp::mcp_config_path().ok());
+    // MCP servers configured in the Tools tab are attached at run time. On
+    // Windows a runtime copy may be materialized so `.cmd`/`.bat` shims (e.g.
+    // `npx`) are wrapped through `cmd /c`, which CreateProcess cannot do.
+    let mcp_config_path = mcp::runtime_mcp_config_path().ok().flatten();
 
     let runtime_info = runtime::get_runtime_info(&app_config).map_err(|e| e.to_string())?;
     let server_binary = runtime_info
@@ -575,6 +574,26 @@ async fn get_server_info(state: State<'_, AppState>) -> Result<server::ServerInf
 #[tauri::command]
 async fn get_server_logs(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     Ok(state.server.lock().unwrap().log_lines.clone())
+}
+
+#[tauri::command]
+async fn get_server_tools(state: State<'_, AppState>) -> Result<Vec<server::ServerToolInfo>, String> {
+    let port = {
+        let s = state.server.lock().unwrap();
+        match &s.status {
+            ServerStatus::Running { port, .. } => *port,
+            ServerStatus::Starting => {
+                // Port is known even while starting; try to fetch tools
+                if let Some(cfg) = &s.config {
+                    cfg.port
+                } else {
+                    return Err("Server is starting, no port yet".to_string());
+                }
+            }
+            _ => return Err("Server is not running".to_string()),
+        }
+    };
+    server::fetch_server_tools(&state.http_client, port).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -844,6 +863,7 @@ pub fn run() {
             get_server_status,
             get_server_info,
             get_server_logs,
+            get_server_tools,
             suggest_server_config,
             estimate_model_memory,
             // Config

@@ -608,6 +608,43 @@ pub async fn fetch_server_info(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerToolInfo {
+    pub name: String,
+    pub display_name: String,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub description: String,
+}
+
+pub async fn fetch_server_tools(client: &reqwest::Client, port: u16) -> Result<Vec<ServerToolInfo>> {
+    let url = format!("http://127.0.0.1:{}/tools", port);
+    let resp = client.get(&url).send().await
+        .with_context(|| format!("Failed to fetch tools from {}", url))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Server returned {} for {}", resp.status(), url);
+    }
+    let json: serde_json::Value = resp.json().await
+        .context("Failed to parse /tools JSON")?;
+    let arr = json.as_array()
+        .ok_or_else(|| anyhow::anyhow!("/tools did not return an array"))?;
+    let mut out = Vec::new();
+    for v in arr {
+        let name = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if name.is_empty() { continue; }
+        let display_name = v.get("display_name").and_then(|x| x.as_str()).unwrap_or(&name).to_string();
+        let tool_type = v.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let description = v.get("definition")
+            .and_then(|d| d.get("function"))
+            .and_then(|f| f.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string();
+        out.push(ServerToolInfo { name, display_name, tool_type, description });
+    }
+    Ok(out)
+}
+
 /// Synchronous kill for use during app exit — sends SIGTERM/TerminateProcess
 /// and waits briefly for the process to exit.
 pub fn kill_server_sync(state: &SharedServerState) {
