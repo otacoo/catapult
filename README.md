@@ -9,7 +9,8 @@ A Tauri v2 desktop application (Rust backend + React/TypeScript frontend):
 ## About this fork
 
 > [!NOTE]
-> This repository is a fork of [pwilkin/catapult](https://github.com/pwilkin/catapult) with various changes. It continues development as a maintained GUI launcher for llama.cpp; see the [changelog](CHANGELOG.md) for what has changed from upstream.
+> This repository is a fork of [pwilkin/catapult](https://github.com/pwilkin/catapult) with various changes.\
+> It continues development as a maintained GUI launcher for llama.cpp; see the [changelog](CHANGELOG.md) for what has changed from upstream.
 
 ## Features
 
@@ -35,14 +36,16 @@ A Tauri v2 desktop application (Rust backend + React/TypeScript frontend):
 - **Auto-estimate**: one click suggests GPU offload, context size, and cache types that fit your hardware
 - **`--fit` support**: let llama-server automatically fit context and GPU layers to device memory
 - Context size slider (or auto = model default)
+- **Settings search**: a search bar indexes every tab and jumps to the matching parameter
+- **Working directory**: set the CWD that llama-server (and its built-in file tools) operate in
+- **Built-in tools**: enable llama.cpp's file tools (`read_file`, `grep_search`, …), gated `exec_shell_command`
 - Save and load named configuration presets; per-model preset memory (last-used preset auto-loads on model selection)
 - Auto-import `presets.ini` from HuggingFace repos on model download (sampling parameters applied as a named preset)
 - Process lifecycle management with log streaming and server logs view
 - One-click launch from the dashboard
 
 **Chat**
-- Embedded llama.cpp WebUI in-app via iframe (conversation persists when switching tabs)
-- Pop-out to a separate window
+- Single embedded chat: llama.cpp's WebUI runs in-app via iframe — conversation and settings persist across tab switches and app restarts (keyed by host:port)
 
 **API**
 - Dedicated API tab showing live connection details for the running server: OpenAI-compatible base URL, endpoints, model ID, context, slots, and API key — all copyable
@@ -64,7 +67,7 @@ Pre-built binaries for Linux, macOS (Universal), and Windows are available on th
 |----------|--------|
 | Linux    | AppImage, .deb |
 | macOS    | .dmg (Universal: Intel + Apple Silicon) |
-| Windows  | .msi |
+| Windows  | .msi, .nsis |
 
 ## Building from Source
 
@@ -123,7 +126,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation cove
 - **Backend:** Rust, Tauri v2, Tokio, Reqwest, Serde
 - **Frontend:** React, TypeScript, Vite, Tailwind CSS
 - **Testing:** Vitest (frontend), `#[cfg(test)]` modules (backend)
-- **CI:** GitHub Actions — tests on every push/PR, cross-platform builds on main/tags
+- **CI:** GitHub Actions — tests on every push/PR, signed draft releases on `v*` tags
 
 ## License
 
