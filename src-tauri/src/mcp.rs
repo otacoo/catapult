@@ -182,9 +182,9 @@ pub fn needs_cmd_wrapper(
     search.extend(dirs.iter().map(|d| d.as_path()));
     for dir in search {
         let base = dir.join(command);
-        if base.is_file() {
-            return false;
-        }
+        // Bare files without an extension (e.g. `C:\Program Files\nodejs\npx`)
+        // exist on some Node installs but are not directly executable via
+        // CreateProcess. Only PATHEXT-resolved probes determine wrapping.
         for ext in exts {
             let mut os = base.as_os_str().to_os_string();
             os.push(ext);
@@ -464,6 +464,20 @@ mod tests {
         // Explicit exe from a real dir is never wrapped.
         std::fs::write(dir.join("real.exe"), "").unwrap();
         assert!(!needs_cmd_wrapper("real", &exts(&[".EXE"]), &[dir.clone()], None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_file_without_extension_is_ignored() {
+        let dir = temp_dir("shim-bare");
+        std::fs::write(dir.join("npx"), "").unwrap(); // bare `npx` like Node's `C:\Program Files\nodejs\npx`
+        std::fs::write(dir.join("npx.cmd"), "").unwrap();
+        // Bare file must be ignored – the .CMD shim should still trigger wrapping.
+        assert!(needs_cmd_wrapper("npx", &exts(&[".EXE", ".CMD"]), &[dir.clone()], None));
+        // Also bare + .EXE should prefer .EXE (no wrap)
+        std::fs::write(dir.join("tool"), "").unwrap();
+        std::fs::write(dir.join("tool.exe"), "").unwrap();
+        assert!(!needs_cmd_wrapper("tool", &exts(&[".EXE", ".CMD"]), &[dir.clone()], None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
