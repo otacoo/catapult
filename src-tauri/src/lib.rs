@@ -646,6 +646,15 @@ async fn set_server_working_dir(path: Option<String>, state: State<'_, AppState>
     config.save().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn set_theme(theme: String, state: State<'_, AppState>) -> Result<(), String> {
+    let theme = crate::config::Theme::parse(&theme)
+        .ok_or_else(|| format!("Invalid theme: {theme}"))?;
+    let mut config = state.config.lock().unwrap();
+    config.theme = theme;
+    config.save().map_err(|e| e.to_string())
+}
+
 // ── Server config presets ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -803,6 +812,7 @@ pub fn run() {
             set_selected_model,
             set_wizard_completed,
             set_server_working_dir,
+            set_theme,
             // Server config presets
             list_server_presets,
             save_server_preset,

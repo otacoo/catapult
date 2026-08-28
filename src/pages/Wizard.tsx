@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -9,6 +9,8 @@ import {
   Cpu,
   MemoryStick,
   Monitor,
+  Moon,
+  Sun,
   Zap,
   Download,
   CheckCircle,
@@ -19,6 +21,7 @@ import {
 } from "lucide-react";
 import CatapultIcon from "../components/CatapultIcon";
 import WindowControls from "../components/WindowControls";
+import { THEME_OPTIONS, setThemePreference } from "../utils/theme";
 import type {
   SystemInfo,
   RuntimeInfo,
@@ -28,6 +31,8 @@ import type {
   DownloadProgress,
   CustomBuild,
   ScanResult,
+  AppConfig,
+  AppTheme,
 } from "../types";
 
 function mbToGb(mb: number): string {
@@ -105,15 +110,22 @@ export default function Wizard() {
   const [modelsError, setModelsError] = useState<Record<string, string>>({});
   const [downloading, setDownloading] = useState(false);
 
+  // Step 3 state
+  const [theme, setTheme] = useState<AppTheme>("system");
+
   // Load local info on mount (no network calls)
   useEffect(() => {
     const load = async () => {
-      const [sys, rt] = await Promise.all([
+      const [sys, rt, cfg] = await Promise.all([
         invoke<SystemInfo>("get_system_info").catch(() => null),
         invoke<RuntimeInfo>("get_runtime_info").catch(() => null),
+        invoke<AppConfig>("get_config")
+          .then((c) => c.theme)
+          .catch(() => "system" as const),
       ]);
       setSystem(sys);
       setRuntime(rt);
+      setTheme(cfg);
       if (rt?.installed) setRuntimeDone(true);
 
       try {
@@ -167,6 +179,14 @@ export default function Wizard() {
   const skip = async () => {
     await invoke("set_wizard_completed", { completed: true });
     navigate("/dashboard", { replace: true });
+  };
+
+  const changeTheme = async (t: AppTheme) => {
+    setThemePreference(t);
+    setTheme(t);
+    try {
+      await invoke("set_theme", { theme: t });
+    } catch {}
   };
 
   // ── Step 1: Runtime ──────────────────────────────────────────
@@ -334,25 +354,20 @@ export default function Wizard() {
         </div>
         <div className="relative z-10 flex items-center gap-4">
           <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span
-              className={`w-6 h-6 flex items-center justify-center border ${
-                step === 1
-                  ? "border-primary bg-primary/20 text-primary-light"
-                  : "border-border text-gray-400"
-              }`}
-            >
-              1
-            </span>
-            <span className="text-gray-600">—</span>
-            <span
-              className={`w-6 h-6 flex items-center justify-center border ${
-                step === 2
-                  ? "border-primary bg-primary/20 text-primary-light"
-                  : "border-border text-gray-400"
-              }`}
-            >
-              2
-            </span>
+            {[1, 2, 3].map((n, i) => (
+              <Fragment key={n}>
+                {i > 0 && <span className="text-gray-600">—</span>}
+                <span
+                  className={`w-6 h-6 flex items-center justify-center border ${
+                    step === n
+                      ? "border-primary bg-primary/20 text-primary-light"
+                      : "border-border text-gray-400"
+                  }`}
+                >
+                  {n}
+                </span>
+              </Fragment>
+            ))}
           </div>
           <button className="btn-ghost text-xs" onClick={skip}>
             Skip wizard
@@ -577,7 +592,7 @@ export default function Wizard() {
               </>
             )}
           </div>
-        ) : (
+        ) : step === 2 ? (
           /* ── Step 2: Models ─────────────────────────────── */
           <div className="max-w-2xl mx-auto space-y-6">
             <div>
@@ -706,6 +721,46 @@ export default function Wizard() {
               </button>
             )}
           </div>
+        ) : (
+          /* ── Step 3: Appearance ─────────────────────────── */
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div>
+              <h2 className="text-xl font-bold text-gray-100">Appearance</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Pick a look. Catapult is the default branded theme; System
+                follows your OS light/dark setting. This is a live preview.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {THEME_OPTIONS.map((opt) => {
+                const active = theme === opt.value;
+                const iconCls = active ? "text-primary-light" : "text-gray-500";
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => changeTheme(opt.value)}
+                    className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded border text-center transition-colors ${
+                      active
+                        ? "border-primary bg-primary/10 text-gray-200"
+                        : "border-border bg-surface-3 hover:bg-surface-4 text-gray-400"
+                    }`}
+                  >
+                    {opt.value === "system" && <Monitor size={18} className={iconCls} />}
+                    {opt.value === "dark" && <Moon size={18} className={iconCls} />}
+                    {opt.value === "light" && <Sun size={18} className={iconCls} />}
+                    {opt.value === "catapult" && (
+                      <CatapultIcon size={18} className={iconCls} />
+                    )}
+                    <span className="text-xs font-medium">{opt.label}</span>
+                    <span className="text-[10px] text-gray-500 leading-tight">
+                      {opt.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
 
@@ -731,13 +786,17 @@ export default function Wizard() {
               {runtimeDone ? "Next" : "Skip this step"}
               <ChevronRight size={14} />
             </button>
+          ) : step === 2 ? (
+            <button
+              className="btn-primary text-sm"
+              onClick={() => setStep(3)}
+            >
+              Next
+              <ChevronRight size={14} />
+            </button>
           ) : (
             <button className="btn-primary text-sm" onClick={finish}>
-              {allSelectedDone || downloading
-                ? "Finish"
-                : selectedModels.size === 0
-                ? "Finish without models"
-                : "Finish"}
+              Finish
             </button>
           )}
         </div>

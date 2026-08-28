@@ -38,6 +38,29 @@ pub enum ActiveRuntime {
 
 fn default_false() -> bool { false }
 
+/// UI theme preference. `System` follows the OS light/dark setting.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Dark,
+    Light,
+    Catapult,
+}
+
+impl Theme {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "system" => Some(Self::System),
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            "catapult" => Some(Self::Catapult),
+            _ => None,
+        }
+    }
+}
+
 // ── App config ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -89,6 +112,9 @@ pub struct AppConfig {
     /// tools create and modify files). Persisted across sessions.
     #[serde(default)]
     pub server_working_dir: Option<String>,
+    /// UI theme preference: system, dark, light, or the branded Catapult look.
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 impl AppConfig {
@@ -418,6 +444,7 @@ mod tests {
             },
             preferred_owners: vec!["bartowski".to_string(), "unsloth".to_string()],
             server_working_dir: Some("E:/test".to_string()),
+            theme: Theme::Light,
             ..Default::default()
         }
     }
@@ -471,6 +498,7 @@ mod tests {
         assert_eq!(restored.model_presets.get("/data/models/bar.gguf").map(|s| s.as_str()), Some("quality"));
         assert_eq!(restored.preferred_owners, vec!["bartowski", "unsloth"]);
         assert_eq!(restored.server_working_dir.as_deref(), Some("E:/test"));
+        assert_eq!(restored.theme, Theme::Light);
     }
 
     /// Legacy fields with skip_serializing must NOT appear in JSON output.

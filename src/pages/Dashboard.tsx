@@ -19,6 +19,8 @@ import {
   Eye,
   RefreshCw,
   ArrowUpCircle,
+  Moon,
+  Sun,
 } from "lucide-react";
 import type {
   SystemInfo,
@@ -27,9 +29,12 @@ import type {
   ServerStatus,
   ServerConfig,
   AppConfig,
+  AppTheme,
 } from "../types";
 
 import { mbToGb, shortCpuName, shortGpuName, quantColor } from "../utils/format";
+import { THEME_OPTIONS, setThemePreference } from "../utils/theme";
+import CatapultIcon from "../components/CatapultIcon";
 import Toggle from "../components/Toggle";
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -127,6 +132,14 @@ export default function Dashboard() {
       await invoke("set_auto_check_updates", { enabled });
       const cfg = await invoke<AppConfig>("get_config");
       setAppConfig(cfg);
+    } catch {}
+  };
+
+  const handleTheme = async (theme: AppTheme) => {
+    setThemePreference(theme);
+    setAppConfig((c) => (c ? { ...c, theme } : c));
+    try {
+      await invoke("set_theme", { theme });
     } catch {}
   };
 
@@ -512,6 +525,40 @@ export default function Dashboard() {
               <span className="text-xs text-accent-green">Up to date</span>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Appearance */}
+      <div className="card">
+        <h2 className="section-title mb-1">Appearance</h2>
+        <p className="section-desc">Choose how Catapult looks.</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {THEME_OPTIONS.map((opt) => {
+            const active = (appConfig?.theme ?? "system") === opt.value;
+            const iconCls = active ? "text-primary-light" : "text-gray-500";
+            return (
+              <button
+                key={opt.value}
+                onClick={() => handleTheme(opt.value)}
+                className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded border text-center transition-colors ${
+                  active
+                    ? "border-primary bg-primary/10 text-gray-200"
+                    : "border-border bg-surface-3 hover:bg-surface-4 text-gray-400"
+                }`}
+              >
+                {opt.value === "system" && <Monitor size={18} className={iconCls} />}
+                {opt.value === "dark" && <Moon size={18} className={iconCls} />}
+                {opt.value === "light" && <Sun size={18} className={iconCls} />}
+                {opt.value === "catapult" && (
+                  <CatapultIcon size={18} className={iconCls} />
+                )}
+                <span className="text-xs font-medium">{opt.label}</span>
+                <span className="text-[10px] text-gray-500 leading-tight">
+                  {opt.description}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 

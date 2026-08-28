@@ -15,9 +15,113 @@
     padding: 0;
   }
 
+  /* ── Theme tokens ────────────────────────────────────────────────────────
+     All colors are `R G B` triplets referenced by tailwind.config.js as
+     `rgb(var(--token) / <alpha-value>)`, so theme switching is just a matter
+     of redefining the variables. `:root` is the branded Catapult look. */
+
+  :root {
+    color-scheme: dark;
+
+    --surface-0: 17 14 12;
+    --surface-1: 26 22 19;
+    --surface-2: 35 30 27;
+    --surface-3: 46 40 36;
+    --surface-4: 58 51 46;
+
+    --border: 62 53 48;
+    --border-strong: 82 72 64;
+
+    --primary: 181 52 42;
+    --primary-hover: 156 44 35;
+    --primary-light: 224 107 98;
+
+    --accent-green: 34 197 94;
+    --accent-red: 239 68 68;
+    --accent-red-dark: 185 28 28;
+    --accent-orange: 249 115 22;
+    --accent-yellow: 245 158 11;
+    --accent-blue: 59 130 246;
+    --accent-cyan: 6 182 212;
+
+    --gray-50: 249 250 251;
+    --gray-100: 243 244 246;
+    --gray-200: 229 231 235;
+    --gray-300: 209 213 219;
+    --gray-400: 156 163 175;
+    --gray-500: 107 114 128;
+    --gray-600: 75 85 99;
+    --gray-700: 55 65 81;
+    --gray-800: 31 41 55;
+    --gray-900: 17 24 39;
+    --gray-950: 3 7 18;
+
+    --scrollbar-thumb: 82 72 64;
+    --scrollbar-thumb-hover: 101 90 82;
+  }
+
+  /* Neutral dark variant — same palette bones, cooler surfaces. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --surface-0: 11 13 16;
+    --surface-1: 16 18 23;
+    --surface-2: 22 25 31;
+    --surface-3: 30 33 41;
+    --surface-4: 38 42 52;
+
+    --border: 52 57 67;
+    --border-strong: 75 82 96;
+
+    --scrollbar-thumb: 75 82 96;
+    --scrollbar-thumb-hover: 94 102 118;
+  }
+
+  /* Light variant. The gray scale inverts: higher shades become lighter so
+     the existing `text-gray-*` classes read dark-on-light. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+
+    --surface-0: 245 245 244;
+    --surface-1: 250 250 249;
+    --surface-2: 255 255 255;
+    --surface-3: 235 235 233;
+    --surface-4: 224 224 220;
+
+    --border: 214 211 209;
+    --border-strong: 168 162 158;
+
+    --primary: 180 52 42;
+    --primary-hover: 150 40 32;
+    --primary-light: 165 55 46;
+
+    --accent-green: 22 163 74;
+    --accent-red: 220 38 38;
+    --accent-red-dark: 153 27 27;
+    --accent-orange: 234 88 12;
+    --accent-yellow: 202 138 4;
+    --accent-blue: 37 99 235;
+    --accent-cyan: 8 145 178;
+
+    --gray-50: 249 250 251;
+    --gray-100: 17 24 39;
+    --gray-200: 31 41 55;
+    --gray-300: 55 65 81;
+    --gray-400: 75 85 99;
+    --gray-500: 107 114 128;
+    --gray-600: 156 163 175;
+    --gray-700: 209 213 219;
+    --gray-800: 229 231 235;
+    --gray-900: 243 244 246;
+    --gray-950: 249 250 251;
+
+    --scrollbar-thumb: 168 162 158;
+    --scrollbar-thumb-hover: 120 113 108;
+  }
+
   body {
-    background-color: #110e0c;
-    color: #e0e0e0;
+    background-color: rgb(var(--surface-0));
+    color: rgb(var(--gray-200));
     font-family: "Inter", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     user-select: none;
@@ -32,11 +136,11 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #524840;
+    background: rgb(var(--scrollbar-thumb));
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #655a52;
+    background: rgb(var(--scrollbar-thumb-hover));
   }
 }
 
@@ -58,7 +162,7 @@
   }
 
   .btn-danger {
-    @apply btn bg-red-900/40 hover:bg-red-900/60 text-red-400 border border-red-900/50;
+    @apply btn bg-accent-red/15 hover:bg-accent-red/25 text-accent-red border border-accent-red/40;
   }
 
   .btn-ghost {
@@ -73,7 +177,6 @@
     @apply bg-surface-3 border border-border px-3 py-2 text-sm text-gray-200
            placeholder-gray-500 focus:outline-none focus:border-primary/60 focus:ring-1
            focus:ring-primary/30 transition-colors w-full;
-    color-scheme: dark;
   }
 
   select.input {
@@ -84,8 +187,8 @@
   }
 
   select.input option {
-    background: #231e1b;
-    color: #e0e0e0;
+    background: rgb(var(--surface-3));
+    color: rgb(var(--gray-200));
   }
 
   .label {

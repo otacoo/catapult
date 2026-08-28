@@ -250,4 +250,8 @@ export interface AppConfig {
   model_presets: Record<string, string>;
   preferred_owners: string[];
   server_working_dir: string | null;
+  theme: AppTheme;
 }
+
+/** UI theme preference: "system" follows the OS light/dark setting. */
+export type AppTheme = "system" | "dark" | "light" | "catapult";
