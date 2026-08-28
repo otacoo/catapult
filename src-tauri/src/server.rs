@@ -9,6 +9,82 @@ use tokio::process::{Child, Command};
 
 use crate::hardware::{suggest_config_with_layers, SystemInfo};
 
+/// File tools offered across llama.cpp builds. Some builds add extra tools
+/// (apply_diff, get_datetime) which we don't offer — enabling an unknown tool
+/// makes llama-server fail to start, so anything not listed here is dropped.
+const KNOWN_TOOLS: [&str; 7] = [
+    "read_file",
+    "file_glob_search",
+    "grep_search",
+    "exec_shell_command",
+    "write_file",
+    "edit_file",
+    "get_info",
+];
+
+/// Canonical `--tools` value for the given selection. Mirrors the frontend's
+/// `sanitizeTools`: `"all"` expands to every known tool, the fully-selected set
+/// collapses back to `"all"`, and unknown names are dropped. Returns `None`
+/// when nothing valid remains (the flag should be omitted).
+pub fn sanitize_tools(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    if value.trim().eq_ignore_ascii_case("all") {
+        return Some("all".to_string());
+    }
+    let mut sel: Vec<&str> = KNOWN_TOOLS
+        .iter()
+        .copied()
+        .filter(|t| value.split(',').map(str::trim).any(|v| v == *t))
+        .collect();
+    if sel.is_empty() {
+        return None;
+    }
+    sel.sort_unstable();
+    if sel.len() == KNOWN_TOOLS.len() {
+        return Some("all".to_string());
+    }
+    Some(sel.join(","))
+}
+
+/// Whether a tool name is supported by the known cross-build set.
+pub fn is_known_tool(name: &str) -> bool {
+    KNOWN_TOOLS.contains(&name)
+}
+
+/// Canonical `--tools` value for an explicit selection list (the app-wide
+/// `server_tools` config). Returns `None` when nothing is selected (flag
+/// omitted).
+pub fn tool_arg_value(tools: &[String]) -> Option<String> {
+    sanitize_tools(&tools.join(","))
+}
+
+/// Apply the app-wide file-tool selection to a server config. This is
+/// authoritative: any `tools` value carried by a preset or the session config
+/// is overridden so stale/unsupported names can't abort startup.
+pub fn apply_global_tools(config: &mut ServerConfig, tools: &[String]) {
+    match tool_arg_value(tools) {
+        Some(value) => {
+            config.extra_params.insert("tools".to_string(), value);
+        }
+        None => {
+            config.extra_params.remove("tools");
+        }
+    }
+}
+
+/// `--mcp-servers-config` argument pair when MCP servers are configured.
+pub fn mcp_args(mcp_config_path: Option<&std::path::Path>) -> Vec<String> {
+    match mcp_config_path {
+        Some(p) if !p.as_os_str().is_empty() => vec![
+            "--mcp-servers-config".to_string(),
+            p.to_string_lossy().to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub model_path: String,
@@ -210,6 +286,7 @@ pub async fn start_server(
     server_binary: &PathBuf,
     config: &ServerConfig,
     state: SharedServerState,
+    mcp_config_path: Option<&PathBuf>,
     log_cb: impl Fn(String) + Send + Sync + 'static,
 ) -> Result<()> {
     // Check not already running
@@ -220,7 +297,8 @@ pub async fn start_server(
         }
     }
 
-    let args = build_args(config);
+    let mut args = build_args(config);
+    args.extend(mcp_args(mcp_config_path.map(|p| p.as_path())));
 
     let cmdline = format!("{} {}", server_binary.display(), args.join(" "));
     log::info!("Starting llama-server: {}", cmdline);
@@ -686,6 +764,17 @@ pub fn build_args(config: &ServerConfig) -> Vec<String> {
         .collect();
     sorted_params.sort_by_key(|(k, _)| (*k).clone());
     for (key, value) in sorted_params {
+        // `tools` is validated against the known set — stale/unsupported names
+        // in saved configs or presets must not fail server startup.
+        if key == "tools" {
+            if let Some(clean) = sanitize_tools(value) {
+                args.push("--tools".to_string());
+                if !clean.is_empty() {
+                    args.push(clean);
+                }
+            }
+            continue;
+        }
         args.push(format!("--{}", key));
         if !value.is_empty() {
             args.push(value.clone());
@@ -865,6 +954,120 @@ mod tests {
         let args = build_args(&config);
         let idx = args.iter().position(|a| a == "--parallel").unwrap();
         assert_eq!(args[idx + 1], "1");
+    }
+
+    #[test]
+    fn sanitize_tools_drops_unknown_names() {
+        assert_eq!(
+            sanitize_tools("file_glob_search,get_datetime,get_info"),
+            Some("file_glob_search,get_info".to_string())
+        );
+        assert_eq!(sanitize_tools("get_datetime,zz_new"), None);
+        assert_eq!(sanitize_tools(""), None);
+        assert_eq!(sanitize_tools("  "), None);
+    }
+
+    #[test]
+    fn sanitize_tools_handles_all_and_full_set() {
+        assert_eq!(sanitize_tools("all"), Some("all".to_string()));
+        assert_eq!(
+            sanitize_tools(&KNOWN_TOOLS.join(",")),
+            Some("all".to_string())
+        );
+        assert_eq!(
+            sanitize_tools("read_file,write_file"),
+            Some("read_file,write_file".to_string())
+        );
+    }
+
+    #[test]
+    fn build_args_drops_unknown_tools() {
+        let mut extra = HashMap::new();
+        extra.insert(
+            "tools".to_string(),
+            "file_glob_search,get_datetime,get_info".to_string(),
+        );
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        let tools_idx = args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(args[tools_idx + 1], "file_glob_search,get_info");
+        assert!(!args.contains(&"get_datetime".to_string()));
+    }
+
+    #[test]
+    fn build_args_omits_tools_when_nothing_valid() {
+        let mut extra = HashMap::new();
+        extra.insert("tools".to_string(), "get_datetime,zz_new".to_string());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        assert!(!args.contains(&"--tools".to_string()));
+    }
+
+    #[test]
+    fn is_known_tool_accepts_only_cross_build_tools() {
+        assert!(is_known_tool("read_file"));
+        assert!(is_known_tool("exec_shell_command"));
+        assert!(!is_known_tool("get_datetime"));
+        assert!(!is_known_tool("zz_new"));
+        assert!(!is_known_tool(""));
+    }
+
+    #[test]
+    fn tool_arg_value_collapses_selection() {
+        assert_eq!(tool_arg_value(&[]), None);
+        assert_eq!(tool_arg_value(&["zz_new".to_string()]), None);
+        assert_eq!(
+            tool_arg_value(&["read_file".to_string(), "write_file".to_string()]),
+            Some("read_file,write_file".to_string())
+        );
+        // All known tools collapse to "all"
+        let all: Vec<String> = KNOWN_TOOLS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(tool_arg_value(&all), Some("all".to_string()));
+    }
+
+    #[test]
+    fn apply_global_tools_sets_and_removes_tools_flag() {
+        let mut config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            ..Default::default()
+        };
+        // Stale preset value is replaced by the global selection
+        config.extra_params.insert("tools".to_string(), "get_datetime".to_string());
+        apply_global_tools(&mut config, &["read_file".to_string(), "write_file".to_string()]);
+        assert_eq!(config.extra_params.get("tools").map(|s| s.as_str()), Some("read_file,write_file"));
+
+        // Empty global selection removes the flag entirely
+        apply_global_tools(&mut config, &[]);
+        assert!(!config.extra_params.contains_key("tools"));
+    }
+
+    #[test]
+    fn apply_global_tools_normalizes_full_selection_to_all() {
+        let mut config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            ..Default::default()
+        };
+        let all: Vec<String> = KNOWN_TOOLS.iter().map(|s| s.to_string()).collect();
+        apply_global_tools(&mut config, &all);
+        assert_eq!(config.extra_params.get("tools").map(|s| s.as_str()), Some("all"));
+    }
+
+    #[test]
+    fn mcp_args_emits_flag_only_with_path() {
+        assert_eq!(mcp_args(None), Vec::<String>::new());
+        let path = PathBuf::from("C:/data/catapult/mcp.json");
+        assert_eq!(
+            mcp_args(Some(&path)),
+            vec!["--mcp-servers-config".to_string(), "C:/data/catapult/mcp.json".to_string()]
+        );
     }
 
     #[test]

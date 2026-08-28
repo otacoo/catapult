@@ -12,7 +12,8 @@ catapult/
 │   ├── hardware.rs          # CPU/RAM/GPU detection, backend scoring, config suggestions
 │   ├── runtime.rs           # GitHub release fetching, asset scoring, download/extraction
 │   ├── models.rs            # GGUF scanning, metadata parsing, model download with resume
-│   ├── server.rs            # ServerConfig, process spawn/kill, CLI arg builder
+│   ├── server.rs            # ServerConfig, process spawn/kill, CLI arg builder, tool sanitizing
+│   ├── mcp.rs               # MCP server storage (Cursor-compatible mcp.json)
 │   ├── huggingface.rs       # HF API search, recommended models, quant extraction, presets.ini fetch
 │   └── main.rs              # Entry point
 ├── src/                     # React/TypeScript frontend (~5,750 LOC)
@@ -22,16 +23,17 @@ catapult/
 │   │   ├── Dashboard.tsx    # System overview, quick launch, favorite models
 │   │   ├── Runtime.tsx      # Managed/custom runtime management, downloads
 │   │   ├── Models.tsx       # Model browser, search, columnar list, directories
+│   │   ├── Tools.tsx        # Tools/MCP: built-in file tool toggles + MCP server manager
 │   │   ├── Server.tsx       # Two-column Run page: model, tabs+search, memory/logs
-│   │   ├── Server.tools.test.ts  # Tool set normalization/sanitization tests
 │   │   ├── Server.migrate.test.ts # extra_params migration tests
 │   │   ├── Chat.tsx         # Embedded llama.cpp WebUI iframe
-│   │   └── Wizard.tsx       # First-launch setup (runtime + model selection)
+│   │   └── Wizard.tsx       # First-launch setup (runtime + model + appearance)
 │   ├── components/
 │   │   ├── Layout.tsx       # Sidebar navigation shell
 │   │   └── CatapultIcon.tsx # SVG catapult icon
 │   ├── types/index.ts       # TypeScript interfaces mirroring Rust structs
 │   ├── utils/format.ts      # Shared formatting utilities
+│   ├── utils/tools.ts       # Built-in tool set normalization/sanitization (mirrors server.rs)
 │   └── styles/globals.css   # Tailwind component classes
 └── tests
     ├── (Rust)               # Unit tests in #[cfg(test)] modules
@@ -40,7 +42,7 @@ catapult/
 
 ## IPC pattern
 
-All filesystem, network, and process operations live in Rust. The frontend calls `invoke()` for request/response and `listen()` for streaming events. There are 51 registered Tauri commands spanning hardware detection, runtime management, model operations, server control, configuration, presets, and per-model preset memory.
+All filesystem, network, and process operations live in Rust. The frontend calls `invoke()` for request/response and `listen()` for streaming events. There are 55 registered Tauri commands spanning hardware detection, runtime management, model operations, server control, configuration, presets, per-model preset memory, file tools, and MCP servers.
 
 **Events:**
 - `download_progress` (DownloadProgress) — streamed during runtime and model downloads
@@ -61,6 +63,7 @@ All paths are cross-platform via the `dirs` crate, relative to `dirs::data_dir()
 ├── models/                  # Default model download directory
 ├── presets/                 # Server configuration presets (*.json)
 │   └── __default__.json     # User-saved default settings
+├── mcp.json                 # MCP server definitions (Cursor-compatible, `--mcp-servers-config`)
 ```
 
 ## Runtime management
@@ -122,7 +125,7 @@ Core typed fields: model path, mmproj path, working directory, host, port, conte
 
 The `working_dir` field sets the default working directory (`current_dir`) for the spawned `llama-server` process — the CWD its built-in tools operate in. It is a default directory, not a sandbox. Persisted app-wide via `AppConfig.server_working_dir` (`set_server_working_dir` command), seeded into the session when unset, and excluded from presets (per-session, like model path).
 
-The Advanced tab covers an extended set of parameters including: MoE CPU offloading (`cpu-moe`, `n-cpu-moe`), weight repacking (`no-repack`), host tensor offload (`no-op-offload`), device bypass (`no-host`), memory auto-fitting (`--fit`, `--fit-margin`, `--fit-ctx`), KV unified buffer (`kv-unified`), N-gram speculation (`spec-ngram-size-n/m`, `spec-ngram-min-hits`), lookup cache files, draft model threading/device params, built-in tools (`tools`), embedding/classification separators, WebUI config overrides, and `reuse-port`.
+The Advanced tab covers an extended set of parameters including: MoE CPU offloading (`cpu-moe`, `n-cpu-moe`), weight repacking (`no-repack`), host tensor offload (`no-op-offload`), device bypass (`no-host`), memory auto-fitting (`--fit`, `--fit-margin`, `--fit-ctx`), KV unified buffer (`kv-unified`), N-gram speculation (`spec-ngram-size-n/m`, `spec-ngram-min-hits`), lookup cache files, draft model threading/device params, embedding/classification separators, WebUI config overrides, and `reuse-port`. Built-in tools (`--tools`) and MCP servers are configured app-wide on the Tools/MCP page, not per-run.
 
 All additional llama-server parameters are stored in `extra_params: HashMap<String, String>` where:
 - Keys are CLI flag names without `--` prefix (e.g. "api-key", "timeout")
@@ -131,10 +134,12 @@ All additional llama-server parameters are stored in `extra_params: HashMap<Stri
 - Special key `__raw__` holds free-form CLI arguments split by whitespace
 - The `mmproj` key is filtered from extra_params (handled as a typed field)
 
-**Built-in tool picker**: The `tools` key is managed through a checkbox list limited to the tool set available across current llama.cpp builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`). `toolsArgValue` canonicalizes the selection — empty means `--tools` is omitted, the full set collapses to `all`, otherwise a sorted CSV. On every config load path, `sanitizeTools` drops unsupported names, preventing `--tools` from referencing a tool the installed build lacks (which would make llama-server exit with `unknown tool`). `exec_shell_command` requires an explicit confirmation in the UI before it can be enabled.
+**Built-in tools (app-wide)**: The Tools/MCP page (`/tools`) manages llama.cpp's built-in file tools via checkboxes limited to the tool set available across current builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`). The selection is stored app-wide in `AppConfig.server_tools` (`set_tools` command); `toolsArgValue` (frontend, `src/utils/tools.ts`) and `sanitize_tools`/`tool_arg_value` (backend, `server.rs`) mirror each other — empty means `--tools` is omitted, the full set collapses to `all`, otherwise a sorted CSV. On every `start_server`, `apply_global_tools` overrides whatever `tools` value a preset or session config carried (stale/unsupported names can't abort startup); the same sanitize runs again inside the arg builder. `exec_shell_command` requires an explicit confirmation before it can be enabled.
+
+**MCP servers**: The Tools/MCP page also manages MCP (Model Context Protocol) servers persisted to `{data_dir}/catapult/mcp.json` in llama.cpp's Cursor-compatible shape — `{"mcpServers": { "<name>": { "command", "args", "env", "cwd", "timeout_ms" } }}` (see `mcp.rs`; `list_mcp_servers` / `save_mcp_servers` commands). When any servers are configured, `start_server` appends `--mcp-servers-config <path>` so llama-server spawns each stdio child and exposes its tools as `<server>_<tool>` in the WebUI. Entries without a command are dropped, matching llama.cpp's parsing. llama.cpp has no built-in web fetch/search tool — those arrive via an MCP server.
 
 ### Tabbed UI
-Parameters are organized into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. The Advanced tab includes sub-sections for RoPE, speculative decoding, LoRA/control vectors, multimodal, CPU affinity, logging, the working directory, the built-in tool picker, and a raw arguments text field.
+Parameters are organized into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. The Advanced tab includes sub-sections for RoPE, speculative decoding, LoRA/control vectors, multimodal, CPU affinity, logging, the working directory, and a raw arguments text field. The built-in file tools formerly listed here now live on the app-wide Tools/MCP page.
 
 ### Run page layout
 The Run page is a two-column split:
@@ -169,9 +174,10 @@ The frontend batches incoming log events via `requestAnimationFrame`, flushing a
 
 ## First-launch wizard
 
-A two-step onboarding flow at `/wizard` (outside the sidebar layout):
+A three-step onboarding flow at `/wizard` (outside the sidebar layout):
 1. **System & Runtime** — hardware detection summary, runtime asset selection or custom directory browse, download with progress
 2. **Model Selection** — recommended models filtered and sorted by hardware fit (VRAM/RAM), up to 3 selectable, parallel downloads
+3. **Appearance** — theme choice (System / Dark / Light / Catapult) with live preview
 
 Controlled by `wizard_completed` in AppConfig. Skippable at any time. Re-runnable via `--force-wizard` CLI flag or programmatic reset.
 
@@ -191,6 +197,6 @@ The iframe element is module-scoped in `Chat.tsx` and kept alive across route tr
 
 ## Testing
 
-- **Rust:** `cargo test` — 120 unit tests in `#[cfg(test)]` modules covering asset scoring, backend detection, CLI arg building, quant extraction, size estimation, filename parsing, GGUF parsing, hardware config suggestions, split file parsing, imatrix detection, split model consolidation, `presets.ini` parsing, `apply_hf_preset_params`, preset name derivation, `AppConfig.model_presets` round-tripping, release-tag parsing, and the working-directory config round-trip.
+- **Rust:** `cargo test` — 133 unit tests in `#[cfg(test)]` modules covering asset scoring, backend detection, CLI arg building, tool sanitization, MCP config round-tripping, quant extraction, size estimation, filename parsing, GGUF parsing, hardware config suggestions, split file parsing, imatrix detection, split model consolidation, `presets.ini` parsing, `apply_hf_preset_params`, preset name derivation, `AppConfig.model_presets` round-tripping, release-tag parsing, and config round-trips.
 - **TypeScript:** `npm test` (Vitest) — 67 tests: formatting utilities for CPU/GPU name shortening, size formatting, quant color/sort mapping, imatrix detection, MXFP quant handling, PreferredOwners UI, `extra_params` migration, and tool-set normalization/sanitization.
 - Tests caught a real bug: `noavx` backend detection was unreachable due to `contains("avx")` matching first

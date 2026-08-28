@@ -27,7 +27,7 @@ npx tsc --noEmit
 # Check Rust
 cargo check --manifest-path src-tauri/Cargo.toml
 
-# Run Rust tests (120 tests)
+# Run Rust tests (133 tests)
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # Run frontend tests (67 tests via Vitest)
@@ -40,22 +40,24 @@ npm run test:watch
 ## Architecture
 
 ### IPC pattern
-All file system, network, and process operations live in Rust. The frontend only calls `invoke()` commands and listens for events. No Tauri plugins needed for these; they go through the Rust backend. There are 51 registered Tauri commands.
+All file system, network, and process operations live in Rust. The frontend only calls `invoke()` commands and listens for events. No Tauri plugins needed for these; they go through the Rust backend. There are 55 registered Tauri commands.
 
 ### Rust backend (`src-tauri/src/`)
 - `lib.rs` — registers all Tauri commands, owns `AppState`, CLI flag handling (`--force-wizard`)
-- `config.rs` — `AppConfig` persisted at `{data_dir}/catapult/config.json`; runtime types (`ManagedRuntime`, `CustomRuntime`, `ActiveRuntime` enum)
+- `config.rs` — `AppConfig` persisted at `{data_dir}/catapult/config.json`; runtime types (`ManagedRuntime`, `CustomRuntime`, `ActiveRuntime` enum); `server_tools` (app-wide `--tools` selection)
 - `hardware.rs` — cross-platform CPU/RAM/GPU detection, backend availability, config suggestions
 - `runtime.rs` — GitHub releases API, asset scoring/selection, versioned download/extraction, managed/custom runtime operations
 - `huggingface.rs` — HF API search/repo-files, curated `RECOMMENDED_MODELS` list, quant extraction
 - `models.rs` — GGUF scanning (recursive, multi-directory), binary metadata parser (name/params/context/vision tags), metadata cache, download with resume/retry, mmproj auto-detection
-- `server.rs` — `ServerConfig` with typed fields + `extra_params` HashMap, process spawn/kill with SIGTERM+timeout, stdout/stderr streaming, CLI arg builder
+- `server.rs` — `ServerConfig` with typed fields + `extra_params` HashMap, process spawn/kill with SIGTERM+timeout, stdout/stderr streaming, CLI arg builder, tool sanitizing (`sanitize_tools`/`apply_global_tools`) and `--mcp-servers-config` injection
+- `mcp.rs` — MCP server storage at `{data_dir}/catapult/mcp.json` in llama.cpp's Cursor-compatible shape, `list_mcp_servers`/`save_mcp_servers` helpers
 
 ### Frontend (`src/`)
 - React Router v6 with a persistent sidebar layout
-- Pages: Wizard (first-launch) → Dashboard → Runtime → Models → Server → Chat
+- Pages: Wizard (first-launch) → Dashboard → Runtime → Models → Tools (file tools + MCP) → Server → Chat
 - `src/types/index.ts` mirrors all Rust `#[derive(Serialize, Deserialize)]` structs — **keep in sync manually**
 - `src/utils/format.ts` — shared formatting utilities (sizes, CPU/GPU name shortening, quant colors)
+- `src/utils/tools.ts` — built-in tool definitions and normalization (`effectiveTools`, `toolsArgValue`, `sanitizeTools`); must stay in sync with `server.rs`'s `KNOWN_TOOLS`
 - Chat page embeds the llama.cpp WebUI in an `<iframe>` pointing at `http://127.0.0.1:{port}` — single chat surface, no separate chat window. The iframe is module-scoped and stays alive across route changes; WebUI state persists in localStorage per `host:port` (port change = fresh origin).
 - Events: `download_progress` (DownloadProgress), `server_log` (string)
 
@@ -66,6 +68,7 @@ All file system, network, and process operations live in Rust. The frontend only
 - Legacy runtime: `{data_dir}/catapult/runtime/` (migrated on load)
 - Models (default): `{data_dir}/catapult/models/`
 - Presets: `{data_dir}/catapult/presets/`
+- MCP servers: `{data_dir}/catapult/mcp.json` (Cursor-compatible `{"mcpServers": {...}}` shape)
 
 ### Runtime management
 - **Managed runtimes**: Downloaded from GitHub in versioned subdirectories (`runtimes/b5000-cuda/`). Multiple versions coexist; one is active. Old versions optionally auto-deleted.
@@ -80,7 +83,7 @@ CUDA=100, Metal=95, ROCm=90, Vulkan=70, SYCL=60, CPU AVX-512=30, CPU AVX2=25. Un
 `server.rs::start_server` spawns `llama-server` with `kill_on_drop(true)`. Child stored in `ServerState` (Mutex). Exit monitored via `try_wait()` polling. Stop sends SIGTERM, waits 30s, then SIGKILL. Full command line stored as first log entry.
 
 ### Server configuration
-Core typed fields (model, host, port, context, GPU layers, sampling, etc.) plus `extra_params: HashMap<String, String>` for all additional llama-server flags. Frontend organizes into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. Presets saved as JSON files; `__default__` preset stores user defaults. Model path, mmproj, and working directory excluded from presets (per-session; working dir persisted app-wide via `AppConfig.server_working_dir`).
+Core typed fields (model, host, port, context, GPU layers, sampling, etc.) plus `extra_params: HashMap<String, String>` for all additional llama-server flags. Frontend organizes into 6 tabs: Context, Hardware, Sampling, Server, Chat, Advanced. Presets saved as JSON files; `__default__` preset stores user defaults. Model path, mmproj, and working directory excluded from presets (per-session; working dir persisted app-wide via `AppConfig.server_working_dir`). File tools and MCP servers are configured app-wide on the Tools/MCP page and injected on every start (`apply_global_tools` + `--mcp-servers-config`).
 
 Run page is a two-column split: full-width model selector on top, config tabs + settings search bar on the right, Memory Estimate + Server Logs on the left. Logs flex-stretch to the window height; a search bar under the tab bar indexes every tab via DOM scan and jumps with a highlight.
 
@@ -100,7 +103,8 @@ Run page is a two-column split: full-width model selector on top, config tabs + 
 - `--ctx-size 0` means "loaded from model" (the default).
 - `seed: Option<u64>` in Rust — the UI shows `-1` for random, maps to `None` (omits `--seed` flag).
 - Server presets exclude `model_path`, `mmproj_path`, and `working_dir` (per-session, not config).
-- Built-in tools are limited to the set supported across llama.cpp builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`); stale/unknown names in stored configs are dropped on load by `sanitizeTools` — passing an unsupported tool aborts llama-server. Full selection collapses to `tools=all`; `exec_shell_command` needs an explicit confirm.
+- Built-in tools are limited to the set supported across llama.cpp builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`); unknown names in stored configs are dropped and the selection is managed app-wide via `AppConfig.server_tools` on the Tools/MCP page. `start_server` calls `apply_global_tools` to override any preset/session `tools` value, and the arg builder re-sanitizes — full selection collapses to `tools=all`; `exec_shell_command` needs an explicit confirm.
+- MCP servers use llama.cpp stdio transport only and are written to `mcp.json` in Cursor format. Entries without a `command` are skipped (matching llama.cpp). MCP tools surface in the WebUI as `<server>_<tool>`; there is no built-in `web_fetch`/`web_search` in llama.cpp — those arrive via an MCP server.
 - The `__raw__` key in `extra_params` holds free-form CLI arguments split by whitespace.
 - GGUF metadata parsing is capped at 128 KV pairs and 1MB strings for safety.
 - Model download temp files use `__downloading__` prefix and are preserved for resume.

@@ -38,7 +38,7 @@ A Tauri v2 desktop application (Rust backend + React/TypeScript frontend):
 - Context size slider (or auto = model default)
 - **Settings search**: a search bar indexes every tab and jumps to the matching parameter
 - **Working directory**: set the CWD that llama-server (and its built-in file tools) operate in
-- **Built-in tools**: enable llama.cpp's file tools (`read_file`, `grep_search`, …), gated `exec_shell_command`
+- **Tools/MCP**: app-wide built-in file tools (`read_file`, `grep_search`, …) with gated `exec_shell_command`, plus MCP servers (stdio) that expose their tools to the model as `<server>_<tool>` — the way to give llama.cpp web fetch/search
 - Save and load named configuration presets; per-model preset memory (last-used preset auto-loads on model selection)
 - Auto-import `presets.ini` from HuggingFace repos on model download (sampling parameters applied as a named preset)
 - Process lifecycle management with log streaming and server logs view
@@ -54,6 +54,7 @@ A Tauri v2 desktop application (Rust backend + React/TypeScript frontend):
 **First-Launch Wizard**
 - Hardware detection and runtime recommendation
 - Model selection with hardware fit indicators
+- Theme selection with live preview
 - Get from zero to chatting in under a minute
 
 **App Updates**

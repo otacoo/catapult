@@ -34,6 +34,7 @@ import type {
 
 import { mbToGb, shortCpuName, shortGpuName, quantColor } from "../utils/format";
 import { THEME_OPTIONS, setThemePreference } from "../utils/theme";
+import { sanitizeTools } from "../utils/tools";
 import CatapultIcon from "../components/CatapultIcon";
 import Toggle from "../components/Toggle";
 
@@ -155,7 +156,9 @@ export default function Dashboard() {
       let config = suggested;
       try {
         const defaults = await invoke<ServerConfig>("load_server_preset", { name: "__default__" });
-        config = { ...suggested, ...defaults, model_path: suggested.model_path, mmproj_path: suggested.mmproj_path };
+        const merged = { ...suggested, ...defaults, model_path: suggested.model_path, mmproj_path: suggested.mmproj_path };
+        if (merged.extra_params) merged.extra_params = sanitizeTools({ ...merged.extra_params });
+        config = merged;
       } catch {
         // No saved defaults — use suggested config as-is
       }

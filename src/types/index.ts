@@ -251,7 +251,27 @@ export interface AppConfig {
   preferred_owners: string[];
   server_working_dir: string | null;
   theme: AppTheme;
+  /** App-wide selection of built-in file tools (`--tools`), managed on the Tools/MCP page. */
+  server_tools: string[];
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */
 export type AppTheme = "system" | "dark" | "light" | "catapult";
+
+// ── MCP servers ────────────────────────────────────────────────────────────────
+
+/** One MCP server as shown/edited on the Tools/MCP page (mirrors `mcp.rs`). */
+export interface McpServerEntry {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  cwd: string | null;
+  timeout_ms: number | null;
+}
+
+/** Response of `list_mcp_servers`: the servers plus the on-disk config path. */
+export interface McpInfo {
+  path: string;
+  servers: McpServerEntry[];
+}

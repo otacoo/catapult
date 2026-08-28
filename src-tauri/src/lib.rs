@@ -1,6 +1,7 @@
 pub mod config;
 pub mod hardware;
 pub mod huggingface;
+pub mod mcp;
 pub mod models;
 pub mod runtime;
 pub mod server;
@@ -511,6 +512,16 @@ async fn start_server(
 ) -> Result<(), String> {
     let app_config = state.config.lock().unwrap().clone();
 
+    // App-wide file tools are authoritative — override whatever a preset or the
+    // session config carried so stale/unsupported names can't abort startup.
+    server::apply_global_tools(&mut config, &app_config.server_tools);
+
+    // MCP servers configured in the Tools tab are attached at run time.
+    let mcp_config_path = mcp::load()
+        .ok()
+        .filter(|cfg| !cfg.servers.is_empty())
+        .and_then(|_| mcp::mcp_config_path().ok());
+
     let runtime_info = runtime::get_runtime_info(&app_config).map_err(|e| e.to_string())?;
     let server_binary = runtime_info
         .server_binary
@@ -526,6 +537,7 @@ async fn start_server(
         &server_binary,
         &config,
         server_state,
+        mcp_config_path.as_ref(),
         move |line| {
             let _ = app.emit("server_log", &line);
         },
@@ -653,6 +665,35 @@ async fn set_theme(theme: String, state: State<'_, AppState>) -> Result<(), Stri
     let mut config = state.config.lock().unwrap();
     config.theme = theme;
     config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_tools(tools: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    let mut seen = std::collections::HashSet::new();
+    config.server_tools = tools
+        .into_iter()
+        .filter(|t| server::is_known_tool(t))
+        .filter(|t| seen.insert(t.clone()))
+        .collect();
+    config.server_tools.sort();
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_mcp_servers() -> Result<mcp::McpInfo, String> {
+    let cfg = mcp::load().map_err(|e| e.to_string())?;
+    Ok(mcp::McpInfo {
+        path: mcp::mcp_config_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        servers: mcp::entries_from_config(&cfg),
+    })
+}
+
+#[tauri::command]
+async fn save_mcp_servers(servers: Vec<mcp::McpServerEntry>) -> Result<(), String> {
+    mcp::save(&servers).map_err(|e| e.to_string())
 }
 
 // ── Server config presets ────────────────────────────────────────────────────
@@ -813,6 +854,10 @@ pub fn run() {
             set_wizard_completed,
             set_server_working_dir,
             set_theme,
+            set_tools,
+            // MCP servers
+            list_mcp_servers,
+            save_mcp_servers,
             // Server config presets
             list_server_presets,
             save_server_preset,

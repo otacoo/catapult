@@ -115,6 +115,11 @@ pub struct AppConfig {
     /// UI theme preference: system, dark, light, or the branded Catapult look.
     #[serde(default)]
     pub theme: Theme,
+    /// App-wide selection of built-in file tools (`--tools`). Managed from the
+    /// Tools/MCP page and applied to every server start, overriding whatever a
+    /// preset or the session config carried.
+    #[serde(default)]
+    pub server_tools: Vec<String>,
 }
 
 impl AppConfig {
@@ -445,6 +450,7 @@ mod tests {
             preferred_owners: vec!["bartowski".to_string(), "unsloth".to_string()],
             server_working_dir: Some("E:/test".to_string()),
             theme: Theme::Light,
+            server_tools: vec!["read_file".to_string(), "grep_search".to_string()],
             ..Default::default()
         }
     }
@@ -499,6 +505,7 @@ mod tests {
         assert_eq!(restored.preferred_owners, vec!["bartowski", "unsloth"]);
         assert_eq!(restored.server_working_dir.as_deref(), Some("E:/test"));
         assert_eq!(restored.theme, Theme::Light);
+        assert_eq!(restored.server_tools, vec!["read_file", "grep_search"]);
     }
 
     /// Legacy fields with skip_serializing must NOT appear in JSON output.

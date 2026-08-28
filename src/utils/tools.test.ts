@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { effectiveTools, toolsArgValue, sanitizeTools } from "./Server";
+import { effectiveTools, toolsArgValue, sanitizeTools } from "./tools";
 
 const ALL_TOOLS = [
   "edit_file",

@@ -5,6 +5,7 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Runtime from "./pages/Runtime";
 import Models from "./pages/Models";
+import Tools from "./pages/Tools";
 import Server from "./pages/Server";
 import Api from "./pages/Api";
 import Chat from "./pages/Chat";
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="runtime" element={<Runtime />} />
           <Route path="models" element={<Models />} />
+          <Route path="tools" element={<Tools />} />
           <Route path="server" element={<Server />} />
           <Route path="api" element={<Api />} />
           <Route path="chat" element={<Chat />} />

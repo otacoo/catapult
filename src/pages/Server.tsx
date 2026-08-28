@@ -21,6 +21,7 @@ import {
 import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig } from "../types";
 import Toggle from "../components/Toggle";
 import MemoryVisualizer from "../components/MemoryVisualizer";
+import { sanitizeTools } from "../utils/tools";
 
 // ── Utility components ──────────────────────────────────────────────────────
 
@@ -183,56 +184,6 @@ const DEFAULT_CONFIG: ServerConfig = {
   parallel: 1,
   extra_params: {},
 };
-
-// ── File tools (mirrors llama.cpp `--tools`) ────────────────────────────────
-
-const KNOWN_TOOLS: { name: string; label: string; hint: string; dangerous?: boolean }[] = [
-  // Only tools available across llama.cpp builds are listed here — some builds
-  // add extra tools (apply_diff, get_datetime) which are *not* offered because
-  // enabling an unknown tool makes the server fail to start.
-  { name: "read_file", label: "Read File", hint: "Read text files (16 KB max per read)" },
-  { name: "grep_search", label: "Grep Search", hint: "Search file contents with regex" },
-  { name: "file_glob_search", label: "File Glob Search", hint: "List files matching a glob pattern" },
-  { name: "get_info", label: "Get Info", hint: "Query file and folder metadata" },
-  { name: "write_file", label: "Write File", hint: "Create or overwrite files" },
-  { name: "edit_file", label: "Edit File", hint: "Apply line-range edits to files" },
-  { name: "exec_shell_command", label: "Shell Command", hint: "Run arbitrary shell commands", dangerous: true },
-];
-
-// Effective set of enabled tools. "all" expands to every known tool; names not
-// in KNOWN_TOOLS are dropped because passing an unknown tool name makes the
-// server fail to start.
-export function effectiveTools(value: string): Set<string> {
-  const sel = new Set<string>();
-  if (!value) return sel;
-  if (value.trim().toLowerCase() === "all") {
-    for (const t of KNOWN_TOOLS) sel.add(t.name);
-    return sel;
-  }
-  for (const name of value.split(",")) {
-    const n = name.trim();
-    if (n && KNOWN_TOOLS.some((t) => t.name === n)) sel.add(n);
-  }
-  return sel;
-}
-
-// Canonical --tools argument for a value: "" (off), "all", or a sorted
-// comma-separated list.
-export function toolsArgValue(value: string): string {
-  const sel = effectiveTools(value);
-  if (sel.size === 0) return "";
-  if (sel.size === KNOWN_TOOLS.length) return "all";
-  return [...sel].sort().join(",");
-}
-
-// Drops tool names not supported by the running llama.cpp build from
-// extra_params["tools"] so stale/session values can't fail server startup.
-export function sanitizeTools(extra: Record<string, string>): Record<string, string> {
-  if (!("tools" in extra)) return extra;
-  const t = toolsArgValue(extra.tools);
-  if (t) extra.tools = t; else delete extra.tools;
-  return extra;
-}
 
 // ── Settings search index ────────────────────────────────────────────────────
 
@@ -456,12 +407,7 @@ export default function Server() {
     invoke("set_server_working_dir", { path }).catch(() => {});
   };
 
-  // File tools — gated checkboxes that rebuild the --tools argument
-  const setTool = (name: string, on: boolean) => {
-    const sel = new Set(effectiveTools(getEp("tools")));
-    if (on) sel.add(name); else sel.delete(name);
-    setEp("tools", toolsArgValue([...sel].join(",")));
-  };
+  // File tools are managed app-wide from the Tools page.
 
   // ── Settings search ─────────────────────────────────────────────────────
 
@@ -1311,42 +1257,6 @@ export default function Server() {
               <Toggle label="Embedding" hint="Restrict to embedding-only mode" checked={hasFlag("embedding")} onChange={(v) => setFlag("embedding", v)} />
               <Toggle label="Reranking" hint="Enable reranking endpoint" checked={hasFlag("reranking")} onChange={(v) => setFlag("reranking", v)} />
               <Toggle label="Warmup" hint="Perform warmup run on start (default: on)" checked={!hasFlag("no-warmup")} onChange={(v) => setFlag("no-warmup", !v)} />
-            </div>
-            <div className="grid grid-cols-1 gap-3 mt-2">
-              <div>
-                <label className="label">File Tools</label>
-                <p className="text-xs text-gray-600 mb-1">
-                  Built-in tools the LLM can use. Everything off keeps file access disabled.
-                  Enabling tools restricts CORS to localhost and is experimental.
-                </p>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                  {KNOWN_TOOLS.filter((t) => !t.dangerous).map((t) => (
-                    <Toggle key={t.name} label={t.label} hint={t.hint}
-                      checked={effectiveTools(getEp("tools")).has(t.name)}
-                      onChange={(on) => setTool(t.name, on)} />
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="label">Dangerous</label>
-                <div className="space-y-3">
-                  {KNOWN_TOOLS.filter((t) => t.dangerous).map((t) => (
-                    <Toggle key={t.name} label={t.label} hint={t.hint}
-                      checked={effectiveTools(getEp("tools")).has(t.name)}
-                      onChange={(on) => {
-                        if (on && !window.confirm(
-                          "Shell Command lets the model execute arbitrary commands on your " +
-                          "computer with your user's permissions. Continue?")) return;
-                        setTool(t.name, on);
-                      }} />
-                  ))}
-                </div>
-              </div>
-              {effectiveTools(getEp("tools")).size > 0 && (
-                <p className="text-xs text-gray-600">
-                  Passing: <code className="font-mono text-gray-300">--tools {toolsArgValue(getEp("tools"))}</code>
-                </p>
-              )}
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
               <TextInput label="Embedding Separator" hint="Separator between embeddings (default: \\n)" value={getEp("embd-separator")}

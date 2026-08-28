@@ -4,15 +4,16 @@
 
 ### Added
 
+- **Tools/MCP page**: A new tab between Models and Run. It manages app-wide built-in file tools plus MCP servers. MCP servers are persisted to `{data_dir}/catapult/mcp.json` (Cursor-compatible shape) and attached to every run via `--mcp-servers-config`; their tools appear in the chat UI as `<server>_<tool>` (e.g. a web fetch/search server).
 - **Working directory option**: Server launches now run `llama-server` with a configurable working directory — the CWD your model's built-in tools (`read_file`, `file_glob_search`, `grep_search`, …) operate in. Stored per-app in `AppConfig` and auto-applied on load, it can be overridden per session from the Advanced tab. It's a default directory, not a sandbox: write-access prompts are still handled by llama.cpp's WebUI.
 - **Settings search bar**: A search box under the Run page tab bar finds any setting across all six tabs (Context, Hardware, Sampling, Server, Chat, Advanced), jumps to the match with a highlight, and supports keyboard navigation (arrows + Enter, Escape to close).
-- **Built-in tool picker**: The Advanced tab now offers a checkbox list of llama.cpp's built-in tools with a live canonical `--tools` argument preview. Only tools available across current llama.cpp builds are listed; `exec_shell_command` requires an explicit confirmation before it can be enabled.
-- **Tool gating tests**: 14 unit tests for the tool set normalization, argument collapsing, and sanitization (`src/pages/Server.tools.test.ts`).
+- **Tool gating tests**: 14 unit tests for the tool set normalization, argument collapsing, and sanitization (`src/utils/tools.test.ts`).
 
 ### Changed
 
 - **Run page layout**: Two-column layout — the model selector sits above both columns, server configuration tabs occupy the right (larger) column, and Memory Estimate + Server Logs live in a fixed left column. Logs stretch to the window height and long lines now wrap instead of scrolling horizontally.
 - **Single embedded chat**: Removed the separate "Pop out" chat window. "Open Chat" now navigates to the embedded Chat tab, giving one WebUI instance instead of two independent browser contexts. Chat history and settings persist in the webview's localStorage per `host:port` — changing the server port starts a fresh origin.
+- **File tools moved to Tools page**: The built-in tool picker left the Run page's Advanced tab. Tool selection is now app-wide (`AppConfig.server_tools`) and overrides any preset/session value on every start, so stale tool names can never abort llama-server.
 
 ### Fixed
 
