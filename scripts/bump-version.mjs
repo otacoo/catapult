@@ -44,6 +44,23 @@ function updateCargoToml(relPath) {
   console.log(`  ${relPath}: updated`);
 }
 
+function updateCargoLock(relPath) {
+  const path = resolve(root, relPath);
+  const text = readFileSync(path, "utf8");
+  const re = /(name = "catapult"\r?\nversion = ")([^"]+)(")/;
+  const match = text.match(re);
+  if (!match) {
+    console.error(`  ${relPath}: could not find catapult package version`);
+    process.exit(1);
+  }
+  if (match[2] === version) {
+    console.log(`  ${relPath}: already at target`);
+    return;
+  }
+  writeFileSync(path, text.replace(re, `$1${version}$3`));
+  console.log(`  ${relPath}: updated`);
+}
+
 console.log(`Bumping version to ${version}`);
 
 updateJson("package.json", (p) => {
@@ -62,5 +79,7 @@ updateJson("src-tauri/tauri.conf.json", (p) => {
 });
 
 updateCargoToml("src-tauri/Cargo.toml");
+
+updateCargoLock("src-tauri/Cargo.lock");
 
 console.log("Done. Don't forget to update CHANGELOG.md and commit.");
