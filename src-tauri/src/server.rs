@@ -300,13 +300,6 @@ pub async fn start_server(
     let mut args = build_args(config);
     args.extend(mcp_args(mcp_config_path.map(|p| p.as_path())));
 
-    if let Some(path) = mcp_config_path {
-        log_cb(format!(
-            "[mcp] attaching configured MCP servers from {}",
-            path.display()
-        ));
-    }
-
     let cmdline = format!("{} {}", server_binary.display(), args.join(" "));
     log::info!("Starting llama-server: {}", cmdline);
 
@@ -350,6 +343,13 @@ pub async fn start_server(
 
     // Emit commandline as first log event
     log_cb(format!("$ {}", cmdline));
+
+    if let Some(path) = mcp_config_path {
+        log_cb(format!(
+            "[mcp] attaching configured MCP servers from {}",
+            path.display()
+        ));
+    }
 
     // Read stdout/stderr in background tasks
     let state_clone = state.clone();
