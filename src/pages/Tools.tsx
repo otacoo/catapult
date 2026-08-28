@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Pencil, Plus, Trash2, X, Wrench, Globe, AlertTriangle, CheckCircle2, Info, RefreshCw } from "lucide-react";
+import { Pencil, Plus, Trash2, X, Wrench, Globe, AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import Toggle from "../components/Toggle";
 import { KNOWN_TOOLS, toolsArgValue } from "../utils/tools";
 import type { AppConfig, McpInfo, McpServerEntry, ServerStatus, ServerToolInfo } from "../types";
@@ -222,66 +222,34 @@ export default function Tools() {
             <RefreshCw size={12} className={liveToolsLoading ? "animate-spin" : ""} /> Refresh
           </button>
         </div>
-        <p className="section-desc">
-          What the running server actually advertises at <code className="font-mono">/tools</code> (including MCP tools like{" "}
-          <code className="font-mono">exa_web_search_exa</code>). Restart the server from <em>Run</em> to pick up changes.
-        </p>
         {serverStatus.type !== "running" ? (
-          <p className="text-xs text-gray-500 mt-3">
-            Server is not running — start it from <em>Run</em> to probe live tools.
-          </p>
+          <p className="text-xs text-gray-500 mt-3">Server not running.</p>
         ) : liveToolsLoading && !liveTools ? (
           <p className="text-xs text-gray-500 mt-3 flex items-center gap-2">
-            <RefreshCw size={12} className="animate-spin" /> Checking server tools…
+            <RefreshCw size={12} className="animate-spin" /> Checking…
           </p>
         ) : liveToolsError ? (
-          <div className="flex items-start gap-2 text-xs mt-3">
-            <AlertTriangle size={14} className="text-accent-yellow mt-0.5 shrink-0" />
-            <div>
-              <p className="text-gray-300">
-                Could not fetch server tools: <span className="font-mono text-accent-yellow">{liveToolsError}</span>
-              </p>
-              <p className="text-gray-500 mt-1">The server may still be starting.</p>
-            </div>
-          </div>
+          <p className="text-xs text-accent-yellow mt-3">Could not fetch: <span className="font-mono">{liveToolsError}</span></p>
         ) : liveTools ? (
           (() => {
             const serverTools = liveTools.filter((t) => t.type === "server");
             const mcpTools = liveTools.filter((t) => t.type === "mcp");
             const hasMcp = mcpTools.length > 0;
             return (
-              <div className="space-y-2 mt-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="flex items-center gap-1.5">
-                    <Wrench size={12} className="text-gray-400" />
-                    <span className="text-gray-400">Server tools:</span>
-                    <span className="text-gray-200">{serverTools.length}</span>
-                  </span>
-                  <span className="text-gray-600">•</span>
-                  <span className="flex items-center gap-1.5">
-                    <Globe size={12} className={hasMcp ? "text-accent-green" : "text-gray-500"} />
-                    <span className={hasMcp ? "text-accent-green" : "text-gray-500"}>MCP tools:</span>
-                    <span className={hasMcp ? "text-accent-green font-medium" : "text-gray-500"}>{mcpTools.length}</span>
-                    {hasMcp ? <CheckCircle2 size={12} className="text-accent-green" /> : <AlertTriangle size={12} className="text-accent-yellow" />}
-                  </span>
-                  {hasMcp && <span className="text-gray-500">({mcpTools.map((t) => t.name).join(", ")})</span>}
-                </div>
-                {hasMcp ? (
-                  <div className="flex items-start gap-2 text-xs bg-accent-green/5 border border-accent-green/20 px-3 py-2">
-                    <Info size={12} className="text-accent-green mt-0.5 shrink-0" />
-                    <div className="text-gray-400 leading-relaxed">
-                      <span className="text-accent-green font-medium">MCP is active.</span> In the chat, open the WebUI’s <em>Tools</em> (or <em>Settings → Tools</em>) and ensure the <code className="font-mono text-gray-300">MCP</code> category and{" "}
-                      <code className="font-mono text-gray-300">{mcpTools[0]?.name}</code> are enabled (per-conversation toggles). Then ask e.g. <code className="font-mono text-gray-200">“Use exa_web_search_exa to find the top 3 worldwide news”</code>.
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-start gap-2 text-xs bg-accent-yellow/5 border border-accent-yellow/20 px-3 py-2">
-                    <AlertTriangle size={12} className="text-accent-yellow mt-0.5 shrink-0" />
-                    <div className="text-gray-400">
-                      No MCP tools were advertised by the server. Ensure an <code className="font-mono">exa</code> server with command <code className="font-mono">npx</code> (auto-wrapped to <code className="font-mono">cmd /c npx</code> on Windows) is saved, then restart the server from <em>Run</em>. The log should show <code className="font-mono">Added 2 MCP tools</code>.
-                    </div>
-                  </div>
-                )}
+              <div className="flex flex-wrap items-center gap-2 text-xs mt-3">
+                <span className="flex items-center gap-1.5">
+                  <Wrench size={12} className="text-gray-400" />
+                  <span className="text-gray-400">Server:</span>
+                  <span className="text-gray-200">{serverTools.length}</span>
+                </span>
+                <span className="text-gray-600">•</span>
+                <span className="flex items-center gap-1.5">
+                  <Globe size={12} className={hasMcp ? "text-accent-green" : "text-gray-500"} />
+                  <span className={hasMcp ? "text-accent-green" : "text-gray-500"}>MCP:</span>
+                  <span className={hasMcp ? "text-accent-green font-medium" : "text-gray-500"}>{mcpTools.length}</span>
+                  {hasMcp ? <CheckCircle2 size={12} className="text-accent-green" /> : <AlertTriangle size={12} className="text-accent-yellow" />}
+                </span>
+                {hasMcp && <span className="text-gray-500">({mcpTools.map((t) => t.name).join(", ")})</span>}
               </div>
             );
           })()
