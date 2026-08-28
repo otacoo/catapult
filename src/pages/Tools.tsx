@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Pencil, Plus, Trash2, X, Wrench, Globe, AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
+import { Pencil, Plus, Trash2, X, Wrench, Globe, AlertTriangle, CheckCircle2, RefreshCw, ExternalLink, FolderOpen } from "lucide-react";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import Toggle from "../components/Toggle";
 import { KNOWN_TOOLS, toolsArgValue } from "../utils/tools";
 import type { AppConfig, McpInfo, McpServerEntry, ServerStatus, ServerToolInfo } from "../types";
@@ -288,23 +289,19 @@ export default function Tools() {
             "No tools enabled — file access stays off."
           )}
         </div>
-        <div className="mt-2 text-xs text-gray-600">
-          llama.cpp has no built-in web fetch/search tool; add one via an MCP server below to give
-          the model internet access.
-        </div>
       </div>
 
       {/* MCP servers */}
       <div className="card">
-        <div className="flex items-center gap-2 mb-1">
+        <div className="flex items-center justify-between mb-1">
           <h2 className="section-title mb-0">MCP Servers</h2>
+          {!showForm && (
+            <button className="btn-secondary text-xs py-1 px-2" onClick={openAdd}>
+              <Plus size={12} className="inline mr-1" />Add MCP server
+            </button>
+          )}
         </div>
-        <p className="section-desc">
-          Spawn child-process MCP servers (stdio) and expose their tools to the model as{" "}
-          <code className="font-mono">{"<server>_<tool>"}</code> in the chat UI. Each server runs
-          with your user's privileges — only declare commands you trust. Servers are attached to
-          llama-server on start via <code className="font-mono">--mcp-servers-config</code>.
-        </p>
+        <p className="section-desc">MCP servers expose tools to the model.</p>
 
         {(mcp?.servers.length ?? 0) > 0 ? (
           <div className="space-y-2 mt-3">
@@ -399,27 +396,41 @@ export default function Tools() {
           </div>
         )}
 
-        {!showForm && (
-          <button className="btn-secondary text-xs mt-3" onClick={openAdd}>
-            <Plus size={12} className="inline mr-1" />Add Server
-          </button>
-        )}
-
         {mcp?.path && (
-          <p className="text-xs text-gray-600 mt-3">
-            Saved to <code className="font-mono text-gray-400">{mcp.path}</code> (Cursor-compatible, editable by hand).
-          </p>
+          <div className="flex flex-wrap items-center gap-2 mt-3 text-xs text-gray-600">
+            <span>
+              Saved to <code className="font-mono text-gray-400">{mcp.path}</code>
+            </span>
+            <button
+              className="btn-ghost text-xs py-1 px-2"
+              onClick={async () => {
+                try {
+                  await openPath(mcp.path);
+                } catch (e) {
+                  setError(String(e));
+                }
+              }}
+            >
+              <ExternalLink size={12} className="inline mr-1" />
+              Open file
+            </button>
+            <button
+              className="btn-ghost text-xs py-1 px-2"
+              onClick={async () => {
+                try {
+                  await revealItemInDir(mcp.path);
+                } catch (e) {
+                  setError(String(e));
+                }
+              }}
+            >
+              <FolderOpen size={12} className="inline mr-1" />
+              Show in folder
+            </button>
+          </div>
         )}
-
         {mcp?.path && (
-          <p className="text-xs text-gray-600 mt-2">
-            Windows note: commands that aren't a real executable — e.g. <code className="font-mono text-gray-400">npx</code>,
-            which only exists as a <code className="font-mono text-gray-400">.cmd</code> shim — are automatically wrapped
-            through <code className="font-mono text-gray-400">cmd /c</code> at run time
-            (<code className="font-mono text-gray-400">mcp_effective.json</code>), because llama.cpp's process
-            spawner cannot launch script files directly.
-            Real <code className="font-mono text-gray-400">.exe</code> commands are untouched.
-          </p>
+          <p className="text-xs text-gray-500 mt-2">On Windows, .cmd shims (e.g. npx) are auto-wrapped via cmd /c.</p>
         )}
       </div>
     </div>
