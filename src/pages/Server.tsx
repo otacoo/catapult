@@ -1009,9 +1009,9 @@ export default function Server() {
             <div className="grid grid-cols-2 gap-3">
               <NumberInput label="Max Tokens" hint="-1 = unlimited" value={config.n_predict} min={-1}
                 onChange={(v) => setConfig((c) => ({ ...c, n_predict: v ?? -1 }))} />
-              <NumberInput label="Batch Size" hint="Logical max batch (default: 2048)" value={config.n_batch} min={1} max={16384} step={32}
+              <NumberInput label="Batch Size" hint="Auto: 2048 (4096 if ≥16GB VRAM), ≥ ubatch" value={config.n_batch} min={1} max={16384} step={32}
                 onChange={(v) => setConfig((c) => ({ ...c, n_batch: v ?? 2048 }))} />
-              <NumberInput label="Micro-batch Size" hint="Physical max batch (default: 512)" value={config.n_ubatch} min={1} max={16384} step={32}
+              <NumberInput label="Micro-batch Size" hint="Auto: 512 (1024 if ≥16GB VRAM)" value={config.n_ubatch} min={1} max={16384} step={32}
                 onChange={(v) => setConfig((c) => ({ ...c, n_ubatch: v ?? 512 }))} />
               <NumberInput label="Keep Tokens" hint="Tokens to keep from initial prompt (0=none, -1=all)" value={getEpNum("keep")}
                 onChange={(v) => setEpNum("keep", v)} />
@@ -1078,9 +1078,9 @@ export default function Server() {
 
             <Section title="CPU" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Threads" hint="CPU threads for generation (-1=auto)" value={config.n_threads}
+              <NumberInput label="Threads" hint="Auto: physical cores (e.g. 8) — Auto-estimate sets this" value={config.n_threads}
                 onChange={(v) => setConfig((c) => ({ ...c, n_threads: v }))} />
-              <NumberInput label="Threads Batch" hint="Threads for batch processing (default: same as threads)" value={getEpNum("threads-batch")}
+              <NumberInput label="Threads Batch" hint="Auto: same as Threads" value={getEpNum("threads-batch")}
                 onChange={(v) => setEpNum("threads-batch", v)} />
               <SelectInput label="NUMA" hint="NUMA optimizations" value={getEp("numa") || ""}
                 options={[{ value: "", label: "Disabled" }, { value: "distribute", label: "Distribute" }, { value: "isolate", label: "Isolate" }, { value: "numactl", label: "numactl" }]}
@@ -1214,12 +1214,33 @@ export default function Server() {
 
           {/* ════════════════════════ SERVER ════════════════════════ */}
           <div data-tab="Server" className="space-y-4" style={{ display: activeTab === "Server" ? undefined : "none" }}>
+            <Section title="Workload" />
+            <SelectInput
+              label="Profile"
+              hint="Presets parallel slots for common use-cases (like llama-optimize --use-case)"
+              value={
+                config.parallel === 1 ? "single"
+                : config.parallel === 4 ? "agents"
+                : config.parallel === 8 ? "multi"
+                : "custom"
+              }
+              options={[
+                { value: "single", label: "Single user — 1 slot (default)" },
+                { value: "agents", label: "Agents — 4 concurrent (long prompts)" },
+                { value: "multi", label: "Multi-user — 8 concurrent" },
+                { value: "custom", label: "Custom" },
+              ]}
+              onChange={(v) => {
+                const map: Record<string, number> = { single: 1, agents: 4, multi: 8 };
+                if (v in map) setConfig((c) => ({ ...c, parallel: map[v] }));
+              }}
+            />
             <Section title="Network" />
             <div className="grid grid-cols-2 gap-3">
               <TextInput label="Host" value={config.host} onChange={(v) => setConfig((c) => ({ ...c, host: v }))} />
               <NumberInput label="Port" value={config.port} min={1} max={65535}
                 onChange={(v) => setConfig((c) => ({ ...c, port: v ?? 8080 }))} />
-              <NumberInput label="Parallel Slots" hint="-1 = auto (default)" value={config.parallel} min={-1} max={128}
+              <NumberInput label="Parallel Slots" hint="Concurrent slots; profile sets this" value={config.parallel} min={-1} max={128}
                 onChange={(v) => setConfig((c) => ({ ...c, parallel: v ?? 1 }))} />
               <NumberInput label="Timeout (s)" hint="Read/write timeout (default: 600)" value={getEpNum("timeout")} min={0}
                 onChange={(v) => setEpNum("timeout", v)} />
