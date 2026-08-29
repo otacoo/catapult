@@ -671,11 +671,13 @@ async fn run_quick_benchmark(
     Ok(res)
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 async fn list_bench_results() -> Result<Vec<bench::BenchResult>, String> {
     bench::load_bench_results().map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 async fn clear_bench_results() -> Result<(), String> {
     bench::clear_bench_results().map_err(|e| e.to_string())
