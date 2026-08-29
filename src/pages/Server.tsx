@@ -1173,7 +1173,7 @@ export default function Server() {
               <Toggle label="Check Tensors" hint="Validate model tensor data on load" checked={hasFlag("check-tensors")} onChange={(v) => setFlag("check-tensors", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <NumberInput label="N CPU MoE Layers" hint="Keep MoE weights of first N layers on CPU" value={getEpNum("n-cpu-moe")} min={0}
+              <NumberInput label="N CPU MoE Layers" hint="Keep MoE experts on CPU — guide: 32 on 12GB" value={getEpNum("n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("n-cpu-moe", v)} />
               <NumberInput label="N CPU MoE Layers (Draft)" hint="Keep MoE weights of first N layers on CPU for draft" value={getEpNum("spec-draft-n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("spec-draft-n-cpu-moe", v)} />
