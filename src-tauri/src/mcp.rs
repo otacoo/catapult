@@ -134,11 +134,36 @@ pub fn entries_from_config(cfg: &McpConfig) -> Vec<McpServerEntry> {
 // commands as `cmd /c <command> <args>` in an *effective* runtime config; the
 // persisted `mcp.json` keeps the portable form.
 
-#[cfg(any(target_os = "windows", test))]
+#[allow(dead_code)]
 const PATHEXT_DEFAULT: [&str; 4] = [".COM", ".EXE", ".BAT", ".CMD"];
 
 fn ext_means_script(ext: &str) -> bool {
     matches!(ext.to_ascii_lowercase().as_str(), ".cmd" | ".bat")
+}
+
+fn file_exists_case_insensitive(path: &std::path::Path) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    // On case-sensitive filesystems (Linux CI), mimic Windows case-insensitivity
+    // for PATHEXT probing by scanning the parent directory.
+    if let Some(parent) = path.parent() {
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                let lower = file_name.to_ascii_lowercase();
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if name.to_ascii_lowercase() == lower {
+                            if entry.path().is_file() {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// True when Windows `CreateProcess` could not launch `command` directly and
@@ -172,7 +197,7 @@ pub fn needs_cmd_wrapper(
             for ext in exts {
                 let mut os = probe.as_os_str().to_os_string();
                 os.push(ext);
-                if Path::new(&os).is_file() {
+                if file_exists_case_insensitive(Path::new(&os)) {
                     return ext_means_script(ext);
                 }
             }
@@ -189,7 +214,7 @@ pub fn needs_cmd_wrapper(
         for ext in exts {
             let mut os = base.as_os_str().to_os_string();
             os.push(ext);
-            if Path::new(&os).is_file() {
+            if file_exists_case_insensitive(Path::new(&os)) {
                 return ext_means_script(ext);
             }
         }
