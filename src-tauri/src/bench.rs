@@ -47,7 +47,8 @@ pub async fn run_quick_bench(
     n_ctx: Option<u32>,
     n_gpu_layers: Option<i32>,
 ) -> Result<BenchResult> {
-    let runtime_info = crate::runtime::get_runtime_info(app_config)?;
+    // Ensure a runtime is installed (validates config) – result not needed directly
+    crate::runtime::get_runtime_info(app_config)?;
     let runtime_dir = app_config.runtime_dir().context("No runtime installed")?;
     let bench_bin = find_bench_binary(&runtime_dir)
         .ok_or_else(|| anyhow::anyhow!("llama-bench not found in {}", runtime_dir.display()))?;
@@ -82,6 +83,7 @@ pub async fn run_quick_bench(
     // Suppress console window on Windows
     #[cfg(target_os = "windows")]
     {
+        #[allow(unused_imports)]
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
@@ -229,7 +231,6 @@ fn parse_llama_bench_md(md: &str) -> Option<(f64, f64)> {
     let mut pp: Option<f64> = None;
     let mut tg: Option<f64> = None;
     for line in md.lines() {
-        let lower = line.to_lowercase();
         // Look for pipe-separated cells
         if line.contains('|') {
             let cells: Vec<String> = line.split('|').map(|c| c.trim().to_string()).collect();
