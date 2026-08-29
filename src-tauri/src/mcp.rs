@@ -134,6 +134,7 @@ pub fn entries_from_config(cfg: &McpConfig) -> Vec<McpServerEntry> {
 // commands as `cmd /c <command> <args>` in an *effective* runtime config; the
 // persisted `mcp.json` keeps the portable form.
 
+#[cfg(any(target_os = "windows", test))]
 const PATHEXT_DEFAULT: [&str; 4] = [".COM", ".EXE", ".BAT", ".CMD"];
 
 fn ext_means_script(ext: &str) -> bool {
@@ -198,6 +199,7 @@ pub fn needs_cmd_wrapper(
 }
 
 /// Rewrite a server that needs the wrapper into `cmd /c <command> <args>`.
+#[cfg(any(target_os = "windows", test))]
 fn wrap_server(s: &McpServer) -> McpServer {
     let mut args = Vec::with_capacity(s.args.len() + 2);
     args.push("/c".to_string());
@@ -214,6 +216,7 @@ fn wrap_server(s: &McpServer) -> McpServer {
 
 /// Apply the shim wrapping to a config. Pure over the injected environment so
 /// it is unit-testable on any platform.
+#[cfg(any(target_os = "windows", test))]
 fn apply_shim_wrap(
     cfg: &McpConfig,
     exts: &[String],
