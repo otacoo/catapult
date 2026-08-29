@@ -51,53 +51,6 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-  tag:
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # Use PAT if available so the tag push triggers a build with write permissions
-          # (pushes via GITHUB_TOKEN trigger read-only workflows and can't create releases)
-          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
-
-      - name: Auto-tag version bump
-        env:
-          GH_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          VERSION=$(jq -r .version package.json)
-          TAG="v$VERSION"
-          echo "Current version: $VERSION -> $TAG"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping"
-            exit 0
-          fi
-          if git diff --name-only HEAD~1 HEAD | grep -q "package.json"; then
-            PREV_VERSION=$(git show HEAD~1:package.json | jq -r .version)
-            if [ "$PREV_VERSION" != "$VERSION" ]; then
-              echo "Version bump $PREV_VERSION -> $VERSION, creating $TAG"
-              git config user.name "github-actions[bot]"
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git tag "$TAG"
-              # Push tag and create draft release so the subsequent build (triggered by this tag)
-              # doesn't need to create it with a read-only token
-              git push origin "$TAG"
-              if ! gh release view "$TAG" >/dev/null 2>&1; then
-                echo "Creating draft release $TAG"
-                gh release create "$TAG" --draft --title "Catapult $TAG" --generate-notes || echo "gh release create failed (may need PAT with repo scope)"
-              fi
-            else
-              echo "No version change"
-            fi
-          else
-            echo "package.json not changed"
-          fi
-
   build:
     needs: check
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
@@ -149,9 +102,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
-          # Only create/upload a GitHub Release on tagged pushes (v*).
-          # tauri-action merges each platform's latest.json into one manifest,
-          # which a separate release job would not do.
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && 'v__VERSION__' || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && 'Catapult v__VERSION__' || '' }}
           releaseDraft: ${{ startsWith(github.ref, 'refs/tags/v') }}
