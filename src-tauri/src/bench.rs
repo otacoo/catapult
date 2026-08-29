@@ -100,8 +100,6 @@ pub async fn run_quick_bench(
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // Try to parse CSV: header includes "pp_tps" and "tg_tps" or similar
-    // Fallback to scanning for "tg=" / "pp=" in text
     let mut pp_tps: Option<f64> = None;
     let mut tg_tps: Option<f64> = None;
     let mut status = if output.status.success() {
@@ -111,28 +109,28 @@ pub async fn run_quick_bench(
     }
     .to_string();
 
-    // CSV parse: first line header, second line data
-    let combined = format!("{}\n{}", stdout, stderr);
-    for line in combined.lines() {
-        let lower = line.to_lowercase();
-        if lower.contains("tg") && lower.contains("pp") && pp_tps.is_none() {
-            // Try to find numbers like "tg=7.4" or "pp=122.0"
-            if let Some(v) = extract_metric(line, "tg") {
-                tg_tps = Some(v);
-            }
-            if let Some(v) = extract_metric(line, "pp") {
-                pp_tps = Some(v);
-            }
+    // Try structured CSV parse first (handles llama-bench --output csv where pp/tg
+    // are distinguished by n_prompt/n_gen and throughput is in avg_ts)
+    if let Some((pp, tg)) = parse_llama_bench_csv(&stdout).or_else(|| parse_llama_bench_csv(&stderr)) {
+        pp_tps = Some(pp);
+        tg_tps = Some(tg);
+    }
+    // Fallback: markdown table (| pp512 | 540.99 ± ... | / | tg128 | 35.54 |)
+    if pp_tps.is_none() || tg_tps.is_none() {
+        let md_pp = parse_llama_bench_md(&stdout).or_else(|| parse_llama_bench_md(&stderr));
+        if let Some((pp, tg)) = md_pp {
+            if pp_tps.is_none() { pp_tps = Some(pp); }
+            if tg_tps.is_none() { tg_tps = Some(tg); }
         }
     }
-    // If CSV header present, try more structured parse
+    // Last fallback: scan for tg= / pp= fragments
     if pp_tps.is_none() || tg_tps.is_none() {
-        if let Some((pp, tg)) = parse_csv_throughput(&stdout) {
-            if pp_tps.is_none() {
-                pp_tps = Some(pp);
-            }
-            if tg_tps.is_none() {
-                tg_tps = Some(tg);
+        let combined = format!("{}\n{}", stdout, stderr);
+        for line in combined.lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("tg") && lower.contains("pp") && pp_tps.is_none() {
+                if let Some(v) = extract_metric(line, "tg") { tg_tps = Some(v); }
+                if let Some(v) = extract_metric(line, "pp") { pp_tps = Some(v); }
             }
         }
     }
@@ -190,14 +188,89 @@ fn extract_metric(line: &str, key: &str) -> Option<f64> {
     None
 }
 
+fn parse_llama_bench_csv(csv: &str) -> Option<(f64, f64)> {
+    // llama-bench --output csv has header with n_prompt,n_gen,avg_ts,…
+    // pp row: n_prompt=512 n_gen=0, tg row: n_prompt=0 n_gen=128, avg_ts = throughput
+    let mut lines = csv.lines();
+    let header = lines.next()?.to_lowercase();
+    let headers: Vec<String> = header.split(',').map(|s| s.trim().to_lowercase()).collect();
+    let n_prompt_idx = headers.iter().position(|h| h == "n_prompt")?;
+    let n_gen_idx = headers.iter().position(|h| h == "n_gen")?;
+    let avg_ts_idx = headers.iter().position(|h| h == "avg_ts")?;
+    let mut pp: Option<f64> = None;
+    let mut tg: Option<f64> = None;
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Naive CSV split – values are simple, quoted but no commas inside
+        let cols: Vec<String> = line.split(',').map(|c| c.trim().trim_matches('"').to_string()).collect();
+        if cols.len() <= n_prompt_idx.max(n_gen_idx).max(avg_ts_idx) {
+            continue;
+        }
+        let np: u32 = cols[n_prompt_idx].parse().ok()?;
+        let ng: u32 = cols[n_gen_idx].parse().ok()?;
+        let ts: f64 = cols[avg_ts_idx].parse().ok()?;
+        if np > 0 && ng == 0 {
+            pp = Some(ts);
+        } else if np == 0 && ng > 0 {
+            tg = Some(ts);
+        }
+        if pp.is_some() && tg.is_some() {
+            return Some((pp.unwrap(), tg.unwrap()));
+        }
+    }
+    match (pp, tg) {
+        (Some(p), Some(t)) => Some((p, t)),
+        _ => None,
+    }
+}
+
+fn parse_llama_bench_md(md: &str) -> Option<(f64, f64)> {
+    // Markdown table: | ... | pp512 | 540.99 ± 0.00 |  and | ... | tg128 | 35.54 ± ... |
+    let mut pp: Option<f64> = None;
+    let mut tg: Option<f64> = None;
+    for line in md.lines() {
+        let lower = line.to_lowercase();
+        // Look for pipe-separated cells
+        if line.contains('|') {
+            let cells: Vec<String> = line.split('|').map(|c| c.trim().to_string()).collect();
+            for (i, cell) in cells.iter().enumerate() {
+                let cl = cell.to_lowercase();
+                if cl.starts_with("pp") {
+                    // Next cell should contain "540.99 ±"
+                    if let Some(next) = cells.get(i + 1) {
+                        if let Some(v) = next.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()) {
+                            pp = Some(v);
+                        }
+                    }
+                } else if cl.starts_with("tg") {
+                    if let Some(next) = cells.get(i + 1) {
+                        if let Some(v) = next.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()) {
+                            tg = Some(v);
+                        }
+                    }
+                }
+            }
+        }
+        if pp.is_some() && tg.is_some() {
+            return Some((pp.unwrap(), tg.unwrap()));
+        }
+    }
+    match (pp, tg) {
+        (Some(p), Some(t)) => Some((p, t)),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]
 fn parse_csv_throughput(csv: &str) -> Option<(f64, f64)> {
     let mut lines = csv.lines();
     let header = lines.next()?.to_lowercase();
-    // Find column indices for pp and tg
     let headers: Vec<String> = header.split(',').map(|s| s.trim().to_lowercase()).collect();
     let pp_idx = headers.iter().position(|h| h.contains("pp") && h.contains("tps"))?;
     let tg_idx = headers.iter().position(|h| h.contains("tg") && h.contains("tps"))?;
-    // Next non-empty line is data
     for line in lines {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {

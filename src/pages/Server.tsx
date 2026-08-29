@@ -321,6 +321,7 @@ export default function Server() {
   const [benchResult, setBenchResult] = useState<BenchResult | null>(null);
   const [benchLoading, setBenchLoading] = useState(false);
   const [benchError, setBenchError] = useState<string | null>(null);
+  const [benchShowDetails, setBenchShowDetails] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
@@ -676,6 +677,11 @@ export default function Server() {
         modelPath: config.model_path,
         nPrompt: 512,
         nGen: 128,
+        nThreads: config.n_threads,
+        batchSize: config.n_batch,
+        ubatchSize: config.n_ubatch,
+        nCtx: config.n_ctx,
+        nGpuLayers: config.n_gpu_layers,
       });
       setBenchResult(res);
     } catch (e) {
@@ -931,11 +937,18 @@ export default function Server() {
         {/* Quick bench result */}
         {(benchResult || benchLoading || benchError) && (
           <div className="card">
-            <h2 className="section-title">Quick Bench</h2>
-            {benchLoading && <p className="text-xs text-gray-500">Running 1-rep bench (512 prompt + 128 gen)…</p>}
-            {benchError && <p className="text-xs text-accent-red break-words">{benchError}</p>}
+            <div className="flex items-center justify-between">
+              <h2 className="section-title mb-0">Quick Bench</h2>
+              {benchResult && (
+                <button className="btn-ghost text-xs py-1 px-2" onClick={() => setBenchShowDetails(!benchShowDetails)}>
+                  {benchShowDetails ? "Hide details" : "Show details"}
+                </button>
+              )}
+            </div>
+            {benchLoading && <p className="text-xs text-gray-500 mt-2">Running 1-rep bench (512 prompt + 128 gen) with current threads/batch…</p>}
+            {benchError && <p className="text-xs text-accent-red break-words mt-2">{benchError}</p>}
             {benchResult && (
-              <div className="text-xs text-gray-400 space-y-1">
+              <div className="text-xs text-gray-400 space-y-2 mt-2">
                 <p>
                   pp: <span className="text-gray-200">{benchResult.pp_tps?.toFixed(1) ?? "–"}</span> t/s • tg:{" "}
                   <span className="text-gray-200">{benchResult.tg_tps?.toFixed(1) ?? "–"}</span> t/s{" "}
@@ -943,7 +956,17 @@ export default function Server() {
                 </p>
                 <p className="text-gray-500">
                   1 rep, {benchResult.n_prompt}+{benchResult.n_gen}, threads {benchResult.n_threads ?? "auto"}, batch {benchResult.batch_size}/{benchResult.ubatch_size}
+                  {benchResult.n_ctx ? `, ctx ${benchResult.n_ctx}` : ""} {benchResult.n_gpu_layers !== -1 ? `, ngl ${benchResult.n_gpu_layers}` : ""}
                 </p>
+                {(!benchResult.pp_tps || !benchResult.tg_tps) && (
+                  <p className="text-accent-yellow">No throughput parsed — check details or Server Logs for the raw bench output.</p>
+                )}
+                <p className="text-gray-600">Full output also mirrored to Server Logs. Use it to tune threads/batch/ctx: higher pp = better prefill (long prompts), higher tg = faster generation. Compare before/after changing knobs; OOM or “no throughput parsed” means the config didn’t fit.</p>
+                {benchShowDetails && (
+                  <pre className="bg-surface-0 p-2 overflow-auto max-h-48 text-[10px] leading-tight whitespace-pre-wrap break-words">
+                    {benchResult.raw_stdout || benchResult.raw_stderr || "(no output)"}
+                  </pre>
+                )}
               </div>
             )}
           </div>

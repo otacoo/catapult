@@ -599,13 +599,20 @@ async fn get_server_tools(state: State<'_, AppState>) -> Result<Vec<server::Serv
 
 #[tauri::command]
 async fn run_quick_benchmark(
+    app: AppHandle,
     model_path: String,
     n_prompt: Option<u32>,
     n_gen: Option<u32>,
+    n_threads: Option<i32>,
+    batch_size: Option<u32>,
+    ubatch_size: Option<u32>,
+    n_ctx: Option<u32>,
+    n_gpu_layers: Option<i32>,
     state: State<'_, AppState>,
 ) -> Result<bench::BenchResult, String> {
     let app_config = state.config.lock().unwrap().clone();
-    let (n_threads, batch_size, ubatch_size, n_ctx, n_gpu_layers) = {
+    // Prefer explicit args from UI (current config), fallback to running server's config
+    let (fallback_threads, fallback_batch, fallback_ubatch, fallback_ctx, fallback_ngl) = {
         let s = state.server.lock().unwrap();
         if let Some(cfg) = &s.config {
             (
@@ -619,9 +626,14 @@ async fn run_quick_benchmark(
             (None, None, None, None, None)
         }
     };
-    bench::run_quick_bench(
+    let n_threads = n_threads.or(fallback_threads);
+    let batch_size = batch_size.or(fallback_batch);
+    let ubatch_size = ubatch_size.or(fallback_ubatch);
+    let n_ctx = n_ctx.or(fallback_ctx);
+    let n_gpu_layers = n_gpu_layers.or(fallback_ngl);
+    let res = bench::run_quick_bench(
         &app_config,
-        model_path,
+        model_path.clone(),
         n_prompt,
         n_gen,
         n_threads,
@@ -631,7 +643,32 @@ async fn run_quick_benchmark(
         n_gpu_layers,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // Mirror a summary into Server Logs so "no throughput parsed" is debuggable
+    {
+        let mut s = state.server.lock().unwrap();
+        let summary = format!(
+            "[bench] {} — pp {} tg {} ({})",
+            res.model_path,
+            res.pp_tps.map(|v| format!("{:.1} t/s", v)).unwrap_or_else(|| "–".to_string()),
+            res.tg_tps.map(|v| format!("{:.1} t/s", v)).unwrap_or_else(|| "–".to_string()),
+            res.status
+        );
+        s.log_lines.push(summary.clone());
+        for line in res.raw_stdout.lines().take(12) {
+            let l = line.trim();
+            if !l.is_empty() && l.len() < 300 {
+                s.log_lines.push(format!("[bench] {}", l));
+            }
+        }
+        if s.log_lines.len() > 500 {
+            s.log_lines.drain(0..100);
+        }
+        let _ = app.emit("server_log", &summary);
+    }
+
+    Ok(res)
 }
 
 #[tauri::command]
