@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::process::Command;
@@ -23,6 +24,10 @@ pub struct BenchResult {
     pub status: String,
     pub raw_stdout: String,
     pub raw_stderr: String,
+    #[serde(default)]
+    pub timestamp: String,
+    #[serde(default)]
+    pub model_name: String,
 }
 
 fn find_bench_binary(runtime_dir: &std::path::Path) -> Option<PathBuf> {
@@ -32,6 +37,43 @@ fn find_bench_binary(runtime_dir: &std::path::Path) -> Option<PathBuf> {
         "llama-bench"
     };
     find_file_recursive(runtime_dir, target, 3)
+}
+
+pub fn bench_results_path() -> Result<PathBuf> {
+    let data_dir = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Cannot find data dir"))?;
+    Ok(data_dir.join("catapult").join("bench_results.json"))
+}
+
+pub fn load_bench_results() -> Result<Vec<BenchResult>> {
+    let path = bench_results_path()?;
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let content = std::fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&content).unwrap_or_default())
+}
+
+pub fn append_bench_result(result: &BenchResult) -> Result<()> {
+    let path = bench_results_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut results = load_bench_results().unwrap_or_default();
+    results.push(result.clone());
+    if results.len() > 200 {
+        results.drain(0..results.len() - 200);
+    }
+    let json = serde_json::to_string_pretty(&results)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+pub fn clear_bench_results() -> Result<()> {
+    let path = bench_results_path()?;
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// Run a quick `llama-bench` with the current ServerConfig-ish flags.
@@ -140,8 +182,13 @@ pub async fn run_quick_bench(
         status = "ok (no throughput parsed)".to_string();
     }
 
-    Ok(BenchResult {
-        model_path,
+    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let model_name = std::path::Path::new(&model_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let result = BenchResult {
+        model_path: model_path.clone(),
         n_prompt: p,
         n_gen: n,
         n_threads,
@@ -151,10 +198,14 @@ pub async fn run_quick_bench(
         n_gpu_layers: n_gpu_layers.unwrap_or(-1),
         pp_tps,
         tg_tps,
-        status,
-        raw_stdout: stdout,
-        raw_stderr: stderr,
-    })
+        status: status.clone(),
+        raw_stdout: stdout.clone(),
+        raw_stderr: stderr.clone(),
+        timestamp,
+        model_name,
+    };
+    let _ = append_bench_result(&result);
+    Ok(result)
 }
 
 fn extract_metric(line: &str, key: &str) -> Option<f64> {

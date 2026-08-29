@@ -71,6 +71,8 @@ export interface BenchResult {
   status: string;
   raw_stdout: string;
   raw_stderr: string;
+  timestamp: string;
+  model_name: string;
 }
 
 // ── Runtime ───────────────────────────────────────────────────────────────────

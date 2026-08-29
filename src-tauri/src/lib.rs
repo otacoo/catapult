@@ -672,6 +672,16 @@ async fn run_quick_benchmark(
 }
 
 #[tauri::command]
+async fn list_bench_results() -> Result<Vec<bench::BenchResult>, String> {
+    bench::load_bench_results().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn clear_bench_results() -> Result<(), String> {
+    bench::clear_bench_results().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn suggest_server_config(
     model_path: String,
     model_size_mb: u64,
@@ -940,6 +950,8 @@ pub fn run() {
             get_server_logs,
             get_server_tools,
             run_quick_benchmark,
+            list_bench_results,
+            clear_bench_results,
             suggest_server_config,
             estimate_model_memory,
             // Config

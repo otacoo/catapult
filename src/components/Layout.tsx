@@ -11,6 +11,7 @@ import {
   Play,
   MessageSquare,
   Plug,
+  FlaskConical,
 } from "lucide-react";
 import { clsx } from "clsx";
 import CatapultIcon from "./CatapultIcon";
@@ -22,6 +23,7 @@ const navItems = [
   { to: "/models", label: "Models", icon: Database },
   { to: "/tools", label: "Tools", icon: Wrench },
   { to: "/server", label: "Run", icon: Play },
+  { to: "/bench", label: "Bench", icon: FlaskConical },
   { to: "/api", label: "API", icon: Plug },
   { to: "/chat", label: "Chat", icon: MessageSquare },
 ];
