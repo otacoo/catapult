@@ -28,6 +28,10 @@ pub struct BenchResult {
     pub timestamp: String,
     #[serde(default)]
     pub model_name: String,
+    #[serde(default)]
+    pub build_number: Option<u32>,
+    #[serde(default)]
+    pub build_commit: Option<String>,
 }
 
 fn find_bench_binary(runtime_dir: &std::path::Path) -> Option<PathBuf> {
@@ -89,8 +93,7 @@ pub async fn run_quick_bench(
     n_ctx: Option<u32>,
     n_gpu_layers: Option<i32>,
 ) -> Result<BenchResult> {
-    // Ensure a runtime is installed (validates config) – result not needed directly
-    crate::runtime::get_runtime_info(app_config)?;
+    let runtime_info = crate::runtime::get_runtime_info(app_config)?;
     let runtime_dir = app_config.runtime_dir().context("No runtime installed")?;
     let bench_bin = find_bench_binary(&runtime_dir)
         .ok_or_else(|| anyhow::anyhow!("llama-bench not found in {}", runtime_dir.display()))?;
@@ -182,6 +185,15 @@ pub async fn run_quick_bench(
         status = "ok (no throughput parsed)".to_string();
     }
 
+    let mut build_number = runtime_info.build;
+    let mut build_commit: Option<String> = None;
+    if let Some((bn, bc)) = parse_bench_build(&stdout).or_else(|| parse_bench_build(&stderr)) {
+        build_number = Some(bn);
+        if !bc.is_empty() {
+            build_commit = Some(bc);
+        }
+    }
+
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let model_name = std::path::Path::new(&model_path)
         .file_name()
@@ -203,6 +215,8 @@ pub async fn run_quick_bench(
         raw_stderr: stderr.clone(),
         timestamp,
         model_name,
+        build_number,
+        build_commit,
     };
     let _ = append_bench_result(&result);
     Ok(result)
@@ -311,6 +325,30 @@ fn parse_llama_bench_md(md: &str) -> Option<(f64, f64)> {
         (Some(p), Some(t)) => Some((p, t)),
         _ => None,
     }
+}
+
+fn parse_bench_build(csv: &str) -> Option<(u32, String)> {
+    let mut lines = csv.lines();
+    let header = lines.next()?.to_lowercase();
+    let headers: Vec<String> = header.split(',').map(|s| s.trim().to_lowercase()).collect();
+    let bn_idx = headers.iter().position(|h| h == "build_number")?;
+    let bc_idx = headers.iter().position(|h| h == "build_commit")?;
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<String> = line.split(',').map(|c| c.trim().trim_matches('"').to_string()).collect();
+        if cols.len() <= bn_idx.max(bc_idx) {
+            continue;
+        }
+        if let Ok(bn) = cols[bn_idx].parse::<u32>() {
+            if bn != 0 {
+                return Some((bn, cols[bc_idx].clone()));
+            }
+        }
+    }
+    None
 }
 
 #[allow(dead_code)]

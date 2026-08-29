@@ -73,6 +73,8 @@ export interface BenchResult {
   raw_stderr: string;
   timestamp: string;
   model_name: string;
+  build_number?: number | null;
+  build_commit?: string | null;
 }
 
 // ── Runtime ───────────────────────────────────────────────────────────────────

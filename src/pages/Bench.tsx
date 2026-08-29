@@ -43,7 +43,10 @@ export default function Bench() {
             <FlaskConical size={20} className="text-primary-light" /> Bench
           </h1>
           <p className="text-xs text-gray-500 mt-1">
-            History of Quick Bench runs (<code className="font-mono">512+128</code> 1-rep, <code className="font-mono">bench_results.json</code>). Quick Bench stays in <em>Run</em>, this tab is the log.
+            History of Quick Bench runs (<code className="font-mono">512+128</code> 1-rep, <code className="font-mono">bench_results.json</code>).
+          </p>
+          <p className="text-xs text-gray-600 mt-1">
+            Tip: higher <code className="font-mono">tg</code> = faster generation, higher <code className="font-mono">pp</code> = faster prefill. Compare rows before/after changing a knob.
           </p>
         </div>
         <div className="flex gap-2">
@@ -73,6 +76,7 @@ export default function Bench() {
                 <tr>
                   <th className="text-left px-3 py-2 font-medium">Time</th>
                   <th className="text-left px-3 py-2 font-medium">Model</th>
+                  <th className="text-center px-3 py-2 font-medium">Build</th>
                   <th className="text-right px-3 py-2 font-medium">pp t/s</th>
                   <th className="text-right px-3 py-2 font-medium">tg t/s</th>
                   <th className="text-center px-3 py-2 font-medium">thr</th>
@@ -85,6 +89,7 @@ export default function Bench() {
                   <tr key={i} className="hover:bg-surface-3">
                     <td className="px-3 py-2 text-gray-500 font-mono whitespace-nowrap">{r.timestamp ? new Date(r.timestamp).toLocaleString() : "–"}</td>
                     <td className="px-3 py-2 text-gray-300 truncate max-w-[180px]" title={r.model_path}>{r.model_name || r.model_path.split(/[\\/]/).pop() || "–"}</td>
+                    <td className="px-3 py-2 text-center text-gray-500 font-mono" title={r.build_commit || ""}>{r.build_number ?? "–"}</td>
                     <td className="px-3 py-2 text-right text-gray-200">{r.pp_tps?.toFixed(1) ?? "–"}</td>
                     <td className="px-3 py-2 text-right text-gray-200">{r.tg_tps?.toFixed(1) ?? "–"}</td>
                     <td className="px-3 py-2 text-center text-gray-500">{r.n_threads ?? "auto"}</td>
@@ -95,9 +100,6 @@ export default function Bench() {
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-gray-600 px-3 py-2 border-t border-border">
-            Tip: higher <code className="font-mono">tg</code> = faster generation, higher <code className="font-mono">pp</code> = faster prefill. Compare rows before/after changing a knob; the fastest that still fits is your Pareto pick.
-          </p>
         </div>
       )}
     </div>
