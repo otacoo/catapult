@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.1] - 2026-08-29
+
+### Added
+
+- Default MCP servers (Context7, DuckDuckGo with curl bypass) seeded on first run.
+- Per-server toggles to enable/disable MCP servers at will.
+- Open file and Show in folder buttons for `mcp.json`.
+
+### Fixed
+
+- "Open file" for `mcp.json` failed due to missing opener permissions.
+- Save Server button only shows the add icon when creating a new server.
+
 ## [0.3.0] - 2026-08-29
 
 ### Added
