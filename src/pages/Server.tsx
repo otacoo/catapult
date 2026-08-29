@@ -18,7 +18,7 @@ import {
   Zap,
   Search,
 } from "lucide-react";
-import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig } from "../types";
+import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig, BenchResult } from "../types";
 import Toggle from "../components/Toggle";
 import MemoryVisualizer from "../components/MemoryVisualizer";
 import { sanitizeTools } from "../utils/tools";
@@ -318,6 +318,9 @@ export default function Server() {
   const [memoryEstimate, setMemoryEstimate] = useState<MemoryEstimate | null>(loadSessionEstimate);
   const [suggestionNotes, setSuggestionNotes] = useState<string[] | null>(null);
   const [estimating, setEstimating] = useState(false);
+  const [benchResult, setBenchResult] = useState<BenchResult | null>(null);
+  const [benchLoading, setBenchLoading] = useState(false);
+  const [benchError, setBenchError] = useState<string | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
@@ -662,6 +665,26 @@ export default function Server() {
     }
   };
 
+  const runBench = async () => {
+    const model = models.find((m) => m.path === config.model_path);
+    if (!model) { setError("Select a model first."); return; }
+    setBenchLoading(true);
+    setBenchError(null);
+    setBenchResult(null);
+    try {
+      const res = await invoke<BenchResult>("run_quick_benchmark", {
+        modelPath: config.model_path,
+        nPrompt: 512,
+        nGen: 128,
+      });
+      setBenchResult(res);
+    } catch (e) {
+      setBenchError(String(e));
+    } finally {
+      setBenchLoading(false);
+    }
+  };
+
   const handleModelChange = async (m: ModelInfo) => {
     setConfig((c) => ({
       ...c,
@@ -766,6 +789,10 @@ export default function Server() {
               title="Estimate optimal GPU offload and cache settings for the selected model">
               <Zap size={12} className={estimating ? "animate-pulse" : ""} />
               Auto-estimate
+            </button>
+            <button className="btn-ghost text-xs py-1 px-2" onClick={runBench} disabled={benchLoading || !config.model_path}
+              title="Run 1-rep llama-bench (512 prompt + 128 gen) with current threads/batch">
+              <span className={benchLoading ? "animate-spin inline-block" : ""}>◷</span> Quick Bench
             </button>
           </div>
         </div>
@@ -898,6 +925,27 @@ export default function Server() {
               )}
             </div>
             <MemoryVisualizer estimate={memoryEstimate} />
+          </div>
+        )}
+
+        {/* Quick bench result */}
+        {(benchResult || benchLoading || benchError) && (
+          <div className="card">
+            <h2 className="section-title">Quick Bench</h2>
+            {benchLoading && <p className="text-xs text-gray-500">Running 1-rep bench (512 prompt + 128 gen)…</p>}
+            {benchError && <p className="text-xs text-accent-red break-words">{benchError}</p>}
+            {benchResult && (
+              <div className="text-xs text-gray-400 space-y-1">
+                <p>
+                  pp: <span className="text-gray-200">{benchResult.pp_tps?.toFixed(1) ?? "–"}</span> t/s • tg:{" "}
+                  <span className="text-gray-200">{benchResult.tg_tps?.toFixed(1) ?? "–"}</span> t/s{" "}
+                  <span className="text-gray-500">— {benchResult.status}</span>
+                </p>
+                <p className="text-gray-500">
+                  1 rep, {benchResult.n_prompt}+{benchResult.n_gen}, threads {benchResult.n_threads ?? "auto"}, batch {benchResult.batch_size}/{benchResult.ubatch_size}
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -1358,6 +1406,12 @@ export default function Server() {
 
           {/* ════════════════════════ ADVANCED ════════════════════════ */}
           <div data-tab="Advanced" className="space-y-4" style={{ display: activeTab === "Advanced" ? undefined : "none" }}>
+            <Section title="Performance (llama-optimize heuristics)" />
+            <div className="grid grid-cols-2 gap-3">
+              <SelectInput label="Poll" hint="CPU poll level 0/50/100 — 50 is balanced (auto via Auto-estimate)" value={getEp("poll") || ""} options={[{ value: "", label: "Default" }, { value: "0", label: "0" }, { value: "50", label: "50" }, { value: "100", label: "100" }]} onChange={(v) => setEp("poll", v)} />
+              <SelectInput label="Offload Tensors (ot)" hint="VRAM fit lever — none vs ffn_cpu etc." value={getEp("ot") || ""} options={[{ value: "", label: "Default" }, { value: "none", label: "none" }, { value: "ffn_up_cpu", label: "ffn_up_cpu" }, { value: "ffn_cpu", label: "ffn_cpu" }, { value: "exps_cpu", label: "exps_cpu (MoE)" }, { value: "attn_cpu", label: "attn_cpu" }]} onChange={(v) => setEp("ot", v)} />
+            </div>
+            <p className="text-xs text-gray-500">Auto-estimate sets threads/ubatch/batch + cache; poll/ot/nkvo are opt-in (like <code className="font-mono">--factor poll=0,50</code>). Use a workload profile (Server tab) for parallel/context.</p>
             <Section title="RoPE" />
             <div className="grid grid-cols-2 gap-3">
               <SelectInput label="RoPE Scaling" value={getEp("rope-scaling") || ""}

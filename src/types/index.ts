@@ -57,6 +57,22 @@ export interface MemoryEstimate {
   notes: string[];
 }
 
+export interface BenchResult {
+  model_path: string;
+  n_prompt: number;
+  n_gen: number;
+  n_threads: number | null;
+  batch_size: number;
+  ubatch_size: number;
+  n_ctx: number;
+  n_gpu_layers: number;
+  pp_tps: number | null;
+  tg_tps: number | null;
+  status: string;
+  raw_stdout: string;
+  raw_stderr: string;
+}
+
 // ── Runtime ───────────────────────────────────────────────────────────────────
 
 export interface RuntimeInfo {

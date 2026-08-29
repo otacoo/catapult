@@ -1,3 +1,4 @@
+pub mod bench;
 pub mod config;
 pub mod hardware;
 pub mod huggingface;
@@ -597,6 +598,43 @@ async fn get_server_tools(state: State<'_, AppState>) -> Result<Vec<server::Serv
 }
 
 #[tauri::command]
+async fn run_quick_benchmark(
+    model_path: String,
+    n_prompt: Option<u32>,
+    n_gen: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<bench::BenchResult, String> {
+    let app_config = state.config.lock().unwrap().clone();
+    let (n_threads, batch_size, ubatch_size, n_ctx, n_gpu_layers) = {
+        let s = state.server.lock().unwrap();
+        if let Some(cfg) = &s.config {
+            (
+                cfg.n_threads,
+                Some(cfg.n_batch),
+                Some(cfg.n_ubatch),
+                Some(cfg.n_ctx),
+                Some(cfg.n_gpu_layers),
+            )
+        } else {
+            (None, None, None, None, None)
+        }
+    };
+    bench::run_quick_bench(
+        &app_config,
+        model_path,
+        n_prompt,
+        n_gen,
+        n_threads,
+        batch_size,
+        ubatch_size,
+        n_ctx,
+        n_gpu_layers,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn suggest_server_config(
     model_path: String,
     model_size_mb: u64,
@@ -864,6 +902,7 @@ pub fn run() {
             get_server_info,
             get_server_logs,
             get_server_tools,
+            run_quick_benchmark,
             suggest_server_config,
             estimate_model_memory,
             // Config
