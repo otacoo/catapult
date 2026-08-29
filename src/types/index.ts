@@ -33,6 +33,9 @@ export interface SuggestedConfig {
   can_fit_fully_in_vram: boolean;
   total_usable_mb: number;
   notes: string[];
+  n_threads?: number | null;
+  n_batch?: number | null;
+  n_ubatch?: number | null;
 }
 
 export interface MemoryEstimate {

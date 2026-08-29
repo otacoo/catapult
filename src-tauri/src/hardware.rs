@@ -95,6 +95,14 @@ pub struct SuggestedConfig {
     pub can_fit_fully_in_vram: bool,
     pub total_usable_mb: u64,
     pub notes: Vec<String>,
+    /// Suggested CPU threads (physical cores), `None` if unknown.
+    #[serde(default)]
+    pub n_threads: Option<i32>,
+    /// Suggested batch sizes (heuristic, no benchmark).
+    #[serde(default)]
+    pub n_batch: Option<u32>,
+    #[serde(default)]
+    pub n_ubatch: Option<u32>,
 }
 
 /// Estimated memory breakdown for a model + settings on the current machine.
@@ -752,12 +760,29 @@ pub fn suggest_config_with_layers(
         total_ram_mb
     };
 
+    // Heuristic threads: peak around physical cores (like llama-optimize brackets
+    // around phys cores). Clamp to 1..64.
+    let n_threads = Some((system.cpu_cores.max(1).min(64)) as i32);
+    // Micro-batch / batch: keep b >= ub, power-of-two. Larger VRAM → larger ub
+    // for better prefill throughput (llama-optimize sweeps 128..2048).
+    let n_ubatch = Some(if total_vram_mb >= 16000 { 1024 } else { 512 });
+    let n_batch = Some(n_ubatch.unwrap() * 4); // 2048 or 4096, always ≥ ubatch
+    notes.push(format!("Threads: {} (physical cores)", n_threads.unwrap()));
+    notes.push(format!(
+        "Batch: {} / Micro-batch: {} (b=4·ub, power-of-two)",
+        n_batch.unwrap(),
+        n_ubatch.unwrap()
+    ));
+
     SuggestedConfig {
         n_gpu_layers,
         n_ctx,
         can_fit_fully_in_vram,
         total_usable_mb,
         notes,
+        n_threads,
+        n_batch,
+        n_ubatch,
     }
 }
 
