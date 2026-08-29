@@ -73,11 +73,8 @@ pub async fn run_quick_bench(
         // Prefer --ubatch-size if supported, fallback to -ub via raw args.
         cmd.arg("--ubatch-size").arg(ub.to_string());
     }
-    if let Some(ctx) = n_ctx {
-        if ctx > 0 {
-            cmd.arg("-c").arg(ctx.to_string());
-        }
-    }
+    // bench has no -c/--ctx-size flag – context is derived from model/prompt.
+    // Passing -c makes it exit 1 with help. Only pass ngl.
     if let Some(ngl) = n_gpu_layers {
         cmd.arg("-ngl").arg(ngl.to_string());
     }
