@@ -276,6 +276,8 @@ export interface AppConfig {
   theme: AppTheme;
   /** App-wide selection of built-in file tools (`--tools`), managed on the Tools/MCP page. */
   server_tools: string[];
+  /** Names of MCP servers toggled off on the Tools/MCP page. */
+  mcp_disabled: string[];
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */
@@ -300,6 +302,8 @@ export interface McpServerEntry {
   env: Record<string, string>;
   cwd: string | null;
   timeout_ms: number | null;
+  /** App-side toggle; disabled names are stored in AppConfig.mcp_disabled. */
+  enabled: boolean;
 }
 
 /** Response of `list_mcp_servers`: the servers plus the on-disk config path. */

@@ -38,6 +38,15 @@ pub struct McpServerEntry {
     pub cwd: Option<String>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// App-side toggle. Never persisted to mcp.json (Cursor-compatible) —
+    /// disabled names live in `AppConfig.mcp_disabled` and are filtered out
+    /// before `--mcp-servers-config` is built.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -121,8 +130,55 @@ pub fn entries_from_config(cfg: &McpConfig) -> Vec<McpServerEntry> {
             env: s.env.clone(),
             cwd: s.cwd.clone(),
             timeout_ms: s.timeout_ms,
+            enabled: true,
         })
         .collect()
+}
+
+/// Pre-configured defaults seeded into `mcp.json` on first run. All keyless
+/// and start enabled.
+pub fn default_entries() -> Vec<McpServerEntry> {
+    vec![
+        McpServerEntry {
+            name: "context7".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+            env: HashMap::new(),
+            cwd: None,
+            timeout_ms: None,
+            enabled: true,
+        },
+        McpServerEntry {
+            name: "ddg-search".to_string(),
+            command: "uvx".to_string(),
+            args: vec![
+                "--with".to_string(),
+                "duckduckgo-mcp-server[browser]".to_string(),
+                "duckduckgo-mcp-server".to_string(),
+            ],
+            env: HashMap::new(),
+            cwd: None,
+            timeout_ms: None,
+            enabled: true,
+        },
+    ]
+}
+
+/// Seed the default MCP servers on first run. Only fires when mcp.json is
+/// missing, so user deletions are respected.
+pub fn ensure_defaults() -> Result<()> {
+    let path = mcp_config_path()?;
+    if !path.exists() {
+        save_at(&default_entries(), &path)?;
+    }
+    Ok(())
+}
+
+/// Drop disabled servers from a config before handing it to llama-server.
+pub fn filter_disabled(cfg: &McpConfig, disabled: &[String]) -> McpConfig {
+    let mut out = cfg.clone();
+    out.servers.retain(|name, _| !disabled.iter().any(|d| d == name));
+    out
 }
 
 // ── Windows `.cmd`/`.bat` shim wrapping ──────────────────────────────────────
@@ -292,8 +348,11 @@ fn remove_stale_effective() {
 /// from the persisted one (Windows shim wrap applied), a runtime copy is
 /// materialized at `mcp_effective.json` so `mcp.json` stays portable; the copy
 /// is removed again once unused so llama.cpp never reads a stale file.
-pub fn runtime_mcp_config_path() -> Result<Option<PathBuf>> {
+/// `disabled` holds the names of servers toggled off app-side; they are
+/// filtered out (and if none remain, no flag is emitted).
+pub fn runtime_mcp_config_path(disabled: &[String]) -> Result<Option<PathBuf>> {
     let cfg = load()?;
+    let cfg = filter_disabled(&cfg, disabled);
     if cfg.servers.is_empty() {
         remove_stale_effective();
         return Ok(None);
@@ -332,6 +391,7 @@ mod tests {
                 env: HashMap::new(),
                 cwd: None,
                 timeout_ms: Some(15000),
+                enabled: true,
             },
             McpServerEntry {
                 name: "search".to_string(),
@@ -344,6 +404,7 @@ mod tests {
                 },
                 cwd: Some("D:/work".to_string()),
                 timeout_ms: None,
+                enabled: false,
             },
         ]
     }
@@ -409,6 +470,7 @@ mod tests {
             env: HashMap::new(),
             cwd: None,
             timeout_ms: None,
+            enabled: true,
         }], &path).unwrap();
 
         let cfg = load_at(&path).unwrap();
@@ -430,6 +492,56 @@ mod tests {
 
     fn exts(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn filter_disabled_drops_named_servers() {
+        let mut servers = BTreeMap::new();
+        servers.insert("exa".to_string(), McpServer { command: "npx".to_string(), ..Default::default() });
+        servers.insert("github".to_string(), McpServer { command: "docker".to_string(), ..Default::default() });
+        let cfg = McpConfig { servers };
+
+        let filtered = filter_disabled(&cfg, &["github".to_string()]);
+        assert!(filtered.servers.contains_key("exa"));
+        assert!(!filtered.servers.contains_key("github"));
+
+        // All disabled -> nothing left.
+        let all = filter_disabled(&cfg, &["exa".to_string(), "github".to_string()]);
+        assert!(all.servers.is_empty());
+
+        // Empty disabled list keeps everything.
+        let none = filter_disabled(&cfg, &[]);
+        assert_eq!(none.servers.len(), 2);
+    }
+
+    #[test]
+    fn default_entries_seed_two_servers() {
+        let entries = default_entries();
+        assert_eq!(entries.len(), 2);
+        let context7 = entries.iter().find(|e| e.name == "context7").unwrap();
+        assert!(context7.enabled);
+        assert_eq!(context7.args, vec!["-y", "@upstash/context7-mcp"]);
+        let ddg = entries.iter().find(|e| e.name == "ddg-search").unwrap();
+        assert!(ddg.enabled);
+        // curl bypass: the [browser] extra is loaded via --with
+        assert!(ddg.args.contains(&"duckduckgo-mcp-server[browser]".to_string()));
+        // No server requires credentials out of the box.
+        assert!(entries.iter().all(|e| e.env.is_empty()));
+    }
+
+    #[test]
+    fn disabled_entries_are_not_serialized_into_mcp_json() {
+        let path = temp_path("disabled-shape");
+        let _ = std::fs::remove_file(&path);
+
+        let mut entries = sample_entries();
+        entries[1].enabled = false;
+        save_at(&entries, &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        // The Cursor shape never carries the app-side toggle.
+        assert!(!content.contains("enabled"));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

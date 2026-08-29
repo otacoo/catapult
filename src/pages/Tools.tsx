@@ -13,6 +13,7 @@ const emptyEntry = (): McpServerEntry => ({
   env: {},
   cwd: null,
   timeout_ms: null,
+  enabled: true,
 });
 
 // ── Text ↔ structured conversions for the MCP editor ───────────────────────
@@ -200,6 +201,11 @@ export default function Tools() {
     await saveServers((mcp?.servers ?? []).filter((s) => s.name !== name));
   };
 
+  const toggleEnabled = async (name: string, on: boolean) => {
+    const next = (mcp?.servers ?? []).map((s) => (s.name === name ? { ...s, enabled: on } : s));
+    await saveServers(next);
+  };
+
   const running = serverStatus.type === "running" || serverStatus.type === "starting";
 
   return (
@@ -306,7 +312,7 @@ export default function Tools() {
         {(mcp?.servers.length ?? 0) > 0 ? (
           <div className="space-y-2 mt-3">
             {mcp!.servers.map((s) => (
-              <div key={s.name} className="flex items-center gap-3 rounded border border-border bg-surface-2 px-3 py-2">
+              <div key={s.name} className={`flex items-center gap-3 rounded border border-border bg-surface-2 px-3 py-2 ${s.enabled ? "" : "opacity-50"}`}>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-200 font-mono">{s.name}</p>
                   <p className="text-xs text-gray-500 truncate font-mono">{s.command}</p>
@@ -317,6 +323,9 @@ export default function Tools() {
                     {s.timeout_ms != null && ` · timeout ${s.timeout_ms}ms`}
                   </p>
                 </div>
+                <span title={s.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}>
+                  <Toggle checked={s.enabled} onChange={(on) => toggleEnabled(s.name, on)} />
+                </span>
                 <button className="btn-ghost text-xs py-1 px-2" onClick={() => openEdit(s)}>
                   <Pencil size={12} className="inline mr-1" />Edit
                 </button>
@@ -389,7 +398,8 @@ export default function Tools() {
             </div>
             <div className="flex gap-2">
               <button className="btn-primary text-xs" onClick={saveEntry}>
-                <Plus size={12} className="inline mr-1" />Save Server
+                {!editId && <Plus size={12} className="inline mr-1" />}
+                Save Server
               </button>
               <button className="btn-ghost text-xs" onClick={closeForm}>Cancel</button>
             </div>

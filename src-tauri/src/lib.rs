@@ -520,7 +520,10 @@ async fn start_server(
     // MCP servers configured in the Tools tab are attached at run time. On
     // Windows a runtime copy may be materialized so `.cmd`/`.bat` shims (e.g.
     // `npx`) are wrapped through `cmd /c`, which CreateProcess cannot do.
-    let mcp_config_path = mcp::runtime_mcp_config_path().ok().flatten();
+    // Servers toggled off app-side are filtered out here.
+    let mcp_config_path = mcp::runtime_mcp_config_path(&app_config.mcp_disabled)
+        .ok()
+        .flatten();
 
     let runtime_info = runtime::get_runtime_info(&app_config).map_err(|e| e.to_string())?;
     let server_binary = runtime_info
@@ -787,19 +790,40 @@ async fn set_tools(tools: Vec<String>, state: State<'_, AppState>) -> Result<(),
 }
 
 #[tauri::command]
-async fn list_mcp_servers() -> Result<mcp::McpInfo, String> {
+async fn list_mcp_servers(state: State<'_, AppState>) -> Result<mcp::McpInfo, String> {
+    // Seed the default servers on first run (only when mcp.json is missing).
+    mcp::ensure_defaults().map_err(|e| e.to_string())?;
     let cfg = mcp::load().map_err(|e| e.to_string())?;
+    let disabled = state.config.lock().unwrap().mcp_disabled.clone();
+    let servers = mcp::entries_from_config(&cfg)
+        .into_iter()
+        .map(|mut e| {
+            e.enabled = !disabled.iter().any(|d| d == &e.name);
+            e
+        })
+        .collect();
     Ok(mcp::McpInfo {
         path: mcp::mcp_config_path()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default(),
-        servers: mcp::entries_from_config(&cfg),
+        servers,
     })
 }
 
 #[tauri::command]
-async fn save_mcp_servers(servers: Vec<mcp::McpServerEntry>) -> Result<(), String> {
-    mcp::save(&servers).map_err(|e| e.to_string())
+async fn save_mcp_servers(
+    servers: Vec<mcp::McpServerEntry>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    mcp::save(&servers).map_err(|e| e.to_string())?;
+    // App-side enabled toggles live in AppConfig; mcp.json stays Cursor-compatible.
+    let mut config = state.config.lock().unwrap();
+    config.mcp_disabled = servers
+        .iter()
+        .filter(|s| !s.enabled)
+        .map(|s| s.name.clone())
+        .collect();
+    config.save().map_err(|e| e.to_string())
 }
 
 // ── Server config presets ────────────────────────────────────────────────────

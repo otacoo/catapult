@@ -120,6 +120,11 @@ pub struct AppConfig {
     /// preset or the session config carried.
     #[serde(default)]
     pub server_tools: Vec<String>,
+    /// Names of MCP servers configured in mcp.json but toggled off on the
+    /// Tools/MCP page. Stored app-wide so mcp.json stays Cursor-compatible;
+    /// disabled servers are filtered out before `--mcp-servers-config` is built.
+    #[serde(default)]
+    pub mcp_disabled: Vec<String>,
 }
 
 impl AppConfig {
@@ -451,6 +456,7 @@ mod tests {
             server_working_dir: Some("E:/test".to_string()),
             theme: Theme::Light,
             server_tools: vec!["read_file".to_string(), "grep_search".to_string()],
+            mcp_disabled: vec!["github".to_string()],
             ..Default::default()
         }
     }
@@ -506,6 +512,7 @@ mod tests {
         assert_eq!(restored.server_working_dir.as_deref(), Some("E:/test"));
         assert_eq!(restored.theme, Theme::Light);
         assert_eq!(restored.server_tools, vec!["read_file", "grep_search"]);
+        assert_eq!(restored.mcp_disabled, vec!["github"]);
     }
 
     /// Legacy fields with skip_serializing must NOT appear in JSON output.
