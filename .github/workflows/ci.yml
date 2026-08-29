@@ -61,8 +61,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Use PAT if available so the tag push triggers a build with write permissions
+          # (pushes via GITHUB_TOKEN trigger read-only workflows and can't create releases)
+          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
 
       - name: Auto-tag version bump
+        env:
+          GH_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -e
           VERSION=$(jq -r .version package.json)
@@ -79,7 +84,13 @@ jobs:
               git config user.name "github-actions[bot]"
               git config user.email "github-actions[bot]@users.noreply.github.com"
               git tag "$TAG"
+              # Push tag and create draft release so the subsequent build (triggered by this tag)
+              # doesn't need to create it with a read-only token
               git push origin "$TAG"
+              if ! gh release view "$TAG" >/dev/null 2>&1; then
+                echo "Creating draft release $TAG"
+                gh release create "$TAG" --draft --title "Catapult $TAG" --generate-notes || echo "gh release create failed (may need PAT with repo scope)"
+              fi
             else
               echo "No version change"
             fi
