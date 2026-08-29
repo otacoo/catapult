@@ -1,16 +1,29 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed
-
-- **Windows MCP spawning for `npx` shims**: `llama-server` could not launch MCP servers whose command is a `.cmd`/`.bat` shim (e.g. `npx` for `exa-mcp-server`), logging `failed to spawn 'npx'`. On Windows the server is now started with a runtime copy (`mcp_effective.json`) where such commands are wrapped as `cmd /c <command> <args>`; the persisted `mcp.json` stays portable. The fix is conservative – a bare name that resolves to a `.cmd`/`.bat` or to nothing on `PATH` is wrapped, real `.exe` commands are never wrapped. Server logs now include `[mcp] attaching configured MCP servers from …` next to the `$` command line.
-- **Chat template showed no MCP option**: The embedded Chat page now fetches the live `/tools` list from the running server (via a new `get_server_tools` Tauri command) and shows a banner with server vs MCP tool counts and per-conversation toggle guidance, so a working MCP configuration is immediately visible.
-- **Stale `mcp.json` wrapping for existing installs**: Existing installations with an unwrapped `mcp.json` containing `npx` are now usable without a rebuild – the on-disk file was migrated to the wrapped form for the current binary, and future builds handle unwrapped files at runtime via `mcp_effective.json`.
+## [0.3.0] - 2026-08-29
 
 ### Added
 
-- **Chat MCP banner and live tool probe**: `src-tauri/src/server.rs:fetch_server_tools` and `src-tauri/src/lib.rs:get_server_tools` expose the server’s `/tools` endpoint to the frontend; `src/pages/Chat.tsx` polls it when the server is running and explains how to enable the WebUI’s per-conversation MCP toggles (e.g. explicitly asking for `exa_web_search_exa`).
+- Live Server Tools probe in Tools tab and dedicated Bench tab with `bench_results.json` history for Quick Bench runs.
+- Quick Bench button in Run header runs 1-rep `llama-bench` (512+128) with current threads/batch and shows pp/tg.
+- Performance heuristics for threads, batch and micro-batch via Auto-estimate and workload profiles (single/agents/multi).
+- Poll and tensor offload (`ot`) controls in Advanced Performance section.
+- Updated curated models to 10 newer releases including LFM2.5 2.6B, Ornith 9B and Qwen3.6 35B.
+- Build number column in Bench history.
+
+### Changed
+
+- Moved live MCP status from Chat to Tools to maximize chat space.
+- Simplified Tool guidance text and moved Add MCP Server button to header.
+- Added Open file and Show in folder actions for `mcp.json`.
+- N CPU MoE hint now includes guide for 12GB cards.
+
+### Fixed
+
+- Windows MCP `npx` shims now auto-wrapped via `cmd /c` with case-insensitive PATHEXT handling.
+- Bench no longer passes invalid `-c` and correctly parses `llama-bench` CSV/Markdown output.
+- Bench results now mirrored to Server Logs for debugging.
+- CI dead_code warnings for MCP helpers on Linux.
 
 ## [0.2.0] - 2026-08-28
 
