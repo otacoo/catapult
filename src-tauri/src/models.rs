@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 use crate::config::AppConfig;
@@ -568,15 +570,16 @@ pub async fn download_model(
     file: &HfFile,
     config: &AppConfig,
     progress_cb: impl Fn(DownloadProgress) + Send + Sync,
+    cancel_signal: Arc<AtomicU8>,
 ) -> Result<PathBuf> {
     let models_dir = config.models_dir()?;
     std::fs::create_dir_all(&models_dir)?;
 
     if !file.split_parts.is_empty() {
-        return download_split_model(client, file, &models_dir, &progress_cb).await;
+        return download_split_model(client, file, &models_dir, &progress_cb, cancel_signal).await;
     }
 
-    download_single_file(client, &file.filename, &file.download_url, file.size_bytes, &models_dir, &progress_cb).await
+    download_single_file(client, &file.filename, &file.download_url, file.size_bytes, &models_dir, &progress_cb, cancel_signal).await
 }
 
 /// Compute a prefixed filename for an mmproj when downloaded alongside a model.
@@ -604,6 +607,7 @@ async fn download_split_model(
     file: &HfFile,
     models_dir: &Path,
     progress_cb: &(dyn Fn(DownloadProgress) + Send + Sync),
+    cancel_signal: Arc<AtomicU8>,
 ) -> Result<PathBuf> {
     let total_bytes = file.size_bytes;
     let display_id = file.filename.clone();
@@ -641,7 +645,7 @@ async fn download_split_model(
             });
         };
 
-        download_single_file(client, &part.filename, &part.download_url, part.size_bytes, models_dir, &part_cb).await?;
+        download_single_file(client, &part.filename, &part.download_url, part.size_bytes, models_dir, &part_cb, cancel_signal.clone()).await?;
 
         completed_bytes += part.size_bytes;
     }
@@ -666,6 +670,7 @@ async fn download_single_file(
     size_bytes: u64,
     models_dir: &Path,
     progress_cb: &(dyn Fn(DownloadProgress) + Send + Sync),
+    cancel_signal: Arc<AtomicU8>,
 ) -> Result<PathBuf> {
     let dest_path = models_dir.join(filename);
     let tmp_path = models_dir.join(format!("__downloading__{}", filename));
@@ -772,6 +777,26 @@ async fn download_single_file(
         let downloaded_at_start = downloaded;
 
         while let Some(chunk_result) = stream.next().await {
+            // Honor user-initiated pause/cancel between chunks. 0 = keep going.
+            // The frontend sets the flag (1 = cancel, 2 = pause) and observes the
+            // status we emit before bailing.
+            let signal = cancel_signal.load(Ordering::Acquire);
+            if signal == 1 || signal == 2 {
+                let status = if signal == 1 { "cancelled" } else { "paused" };
+                let reason = if signal == 1 { "cancelled" } else { "paused" };
+                progress_cb(DownloadProgress {
+                    id: filename.to_string(),
+                    bytes_downloaded: downloaded,
+                    total_bytes,
+                    percent: if total_bytes > 0 {
+                        (downloaded as f64 / total_bytes as f64) * 100.0
+                    } else {
+                        0.0
+                    },
+                    status: status.to_string(),
+                });
+                anyhow::bail!("Download {reason}");
+            }
             match chunk_result {
                 Ok(chunk) => {
                     if let Err(e) = out_file.write_all(&chunk).await {

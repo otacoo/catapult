@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Search,
   Download,
@@ -16,6 +17,7 @@ import {
   ArrowUp,
   ArrowDown,
   Filter,
+  ExternalLink,
 } from "lucide-react";
 import type {
   ModelInfo,
@@ -185,9 +187,10 @@ export default function Models() {
         companionModel: companionModel ?? null,
       });
     } catch (e) {
-      // Error is expected when retries exhausted — paused status is already set via event
-      if (!String(e).includes("failed after")) {
-        setError(String(e));
+      // Expected when retries exhausted, paused, or cancelled by the user.
+      const msg = String(e);
+      if (!msg.includes("failed after") && !msg.includes("cancelled") && !msg.includes("paused")) {
+        setError(msg);
       }
     }
   };
@@ -212,13 +215,38 @@ export default function Models() {
     }
   };
 
-  const abortDownload = async (filename: string) => {
+  const openInBrowser = async (url: string) => {
     try {
+      await openUrl(url);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const pauseDownload = async (filename: string) => {
+    setDownloads((prev) => {
+      const cur = prev[filename];
+      if (!cur) return prev;
+      return {
+        ...prev,
+        [filename]: { ...cur, status: "paused" },
+      };
+    });
+    try {
+      await invoke("pause_download", { id: filename });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const cancelDownload = async (filename: string) => {
+    setDownloads((prev) => {
+      const { [filename]: _, ...rest } = prev;
+      return rest;
+    });
+    try {
+      await invoke("cancel_download", { id: filename });
       await invoke("abort_download", { filename });
-      setDownloads((prev) => {
-        const { [filename]: _, ...rest } = prev;
-        return rest;
-      });
     } catch (e) {
       setError(String(e));
     }
@@ -340,14 +368,30 @@ export default function Models() {
                       {dl.status === "paused" ? (
                         <>
                           <span className="text-[10px] text-accent-yellow">Paused</span>
-                          <button className="btn-danger text-[10px] py-0.5 px-1.5" onClick={() => abortDownload(filename)}>
-                            Abort
+                          <button
+                            className="btn-danger text-[10px] py-0.5 px-1.5"
+                            onClick={() => cancelDownload(filename)}
+                            title="Discard the partial download (Resume from the model row)"
+                          >
+                            Cancel
                           </button>
                         </>
                       ) : (
                         <>
                           <span className="text-[10px] font-mono text-gray-500">{dl.percent.toFixed(1)}%</span>
                           <span className="text-[10px] text-gray-600">{formatSize(dl.bytes_downloaded)} / {formatSize(dl.total_bytes)}</span>
+                          <button
+                            className="btn-ghost text-[10px] py-0.5 px-1.5"
+                            onClick={() => pauseDownload(filename)}
+                          >
+                            Pause
+                          </button>
+                          <button
+                            className="btn-danger text-[10px] py-0.5 px-1.5"
+                            onClick={() => cancelDownload(filename)}
+                          >
+                            Cancel
+                          </button>
                         </>
                       )}
                     </div>
@@ -527,9 +571,16 @@ export default function Models() {
                         )}
                       </div>
                       <p className="text-xs text-gray-400 mt-1">{m.description}</p>
-                      <p className="text-xs text-gray-600 mt-0.5 font-mono">
-                        {m.repo_id}
-                      </p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="text-xs text-gray-600 font-mono">{m.repo_id}</span>
+                        <button
+                          className="text-gray-600 hover:text-gray-300"
+                          onClick={() => openInBrowser(`https://huggingface.co/${m.repo_id}`)}
+                          title="Open on HuggingFace"
+                        >
+                          <ExternalLink size={10} />
+                        </button>
+                      </div>
                     </div>
                     <div className="shrink-0 flex flex-col items-end gap-2">
                       <span className="text-xs text-gray-500">
@@ -565,7 +616,8 @@ export default function Models() {
                     <div className="mt-3">
                       <div className="flex justify-between items-center text-xs text-gray-500 mb-1">
                         <span>
-                          {dl.status === "paused" ? "Paused — download failed" :
+                          {dl.status === "paused" ? "Paused" :
+                           dl.status === "cancelled" ? "Cancelled" :
                            dl.status.startsWith("retrying") ? `Retrying… (${dl.status})` :
                            dl.status === "extracting" ? "Extracting…" : "Downloading…"}
                         </span>
@@ -592,8 +644,24 @@ export default function Models() {
                           }>
                             Resume
                           </button>
-                          <button className="btn-danger text-xs" onClick={() => abortDownload(m.filename)}>
-                            Abort
+                          <button className="btn-danger text-xs" onClick={() => cancelDownload(m.filename)}>
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                      {dl.status !== "paused" && dl.status !== "cancelled" && (
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            className="btn-ghost text-xs"
+                            onClick={() => pauseDownload(m.filename)}
+                          >
+                            Pause
+                          </button>
+                          <button
+                            className="btn-danger text-xs"
+                            onClick={() => cancelDownload(m.filename)}
+                          >
+                            Cancel
                           </button>
                         </div>
                       )}
@@ -658,31 +726,40 @@ export default function Models() {
               <div className="space-y-2">
                 {searchResults.map((model) => (
                   <div key={model.repo_id} className="card">
-                    <button
-                      className="w-full flex items-start gap-3 text-left"
-                      onClick={() => toggleRepo(model.repo_id)}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-200 truncate">
-                            {model.name}
-                          </span>
-                          <span className="text-xs text-gray-500">
-                            by {model.author}
-                          </span>
+                    <div className="w-full flex items-start gap-3 text-left">
+                      <button
+                        className="flex-1 flex items-start gap-3 text-left min-w-0"
+                        onClick={() => toggleRepo(model.repo_id)}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-200 truncate">
+                              {model.name}
+                            </span>
+                            <span className="text-xs text-gray-500">
+                              by {model.author}
+                            </span>
+                          </div>
+                          <div className="flex gap-3 mt-1 text-xs text-gray-500">
+                            <span>↓ {(model.downloads / 1000).toFixed(0)}K</span>
+                            <span>♥ {model.likes}</span>
+                            <span>{model.files.length} GGUF files</span>
+                          </div>
                         </div>
-                        <div className="flex gap-3 mt-1 text-xs text-gray-500">
-                          <span>↓ {(model.downloads / 1000).toFixed(0)}K</span>
-                          <span>♥ {model.likes}</span>
-                          <span>{model.files.length} GGUF files</span>
-                        </div>
-                      </div>
-                      {expandedRepo === model.repo_id ? (
-                        <ChevronUp size={14} className="text-gray-500 mt-0.5 shrink-0" />
-                      ) : (
-                        <ChevronDown size={14} className="text-gray-500 mt-0.5 shrink-0" />
-                      )}
-                    </button>
+                        {expandedRepo === model.repo_id ? (
+                          <ChevronUp size={14} className="text-gray-500 mt-0.5 shrink-0" />
+                        ) : (
+                          <ChevronDown size={14} className="text-gray-500 mt-0.5 shrink-0" />
+                        )}
+                      </button>
+                      <button
+                        className="text-gray-600 hover:text-gray-300 shrink-0"
+                        onClick={() => openInBrowser(`https://huggingface.co/${model.repo_id}`)}
+                        title="Open on HuggingFace"
+                      >
+                        <ExternalLink size={13} />
+                      </button>
+                    </div>
 
                     {expandedRepo === model.repo_id && (
                       <div className="mt-3 pt-3 border-t border-border space-y-1.5">
@@ -726,23 +803,45 @@ export default function Models() {
                                       {dl.status === "paused" ? (
                                         <>
                                           <span className="text-[10px] text-accent-yellow">Paused {dl.percent.toFixed(0)}%</span>
-                                          <button className="btn-primary text-[10px] py-0.5 px-1.5"
-                                            onClick={() => startDownload(model.repo_id, f)}>
+                                          <button
+                                            className="btn-primary text-[10px] py-0.5 px-1.5"
+                                            onClick={() => startDownload(model.repo_id, f)}
+                                          >
                                             Resume
                                           </button>
-                                          <button className="btn-danger text-[10px] py-0.5 px-1.5"
-                                            onClick={() => abortDownload(f.filename)}>
-                                            Abort
+                                          <button
+                                            className="btn-danger text-[10px] py-0.5 px-1.5"
+                                            onClick={() => cancelDownload(f.filename)}
+                                            title="Discard the partial download"
+                                          >
+                                            Cancel
                                           </button>
                                         </>
-                                      ) : (
-                                        <div className="w-20">
-                                          <div className="progress-bar">
-                                            <div className="progress-fill" style={{ width: `${dl.percent}%` }} />
+                                      ) : dl.status === "cancelled" ? null : (
+                                        <div className="flex items-center gap-1.5">
+                                          <div className="w-20">
+                                            <div className="progress-bar">
+                                              <div
+                                                className="progress-fill"
+                                                style={{ width: `${dl.percent}%` }}
+                                              />
+                                            </div>
+                                            {dl.status.startsWith("retrying") && (
+                                              <span className="text-[10px] text-accent-yellow">{dl.status}</span>
+                                            )}
                                           </div>
-                                          {dl.status.startsWith("retrying") && (
-                                            <span className="text-[10px] text-accent-yellow">{dl.status}</span>
-                                          )}
+                                          <button
+                                            className="btn-ghost text-[10px] py-0.5 px-1.5"
+                                            onClick={() => pauseDownload(f.filename)}
+                                          >
+                                            Pause
+                                          </button>
+                                          <button
+                                            className="btn-danger text-[10px] py-0.5 px-1.5"
+                                            onClick={() => cancelDownload(f.filename)}
+                                          >
+                                            Cancel
+                                          </button>
                                         </div>
                                       )}
                                     </div>

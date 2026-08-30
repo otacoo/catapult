@@ -15,7 +15,8 @@ use runtime::{ReleaseInfo, RuntimeInfo};
 use server::{ServerConfig, ServerStatus, SharedServerState};
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 // ── App State ────────────────────────────────────────────────────────────────
@@ -24,8 +25,10 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub server: SharedServerState,
     pub http_client: reqwest::Client,
-    /// Active download cancellation flags: id -> cancelled
-    pub downloads: Mutex<HashMap<String, bool>>,
+    /// Per-download control flag: 0 = active, 1 = cancel (discard), 2 = pause
+    /// (keep partial file for resume). Set by `pause_download` / `cancel_download`
+    /// and polled by the download loop between stream chunks.
+    pub downloads: Mutex<HashMap<String, Arc<AtomicU8>>>,
 }
 
 // ── Hardware commands ─────────────────────────────────────────────────────────
@@ -98,7 +101,7 @@ async fn download_runtime(
 
     let tag_name = release.tag_name.clone();
 
-    state.downloads.lock().unwrap().insert("runtime".to_string(), false);
+    state.downloads.lock().unwrap().insert("runtime".to_string(), Arc::new(AtomicU8::new(0)));
 
     let result = runtime::download_runtime(
         &state.http_client,
@@ -385,8 +388,11 @@ async fn download_model(
         is_mmproj,
     };
 
-    // Mark download active
-    state.downloads.lock().unwrap().insert(filename.clone(), false);
+    // Register a per-download control flag (0 = active). Polled by the
+    // download loop between stream chunks; 1 = cancel (discard), 2 = pause
+    // (keep the partial file for resume).
+    let cancel_signal = Arc::new(AtomicU8::new(0));
+    state.downloads.lock().unwrap().insert(filename.clone(), cancel_signal.clone());
 
     let result = models::download_model(
         &state.http_client,
@@ -396,9 +402,13 @@ async fn download_model(
         move |progress| {
             let _ = app.emit("download_progress", &progress);
         },
+        cancel_signal,
     )
     .await;
 
+    // Drop the flag once the download is no longer in progress. The temp
+    // file is preserved on pause (status "paused") so Resume picks it up; the
+    // frontend handles temp-file deletion for cancel via abort_download.
     state.downloads.lock().unwrap().remove(&filename);
 
     // On success, check for presets.ini in the repo and save as a named preset
@@ -429,14 +439,27 @@ async fn delete_model(path: String, _state: State<'_, AppState>) -> Result<(), S
 }
 
 #[tauri::command]
+async fn pause_download(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(flag) = state.downloads.lock().unwrap().get(&id) {
+        flag.store(2, Ordering::Release);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn cancel_download(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.downloads.lock().unwrap().insert(id, true);
+    if let Some(flag) = state.downloads.lock().unwrap().get(&id) {
+        flag.store(1, Ordering::Release);
+    }
     Ok(())
 }
 
 #[tauri::command]
 async fn abort_download(filename: String, state: State<'_, AppState>) -> Result<(), String> {
     let config = state.config.lock().unwrap().clone();
+    // Discard the control flag (the download is no longer in progress) and
+    // delete the partial temp file.
+    state.downloads.lock().unwrap().remove(&filename);
     models::abort_download(&filename, &config).map_err(|e| e.to_string())
 }
 
@@ -962,6 +985,7 @@ pub fn run() {
             download_model,
             delete_model,
             cancel_download,
+            pause_download,
             abort_download,
             get_models_dir,
             get_model_dirs,
