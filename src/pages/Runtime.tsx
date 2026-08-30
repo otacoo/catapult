@@ -615,7 +615,7 @@ function AssetRow({ asset, selected, onSelect }: {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-200 truncate">{asset.name}</span>
           {asset.score >= 90 && <span className="badge-green text-[10px] shrink-0">Recommended</span>}
-          {asset.score >= 60 && asset.score < 90 && (
+          {asset.score < 90 && (
             <span className="badge-purple text-[10px] shrink-0">{asset.backend_label}</span>
           )}
         </div>

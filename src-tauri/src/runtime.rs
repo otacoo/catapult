@@ -327,6 +327,12 @@ fn detect_asset_backend(lower: &str, os: &str) -> (String, String, i32) {
         ("sycl".to_string(), "SYCL".to_string(), 60)
     } else if lower.contains("openvino") {
         ("openvino".to_string(), "OpenVINO".to_string(), 50)
+    } else if lower.contains("opencl") {
+        // Adreno GPU builds (opencl-adreno-arm64)
+        ("opencl".to_string(), "OpenCL (Adreno)".to_string(), 40)
+    } else if lower.contains("cpu") {
+        // Current naming: llama-bXXXX-bin-win-cpu-x64.zip
+        ("cpu".to_string(), "CPU".to_string(), 20)
     } else if lower.contains("noavx") || lower.contains("no-avx") {
         ("cpu-noavx".to_string(), "CPU (no AVX)".to_string(), 10)
     } else if lower.contains("avx512") {
@@ -888,6 +894,8 @@ mod tests {
             ("llama-noavx", "linux", "cpu-noavx", 10),
             ("llama-generic", "linux", "cpu", 20),
             ("llama-generic", "macos", "metal", 95), // macOS default = Metal
+            ("llama-bin-win-cpu-x64.zip", "windows", "cpu", 20),
+            ("llama-bin-win-opencl-adreno-arm64.zip", "windows", "opencl", 40),
         ];
         for (name, os, expected_id, expected_score) in cases {
             let (id, _label, score) = detect_asset_backend(name, os);
