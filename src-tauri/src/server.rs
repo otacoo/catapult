@@ -710,12 +710,17 @@ pub fn build_args(config: &ServerConfig) -> Vec<String> {
     // --fit (default: on): llama-server auto-adjusts context size and GPU
     // layers to fit device memory. Explicit --ctx-size/--n-gpu-layers args
     // would block this, since fit only adjusts parameters not set by the user.
+    // --fit (default: on): auto-adjust context size and GPU layers to device
+    // memory. --ctx-size and --n-gpu-layers are passed only when --fit is off
+    // (except --n-gpu-layers is always passed so the user's explicit value is
+    // honored even with --fit on — llama.cpp's fit logic respects explicit
+    // values for the field it's not sizing).
     let fit = config.extra_params.get("fit").map(|s| s.as_str()).unwrap_or("on");
+    args.push("--n-gpu-layers".to_string());
+    args.push(config.n_gpu_layers.to_string());
     if fit == "off" {
         args.push("--ctx-size".to_string());
         args.push(config.n_ctx.to_string());
-        args.push("--n-gpu-layers".to_string());
-        args.push(config.n_gpu_layers.to_string());
         args.push("--fit".to_string());
         args.push("off".to_string());
     } else {
@@ -916,11 +921,16 @@ mod tests {
         assert!(args.contains(&"127.0.0.1".to_string()));
         assert!(args.contains(&"--port".to_string()));
         assert!(args.contains(&"8080".to_string()));
-        // Default fit is ON: ctx-size/ngl are left to llama-server
+        // Default fit is ON: ctx-size is left to llama-server, but
+        // --n-gpu-layers is always emitted so the user's value is honored.
         assert!(args.contains(&"--fit".to_string()));
         assert!(args.contains(&"on".to_string()));
         assert!(!args.contains(&"--ctx-size".to_string()));
-        assert!(!args.contains(&"--n-gpu-layers".to_string()));
+        assert!(args.contains(&"--n-gpu-layers".to_string()));
+        assert_eq!(
+            args[args.iter().position(|a| a == "--n-gpu-layers").unwrap() + 1],
+            "-1"
+        );
         assert!(args.contains(&"--flash-attn".to_string()));
         assert!(args.contains(&"auto".to_string()));
     }
