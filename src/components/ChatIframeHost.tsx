@@ -36,12 +36,19 @@ export default function ChatIframeHost() {
       if (iframe.src !== url) {
         iframe.src = url;
       }
-      // Move iframe into the visible placeholder if it exists
-      const placeholder = document.getElementById("chat-iframe-placeholder");
-      if (placeholder && iframe.parentNode !== placeholder) {
-        placeholder.appendChild(iframe);
-      }
-      iframe.style.display = "block";
+      const moveToPlaceholder = () => {
+        const placeholder = document.getElementById("chat-iframe-placeholder");
+        if (placeholder) {
+          if (iframe.parentNode !== placeholder) {
+            placeholder.appendChild(iframe);
+          }
+          iframe.style.display = "block";
+        } else {
+          // Placeholder not yet mounted, retry next frame
+          requestAnimationFrame(moveToPlaceholder);
+        }
+      };
+      moveToPlaceholder();
     } else {
       // Move iframe to hidden host to keep it alive
       if (hiddenHostRef.current && iframe.parentNode !== hiddenHostRef.current) {

@@ -1411,7 +1411,10 @@ export default function Server() {
             </div>
 
             <Section title="Reasoning" />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-3">
+              <Toggle label="Preserve Reasoning" hint="Keep reasoning content when using tools (recommended)" checked={hasFlag("reasoning-preserve")} onChange={(v) => setFlag("reasoning-preserve", v)} />
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-2">
               <SelectInput label="Reasoning" hint="Enable thinking" value={getEp("reasoning") || "auto"}
                 options={[{ value: "auto", label: "Auto (default)" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setEp("reasoning", v === "auto" ? "" : v)} />
