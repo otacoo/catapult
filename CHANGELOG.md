@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.2] - 2026-08-31
+
+### Added
+
+- Cancel and Pause buttons for active downloads in the Models browser (per-row and in the global Downloaded panel).
+- Open on HuggingFace button on every model header in the Recommended and Browse tabs.
+- Companion-files picker in Browse: surfaces mmproj and dspark drafters when the repo ships them alongside the model.
+- DSpark speculative-decoding support: new `draft-dspark` spec type; dspark files are filtered from the main file list and offered in the picker.
+
+### Changed
+
+- CI uses `tauri-apps/tauri-action@v1` (v1 fixes release asset handling and updater `latest.json` merging).
+
+### Fixed
+
+- GPU Layers slider in Hardware had no effect with the default `--fit on`; `build_args` now always emits `--n-gpu-layers` so the value flows through.
+- mcp.json `Open file` and `Show in folder` now work (added `opener:allow-open-path` and `opener:allow-reveal-item-in-dir`).
+
 ## [0.3.1] - 2026-08-29
 
 ### Added
