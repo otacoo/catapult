@@ -8,7 +8,6 @@ import Models from "./pages/Models";
 import Tools from "./pages/Tools";
 import Server from "./pages/Server";
 import Api from "./pages/Api";
-import Chat from "./pages/Chat";
 import Bench from "./pages/Bench";
 import Wizard from "./pages/Wizard";
 import type { AppConfig } from "./types";
@@ -40,7 +39,7 @@ export default function App() {
           <Route path="server" element={<Server />} />
           <Route path="bench" element={<Bench />} />
           <Route path="api" element={<Api />} />
-          <Route path="chat" element={<Chat />} />
+          <Route path="chat" element={<div style={{ display: "none" }} />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
 import { Play, RefreshCw } from "lucide-react";
 import type { ServerStatus } from "../types";
-import { setChatUrl } from "../chatState";
 
 export default function Chat() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
     const poll = async () => {
@@ -25,7 +25,9 @@ export default function Chat() {
   const chatUrl = port ? `http://127.0.0.1:${port}` : "";
 
   useEffect(() => {
-    setChatUrl(chatUrl);
+    if (iframeRef.current && chatUrl && iframeRef.current.src !== chatUrl) {
+      iframeRef.current.src = chatUrl;
+    }
   }, [chatUrl]);
 
   if (status.type === "starting") {
@@ -59,7 +61,12 @@ export default function Chat() {
     );
   }
 
-  // When running, the iframe is hosted by ChatIframeHost (fixed container)
-  // Keep this component light – just ensure the URL is set.
-  return null;
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+        <span className="text-xs text-gray-500 font-mono">{chatUrl}</span>
+      </div>
+      <iframe ref={iframeRef} src={chatUrl} className="flex-1 w-full border-0" allow="clipboard-write" title="llama.cpp Chat" />
+    </div>
+  );
 }
