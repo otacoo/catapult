@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0] - 2026-08-31
+
+### Added
+
+- Preserve Reasoning toggle for chat templates that support it.
+
+### Changed
+
+- Run now remembers last used model and preset across restarts.
+
+### Fixed
+
+- Chat keeps session when navigating away instead of resetting.
+- Chat no longer shows blank page when returning to the tab.
+
 ## [0.3.2] - 2026-08-31
 
 ### Added
