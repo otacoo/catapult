@@ -342,6 +342,7 @@ export default function Server() {
     setActivePresetRaw(v);
     if (v) sessionStorage.setItem(SESSION_PRESET_KEY, v);
     else sessionStorage.removeItem(SESSION_PRESET_KEY);
+    invoke("set_last_preset", { name: v }).catch(() => {});
   }, []);
 
   const setActiveTab = useCallback((v: Tab) => {
@@ -539,9 +540,9 @@ export default function Server() {
     const [mdls, srv, cfg] = await Promise.all([
       invoke<ModelInfo[]>("list_installed_models").catch(() => []),
       invoke<ServerStatus>("get_server_status").catch(() => ({ type: "stopped" as const })),
-      invoke<{ favorite_models: string[]; selected_model: string | null; model_presets: Record<string, string>; server_working_dir: string | null }>(
+      invoke<{ favorite_models: string[]; selected_model: string | null; model_presets: Record<string, string>; server_working_dir: string | null; last_preset: string | null }>(
         "get_config"
-      ).catch(() => ({ favorite_models: [] as string[], selected_model: null, model_presets: {} as Record<string, string>, server_working_dir: null })),
+      ).catch(() => ({ favorite_models: [] as string[], selected_model: null, model_presets: {} as Record<string, string>, server_working_dir: null, last_preset: null })),
     ]);
     setFavorites(cfg.favorite_models);
     setModels(mdls);
@@ -563,10 +564,19 @@ export default function Server() {
       }));
       // Auto-load the last-used preset for this model (on first visit only)
       if (!loadSessionConfig()) {
-        const savedPreset = cfg.model_presets[pick.path];
+        const savedPreset = cfg.model_presets[pick.path] ?? cfg.last_preset;
         if (savedPreset) {
           await loadPreset(savedPreset, pick.path);
+        } else if (cfg.last_preset) {
+          // Fallback to last global preset if no per-model preset
+          await loadPreset(cfg.last_preset).catch(() => {});
         }
+      }
+    } else if (!loadSessionConfig() && cfg.last_preset) {
+      // No model change but we have a last preset and no session preset – restore it
+      const presetName = cfg.last_preset;
+      if (presetName) {
+        await loadPreset(presetName).catch(() => {});
       }
     }
   };
@@ -697,6 +707,7 @@ export default function Server() {
       model_path: m.path,
       mmproj_path: autoMmproj && m.is_vision && m.mmproj_path ? m.mmproj_path : null,
     }));
+    invoke("set_selected_model", { modelPath: m.path }).catch(() => {});
     // Check if there's a saved preset for this model; if so, use it
     try {
       const savedPreset = await invoke<string | null>("get_model_preset", { modelPath: m.path });

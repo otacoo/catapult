@@ -280,6 +280,8 @@ export interface AppConfig {
   server_tools: string[];
   /** Names of MCP servers toggled off on the Tools/MCP page. */
   mcp_disabled: string[];
+  /** Last preset selected in Run tab, for restore on next launch. */
+  last_preset: string | null;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

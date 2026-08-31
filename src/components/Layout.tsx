@@ -16,6 +16,7 @@ import {
 import { clsx } from "clsx";
 import CatapultIcon from "./CatapultIcon";
 import WindowControls from "./WindowControls";
+import ChatIframeHost from "./ChatIframeHost";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -118,6 +119,7 @@ export default function Layout() {
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
         <Outlet />
       </main>
+      <ChatIframeHost />
     </div>
   );
 }

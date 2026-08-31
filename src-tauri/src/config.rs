@@ -125,6 +125,9 @@ pub struct AppConfig {
     /// disabled servers are filtered out before `--mcp-servers-config` is built.
     #[serde(default)]
     pub mcp_disabled: Vec<String>,
+    /// Last preset selected in the Run tab, persisted across app restarts.
+    #[serde(default)]
+    pub last_preset: Option<String>,
 }
 
 impl AppConfig {
@@ -457,6 +460,7 @@ mod tests {
             theme: Theme::Light,
             server_tools: vec!["read_file".to_string(), "grep_search".to_string()],
             mcp_disabled: vec!["github".to_string()],
+            last_preset: Some("my-preset".to_string()),
             ..Default::default()
         }
     }
@@ -513,6 +517,7 @@ mod tests {
         assert_eq!(restored.theme, Theme::Light);
         assert_eq!(restored.server_tools, vec!["read_file", "grep_search"]);
         assert_eq!(restored.mcp_disabled, vec!["github"]);
+        assert_eq!(restored.last_preset.as_deref(), Some("my-preset"));
     }
 
     /// Legacy fields with skip_serializing must NOT appear in JSON output.

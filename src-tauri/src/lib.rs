@@ -778,6 +778,13 @@ async fn set_selected_model(model_path: Option<String>, state: State<'_, AppStat
 }
 
 #[tauri::command]
+async fn set_last_preset(name: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.last_preset = name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn set_wizard_completed(completed: bool, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state.config.lock().unwrap();
     config.wizard_completed = completed;
@@ -1010,6 +1017,7 @@ pub fn run() {
             set_models_dir,
             toggle_favorite_model,
             set_selected_model,
+            set_last_preset,
             set_wizard_completed,
             set_server_working_dir,
             set_theme,
