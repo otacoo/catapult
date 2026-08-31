@@ -68,7 +68,8 @@ export default function Models() {
   const [mmProjPicker, setMmProjPicker] = useState<{
     repoId: string;
     file: HfFile;
-    mmProjFiles: HfFile[];
+    mmprojFiles: HfFile[];
+    dsparkFiles: HfFile[];
   } | null>(null);
 
   const reloadDirs = useCallback(async () => {
@@ -197,21 +198,31 @@ export default function Models() {
 
   const handleDownloadClick = (repoId: string, file: HfFile) => {
     const files = repoFiles[repoId] || [];
-    const mmProjFiles = files.filter((f) => f.is_mmproj);
-    if (mmProjFiles.length > 0 && !file.is_mmproj) {
-      setMmProjPicker({ repoId, file, mmProjFiles });
+    const mmprojFiles = files.filter((f) => f.is_mmproj);
+    const dsparkFiles = files.filter((f) => f.is_dspark);
+    if (file.is_mmproj || file.is_dspark) {
+      // The clicked file IS a companion; just download it.
+      startDownload(repoId, file);
+    } else if (mmprojFiles.length > 0 || dsparkFiles.length > 0) {
+      setMmProjPicker({ repoId, file, mmprojFiles, dsparkFiles });
     } else {
       startDownload(repoId, file);
     }
   };
 
-  const handleMmProjChoice = (mmProjFile: HfFile | null) => {
+  const handleCompanionChoice = (
+    mmProjFile: HfFile | null,
+    dsparkFile: HfFile | null,
+  ) => {
     if (!mmProjPicker) return;
     const { repoId, file } = mmProjPicker;
     setMmProjPicker(null);
     startDownload(repoId, file);
     if (mmProjFile) {
       startDownload(repoId, mmProjFile, file.filename);
+    }
+    if (dsparkFile) {
+      startDownload(repoId, dsparkFile, file.filename);
     }
   };
 
@@ -992,7 +1003,7 @@ export default function Models() {
         )}
       </div>
 
-      {/* mmproj picker modal */}
+      {/* Companion files picker (mmproj / dspark) */}
       {mmProjPicker && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
@@ -1003,33 +1014,59 @@ export default function Models() {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-gray-200">
-              Download options
+              Companion files
             </h3>
             <p className="text-xs text-gray-400">
-              This repo contains vision projection (mmproj) files. Download them alongside the model for vision support.
+              This repo ships auxiliary files alongside the model. Pick what to download.
             </p>
-            <div className="space-y-1.5">
+            <div className="space-y-3">
               <button
                 className="w-full text-left px-3 py-2 rounded hover:bg-surface-3 text-sm text-gray-200"
-                onClick={() => handleMmProjChoice(null)}
+                onClick={() => handleCompanionChoice(null, null)}
               >
                 Just the model
                 <span className="text-xs text-gray-500 ml-2">
                   {formatSize(mmProjPicker.file.size_bytes)}
                 </span>
               </button>
-              {mmProjPicker.mmProjFiles.map((mp) => (
-                <button
-                  key={mp.filename}
-                  className="w-full text-left px-3 py-2 rounded hover:bg-surface-3 text-sm text-gray-200"
-                  onClick={() => handleMmProjChoice(mp)}
-                >
-                  Model + {mp.filename}
-                  <span className="text-xs text-gray-500 ml-2">
-                    {formatSize(mmProjPicker.file.size_bytes + mp.size_bytes)}
-                  </span>
-                </button>
-              ))}
+              {mmProjPicker.mmprojFiles.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] uppercase tracking-wider text-gray-500">
+                    Vision projection (mmproj)
+                  </p>
+                  {mmProjPicker.mmprojFiles.map((mp: HfFile) => (
+                    <button
+                      key={mp.filename}
+                      className="w-full text-left px-3 py-2 rounded hover:bg-surface-3 text-sm text-gray-200"
+                      onClick={() => handleCompanionChoice(mp, null)}
+                    >
+                      Model + {mp.filename}
+                      <span className="text-xs text-gray-500 ml-2">
+                        {formatSize(mmProjPicker.file.size_bytes + mp.size_bytes)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {mmProjPicker.dsparkFiles.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] uppercase tracking-wider text-gray-500">
+                    Speculative draft (DSpark)
+                  </p>
+                  {mmProjPicker.dsparkFiles.map((dp: HfFile) => (
+                    <button
+                      key={dp.filename}
+                      className="w-full text-left px-3 py-2 rounded hover:bg-surface-3 text-sm text-gray-200"
+                      onClick={() => handleCompanionChoice(null, dp)}
+                    >
+                      Model + {dp.filename}
+                      <span className="text-xs text-gray-500 ml-2">
+                        {formatSize(mmProjPicker.file.size_bytes + dp.size_bytes)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <button
               className="btn-ghost text-xs w-full"
