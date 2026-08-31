@@ -730,15 +730,33 @@ export default function Models() {
                 {searchResults.map((model) => (
                   <div key={model.repo_id} className="card">
                     <div className="w-full flex items-start gap-3 text-left">
-                      <button
-                        className="flex-1 flex items-start gap-3 text-left min-w-0"
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className="flex-1 flex items-start gap-3 text-left min-w-0 cursor-pointer focus:outline-none"
                         onClick={() => toggleRepo(model.repo_id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleRepo(model.repo_id);
+                          }
+                        }}
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-gray-200 truncate">
                               {model.name}
                             </span>
+                            <button
+                              className="text-gray-600 hover:text-gray-300"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openInBrowser(`https://huggingface.co/${model.repo_id}`);
+                              }}
+                              title="Open on HuggingFace"
+                            >
+                              <ExternalLink size={12} />
+                            </button>
                             <span className="text-xs text-gray-500">
                               by {model.author}
                             </span>
@@ -754,14 +772,7 @@ export default function Models() {
                         ) : (
                           <ChevronDown size={14} className="text-gray-500 mt-0.5 shrink-0" />
                         )}
-                      </button>
-                      <button
-                        className="text-gray-600 hover:text-gray-300 shrink-0"
-                        onClick={() => openInBrowser(`https://huggingface.co/${model.repo_id}`)}
-                        title="Open on HuggingFace"
-                      >
-                        <ExternalLink size={13} />
-                      </button>
+                      </div>
                     </div>
 
                     {expandedRepo === model.repo_id && (
