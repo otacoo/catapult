@@ -1470,11 +1470,17 @@ export default function Server() {
                 onChange={(v) => setEp("spec-draft-model", v)} />
               <SelectInput label="Spec Type" hint="draft-* types use the draft model; ngram-* types do not" value={getEp("spec-type") || ""}
                 options={[{ value: "", label: "None" },
-                  { value: "draft-simple", label: "Draft Simple" }, { value: "draft-eagle3", label: "Draft EAGLE3" }, { value: "draft-mtp", label: "Draft MTP" },
+                  { value: "draft-simple", label: "Draft Simple" }, { value: "draft-eagle3", label: "Draft EAGLE3" },
+                  { value: "draft-mtp", label: "Draft MTP" }, { value: "draft-dspark", label: "Draft DSpark (DeepSeek V4)" },
                   { value: "ngram-cache", label: "N-gram Cache" }, { value: "ngram-simple", label: "N-gram Simple" },
                   { value: "ngram-map-k", label: "N-gram Map K" }, { value: "ngram-map-k4v", label: "N-gram Map K4V" }, { value: "ngram-mod", label: "N-gram Mod" }]}
                 onChange={(v) => setEp("spec-type", v)} />
-              <NumberInput label="Draft Max" hint="Max draft tokens (default: 16)" value={getEpNum("spec-draft-n-max")} min={1}
+              <NumberInput
+                label="Draft Max"
+                hint={getEp("spec-type") === "draft-dspark"
+                  ? "Block size for V4 DSpark drafter (default: 16, V4 ckpt trained for 5)"
+                  : "Max draft tokens (default: 16)"}
+                value={getEpNum("spec-draft-n-max")} min={1}
                 onChange={(v) => setEpNum("spec-draft-n-max", v)} />
               <NumberInput label="Draft Min" hint="Min draft tokens (default: 0)" value={getEpNum("spec-draft-n-min")} min={0}
                 onChange={(v) => setEpNum("spec-draft-n-min", v)} />

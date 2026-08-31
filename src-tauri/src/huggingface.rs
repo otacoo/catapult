@@ -165,6 +165,10 @@ pub struct HfFile {
     pub split_parts: Vec<HfFilePart>,
     #[serde(default)]
     pub is_mmproj: bool,
+    /// DSpark speculative-draft files (DeepSeek V4). Auxiliary; hidden from the
+    /// model list and download picker in the frontend.
+    #[serde(default)]
+    pub is_dspark: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +273,13 @@ pub fn is_mmproj_file(filename: &str) -> bool {
     filename.to_lowercase().contains("mmproj")
 }
 
+/// Check if a filename is a dspark (DeepSeek V4 speculative-draft) file.
+/// DSpark drafters are auxiliary and shipped alongside the target checkpoint,
+/// so we hide them from the main model list and download picker.
+pub fn is_dspark_file(filename: &str) -> bool {
+    filename.to_lowercase().contains("dspark")
+}
+
 /// Parse a split GGUF filename like `model-00001-of-00003.gguf`.
 /// Returns (base_name, part_number, total_parts).
 pub fn parse_split_filename(filename: &str) -> Option<(String, u32, u32)> {
@@ -307,11 +318,13 @@ fn consolidate_files(files: Vec<HfFile>) -> Vec<HfFile> {
             // Strip directory prefix for flat download
             let basename = file.filename.rsplit('/').next().unwrap_or(&file.filename).to_string();
             let is_mmproj = is_mmproj_file(&basename);
+            let is_dspark = is_dspark_file(&basename);
             singles.push(HfFile {
                 filename: basename,
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj,
+                is_dspark,
                 ..file
             });
         }
@@ -348,6 +361,7 @@ fn consolidate_files(files: Vec<HfFile>) -> Vec<HfFile> {
             is_split: true,
             split_parts,
             is_mmproj: false,
+            is_dspark: false,
         });
     }
 
@@ -411,6 +425,7 @@ pub async fn get_repo_files(client: &reqwest::Client, repo_id: &str) -> Result<V
         .into_iter()
         .filter(|e| e.entry_type == "file" && e.path.ends_with(".gguf"))
         .filter(|e| !is_imatrix_file(&e.path))
+        .filter(|e| !is_dspark_file(&e.path))
         .map(|e| {
             let quant = extract_quant(&e.path);
             let download_url = format!(
@@ -418,6 +433,7 @@ pub async fn get_repo_files(client: &reqwest::Client, repo_id: &str) -> Result<V
                 repo_id, e.path
             );
             let is_mmproj = is_mmproj_file(&e.path);
+            let is_dspark = is_dspark_file(&e.path);
             HfFile {
                 filename: e.path,
                 size_bytes: e.size.unwrap_or(0),
@@ -426,6 +442,7 @@ pub async fn get_repo_files(client: &reqwest::Client, repo_id: &str) -> Result<V
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj,
+                is_dspark,
             }
         })
         .collect();
@@ -446,6 +463,7 @@ fn convert_model(m: HfApiModel) -> HfModel {
         .into_iter()
         .filter(|f| f.rfilename.ends_with(".gguf"))
         .filter(|f| !is_imatrix_file(&f.rfilename))
+        .filter(|f| !is_dspark_file(&f.rfilename))
         .map(|f| {
             let quant = extract_quant(&f.rfilename);
             let download_url = format!(
@@ -453,6 +471,7 @@ fn convert_model(m: HfApiModel) -> HfModel {
                 repo_id, f.rfilename
             );
             let is_mmproj = is_mmproj_file(&f.rfilename);
+            let is_dspark = is_dspark_file(&f.rfilename);
             HfFile {
                 filename: f.rfilename,
                 size_bytes: f.size.unwrap_or(0),
@@ -461,6 +480,7 @@ fn convert_model(m: HfApiModel) -> HfModel {
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj,
+                is_dspark,
             }
         })
         .collect();
@@ -683,6 +703,15 @@ mod tests {
     }
 
     #[test]
+    fn dspark_detection() {
+        assert!(is_dspark_file("DeepSeek-V4-Flash-0731-DSpark-draft.gguf"));
+        assert!(is_dspark_file("model-dspark-Q4.gguf"));
+        assert!(is_dspark_file("DSPARK-lower.gguf"));
+        assert!(!is_dspark_file("model-Q4_K_M.gguf"));
+        assert!(!is_dspark_file("model-00001-of-00003.gguf"));
+    }
+
+    #[test]
     fn consolidate_groups_split_files() {
         let files = vec![
             HfFile {
@@ -693,6 +722,7 @@ mod tests {
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj: false,
+                is_dspark: false,
             },
             HfFile {
                 filename: "Q4_K_M/model-Q4_K_M-00001-of-00003.gguf".into(),
@@ -702,6 +732,7 @@ mod tests {
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj: false,
+                is_dspark: false,
             },
             HfFile {
                 filename: "Q4_K_M/model-Q4_K_M-00003-of-00003.gguf".into(),
@@ -711,6 +742,7 @@ mod tests {
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj: false,
+                is_dspark: false,
             },
             HfFile {
                 filename: "single-Q8_0.gguf".into(),
@@ -720,6 +752,7 @@ mod tests {
                 is_split: false,
                 split_parts: vec![],
                 is_mmproj: false,
+                is_dspark: false,
             },
         ];
 

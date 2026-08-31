@@ -34,7 +34,7 @@ type HfSort = "downloads" | "likes" | "lastModified";
 type SortDir = "asc" | "desc";
 
 
-import { formatSize, quantColor, quantSortKey, isImatrixFile } from "../utils/format";
+import { formatSize, quantColor, quantSortKey, isImatrixFile, isDsparkFile } from "../utils/format";
 import PreferredOwners from "../components/PreferredOwners";
 
 function QuantBadge({ quant }: { quant: string }) {
@@ -411,6 +411,7 @@ export default function Models() {
         {tab === "installed" && (() => {
           const filtered = installed
             .filter((m) => !isImatrixFile(m.filename))
+            .filter((m) => !isDsparkFile(m.filename))
             .filter((m) => !nameFilter || m.name.toLowerCase().includes(nameFilter.toLowerCase()) || m.filename.toLowerCase().includes(nameFilter.toLowerCase()))
             .filter((m) => !quantFilter || (m.quant ?? "").toLowerCase().includes(quantFilter.toLowerCase()));
 
@@ -556,6 +557,13 @@ export default function Models() {
                         <span className="text-sm font-semibold text-gray-200">
                           {m.name}
                         </span>
+                        <button
+                          className="text-gray-600 hover:text-gray-300"
+                          onClick={() => openInBrowser(`https://huggingface.co/${m.repo_id}`)}
+                          title="Open on HuggingFace"
+                        >
+                          <ExternalLink size={10} />
+                        </button>
                         <QuantBadge quant={m.quant} />
                         <span className="badge-gray text-[10px]">{m.params_b}B params</span>
                         {m.context != null && (
@@ -571,16 +579,9 @@ export default function Models() {
                         )}
                       </div>
                       <p className="text-xs text-gray-400 mt-1">{m.description}</p>
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <span className="text-xs text-gray-600 font-mono">{m.repo_id}</span>
-                        <button
-                          className="text-gray-600 hover:text-gray-300"
-                          onClick={() => openInBrowser(`https://huggingface.co/${m.repo_id}`)}
-                          title="Open on HuggingFace"
-                        >
-                          <ExternalLink size={10} />
-                        </button>
-                      </div>
+                      <p className="text-xs text-gray-600 mt-0.5 font-mono">
+                        {m.repo_id}
+                      </p>
                     </div>
                     <div className="shrink-0 flex flex-col items-end gap-2">
                       <span className="text-xs text-gray-500">
@@ -598,6 +599,7 @@ export default function Models() {
                               is_split: false,
                               split_parts: [],
                               is_mmproj: false,
+                              is_dspark: false,
                             })
                           }
                         >
@@ -640,6 +642,7 @@ export default function Models() {
                               is_split: false,
                               split_parts: [],
                               is_mmproj: false,
+                              is_dspark: false,
                             })
                           }>
                             Resume
@@ -764,8 +767,8 @@ export default function Models() {
                     {expandedRepo === model.repo_id && (
                       <div className="mt-3 pt-3 border-t border-border space-y-1.5">
                         {repoFiles[model.repo_id] ? (
-                          repoFiles[model.repo_id].filter((f) => !f.is_mmproj).length > 0 ? (
-                            repoFiles[model.repo_id].filter((f) => !f.is_mmproj).map((f) => {
+                            repoFiles[model.repo_id].filter((f) => !f.is_mmproj && !f.is_dspark).length > 0 ? (
+                              repoFiles[model.repo_id].filter((f) => !f.is_mmproj && !f.is_dspark).map((f) => {
                               const dl = downloads[f.filename];
                               const hfBasename = f.filename.includes('/') ? f.filename.split('/').pop()! : f.filename;
                               const isInstalled = installed.some(

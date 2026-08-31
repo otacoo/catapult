@@ -179,6 +179,8 @@ export interface HfFile {
   is_split: boolean;
   split_parts: HfFilePart[];
   is_mmproj: boolean;
+  /** DeepSeek V4 DSpark speculative-draft file (auxiliary, hidden in UI). */
+  is_dspark: boolean;
 }
 
 export interface HfFilePart {

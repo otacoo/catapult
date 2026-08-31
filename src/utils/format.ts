@@ -61,6 +61,10 @@ export function isImatrixFile(filename: string): boolean {
   return lower.includes("imatrix") || lower.includes("importance_matrix");
 }
 
+export function isDsparkFile(filename: string): boolean {
+  return filename.toLowerCase().includes("dspark");
+}
+
 export function mbToGb(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;

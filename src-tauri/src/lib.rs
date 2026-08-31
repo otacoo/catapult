@@ -386,6 +386,7 @@ async fn download_model(
         is_split,
         split_parts: parts,
         is_mmproj,
+        is_dspark: false,
     };
 
     // Register a per-download control flag (0 = active). Polled by the
