@@ -25,9 +25,7 @@ export default function Chat() {
   const chatUrl = port ? `http://127.0.0.1:${port}` : "";
 
   useEffect(() => {
-    if (chatUrl) {
-      setChatUrl(chatUrl);
-    }
+    setChatUrl(chatUrl);
   }, [chatUrl]);
 
   if (status.type === "starting") {
@@ -61,13 +59,7 @@ export default function Chat() {
     );
   }
 
-  return (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-xs text-gray-500 font-mono">{chatUrl}</span>
-      </div>
-
-      <div id="chat-iframe-placeholder" className="flex-1 flex flex-col min-h-0" />
-    </div>
-  );
+  // When running, the iframe is hosted by ChatIframeHost (fixed container)
+  // Keep this component light – just ensure the URL is set.
+  return null;
 }
