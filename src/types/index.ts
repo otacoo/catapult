@@ -143,6 +143,8 @@ export interface ModelInfo {
   params_b: string | null;
   context_length: number | null;
   is_vision: boolean;
+  /** Reasoning-capable model (tags/capabilities or `<think>` chat template). */
+  is_reasoning: boolean;
   mmproj_path: string | null;
   split_files: string[];
 }

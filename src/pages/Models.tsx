@@ -18,6 +18,8 @@ import {
   ArrowDown,
   Filter,
   ExternalLink,
+  Eye,
+  Brain,
 } from "lucide-react";
 import type {
   ModelInfo,
@@ -522,7 +524,15 @@ export default function Models() {
                           <Star size={13} className={isFav ? "text-accent-yellow fill-accent-yellow" : "text-gray-600 hover:text-gray-400"} />
                         </button>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm text-gray-200 truncate">{m.name}</p>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <p className="text-sm text-gray-200 truncate">{m.name}</p>
+                            {m.is_vision && (
+                              <span title="Vision"><Eye size={12} className="text-accent-blue shrink-0" /></span>
+                            )}
+                            {m.is_reasoning && (
+                              <span title="Reasoning"><Brain size={12} className="text-primary-light shrink-0" /></span>
+                            )}
+                          </div>
                           <p className="text-[10px] text-gray-600 truncate font-mono">{m.filename}</p>
                         </div>
                         <span className="w-16 text-right text-xs text-gray-400">
@@ -738,7 +748,12 @@ export default function Models() {
             {/* Results */}
             {searchResults.length > 0 ? (
               <div className="space-y-2">
-                {searchResults.map((model) => (
+                {searchResults.map((model) => {
+                  const tagsLower = (model.tags ?? []).map((t) => t.toLowerCase());
+                  const repoVision = tagsLower.some((t) =>
+                    t === "vision" || t === "multimodal" || t === "image-text-to-text" || t === "image-to-text");
+                  const repoReasoning = tagsLower.some((t) => t === "reasoning" || t === "thinking");
+                  return (
                   <div key={model.repo_id} className="card">
                     <div className="w-full flex items-start gap-3 text-left">
                       <div
@@ -758,6 +773,12 @@ export default function Models() {
                             <span className="text-sm font-medium text-gray-200 truncate">
                               {model.name}
                             </span>
+                            {repoVision && (
+                              <span title="Vision"><Eye size={12} className="text-accent-blue shrink-0" /></span>
+                            )}
+                            {repoReasoning && (
+                              <span title="Reasoning"><Brain size={12} className="text-primary-light shrink-0" /></span>
+                            )}
                             <button
                               className="text-gray-600 hover:text-gray-300"
                               onClick={(e) => {
@@ -894,7 +915,8 @@ export default function Models() {
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ) : !searching ? (
               <div className="card text-center py-12 text-gray-500">

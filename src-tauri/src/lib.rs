@@ -366,16 +366,33 @@ async fn download_model(
         _ => (false, vec![]),
     };
 
-    // If downloading an mmproj alongside a model, prefix the filename
+    // If downloading an mmproj alongside a model, prefix the filename with the
+    // model's base name. Both filenames may already carry a repo subfolder —
+    // work on basenames so the prefix logic stays predictable.
     let is_mmproj = huggingface::is_mmproj_file(&filename);
-    let save_filename = if is_mmproj {
+    let file_basename = filename.rsplit('/').next().unwrap_or(&filename).to_string();
+    let save_basename = if is_mmproj {
         if let Some(ref model_name) = companion_model {
-            models::prefixed_mmproj_filename(model_name, &filename)
+            let model_basename = model_name.rsplit('/').next().unwrap_or(model_name);
+            models::prefixed_mmproj_filename(model_basename, &file_basename)
         } else {
-            filename.clone()
+            file_basename.clone()
         }
     } else {
-        filename.clone()
+        file_basename.clone()
+    };
+
+    // Nest downloads under maker/model subfolders, e.g.
+    // `lmstudio-community/Muse-Spark-1.2/model.gguf`. Filenames arriving from
+    // the Browse tab already carry the prefix (get_repo_files applies it);
+    // bare filenames (Recommended tab) get it from the repo_id here.
+    let save_filename = if save_basename.contains('/') {
+        save_basename
+    } else {
+        match huggingface::repo_subdir(&repo_id) {
+            Some(dir) => format!("{}/{}", dir, save_basename),
+            None => save_basename,
+        }
     };
 
     let file = HfFile {
@@ -393,7 +410,7 @@ async fn download_model(
     // download loop between stream chunks; 1 = cancel (discard), 2 = pause
     // (keep the partial file for resume).
     let cancel_signal = Arc::new(AtomicU8::new(0));
-    state.downloads.lock().unwrap().insert(filename.clone(), cancel_signal.clone());
+    state.downloads.lock().unwrap().insert(save_filename.clone(), cancel_signal.clone());
 
     let result = models::download_model(
         &state.http_client,
@@ -410,7 +427,7 @@ async fn download_model(
     // Drop the flag once the download is no longer in progress. The temp
     // file is preserved on pause (status "paused") so Resume picks it up; the
     // frontend handles temp-file deletion for cancel via abort_download.
-    state.downloads.lock().unwrap().remove(&filename);
+    state.downloads.lock().unwrap().remove(&save_filename);
 
     // On success, check for presets.ini in the repo and save as a named preset
     if result.is_ok() {

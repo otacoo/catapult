@@ -23,6 +23,9 @@ pub struct ModelInfo {
     pub params_b: Option<String>,
     pub context_length: Option<u64>,
     pub is_vision: bool,
+    /// Reasoning-capable model (tags/capabilities or `<think>` chat template)
+    #[serde(default)]
+    pub is_reasoning: bool,
     pub mmproj_path: Option<PathBuf>,
     /// Paths to all parts for split GGUF models (empty for single-file models).
     #[serde(default)]
@@ -41,6 +44,10 @@ pub struct GgufMeta {
     pub attention_head_count: Option<u64>,
     pub attention_head_count_kv: Option<u64>,
     pub tags: Vec<String>,
+    /// `general.capabilities` array when present (vision, reasoning, …)
+    pub capabilities: Vec<String>,
+    /// `tokenizer.chat_template` when present (used for reasoning detection)
+    pub chat_template: Option<String>,
 }
 
 /// Read GGUF header metadata from a model file. Returns None if the file
@@ -95,6 +102,10 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.architecture = Some(val);
                 } else if key == "general.size_label" {
                     meta.size_label = Some(val);
+                } else if key.starts_with("tokenizer.chat_template") {
+                    if meta.chat_template.is_none() && val.contains("<think>") {
+                        meta.chat_template = Some(val);
+                    }
                 }
             }
             4 | 5 => {
@@ -154,6 +165,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                         }
                         if key == "general.tags" {
                             meta.tags = strings;
+                        } else if key == "general.capabilities" {
+                            meta.capabilities = strings;
                         }
                     }
                     _ => break,
@@ -209,6 +222,9 @@ struct GgufCacheEntry {
     /// True if GGUF architecture is "clip" or filename contains "mmproj"
     #[serde(default)]
     is_mmproj: bool,
+    /// Reasoning-capable model (tags/capabilities or `<think>` chat template)
+    #[serde(default)]
+    is_reasoning: bool,
 }
 
 type GgufCache = HashMap<String, GgufCacheEntry>;
@@ -377,6 +393,7 @@ fn scan_gguf_recursive(
                         size_label: cached.meta_size_label.clone(),
                         context_length: cached.meta_context_length,
                         is_vision: cached.is_vision,
+                        is_reasoning: cached.is_reasoning,
                         is_mmproj: cached.is_mmproj || huggingface::is_mmproj_file(&filename),
                     }
                 } else {
@@ -418,6 +435,7 @@ fn scan_gguf_recursive(
                 params_b,
                 context_length: cached_meta.context_length,
                 is_vision: cached_meta.is_vision,
+                is_reasoning: cached_meta.is_reasoning,
                 mmproj_path,
                 split_files: vec![],
             });
@@ -488,6 +506,7 @@ struct CachedMeta {
     size_label: Option<String>,
     context_length: Option<u64>,
     is_vision: bool,
+    is_reasoning: bool,
     is_mmproj: bool,
 }
 
@@ -496,6 +515,16 @@ fn is_vision_model(tags: &[String]) -> bool {
         let lower = t.to_lowercase();
         lower == "image-to-text" || lower == "image-text-to-text"
     })
+}
+
+/// Reasoning models advertise it via `general.tags` / `general.capabilities`
+/// or ship a `<think>`-style chat template.
+fn is_reasoning_model(tags: &[String], capabilities: &[String], chat_template: Option<&str>) -> bool {
+    let tagged = tags.iter().chain(capabilities.iter()).any(|t| {
+        let lower = t.to_lowercase();
+        lower == "reasoning" || lower == "thinking"
+    });
+    tagged || chat_template.map_or(false, |t| t.to_lowercase().contains("<think>"))
 }
 
 /// Detect mmproj from GGUF metadata: architecture == "clip"
@@ -511,7 +540,9 @@ fn read_and_cache(
     cache: &mut GgufCache,
 ) -> CachedMeta {
     let meta = read_gguf_metadata(path).unwrap_or_default();
-    let is_vision = is_vision_model(&meta.tags);
+    let is_vision = is_vision_model(&meta.tags)
+        || meta.capabilities.iter().any(|c| c.to_lowercase() == "vision");
+    let is_reasoning = is_reasoning_model(&meta.tags, &meta.capabilities, meta.chat_template.as_deref());
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
     let is_mmproj = is_mmproj_by_metadata(&meta) || huggingface::is_mmproj_file(&filename);
     cache.insert(
@@ -524,6 +555,7 @@ fn read_and_cache(
             meta_context_length: meta.context_length,
             is_vision,
             is_mmproj,
+            is_reasoning,
         },
     );
     CachedMeta {
@@ -531,6 +563,7 @@ fn read_and_cache(
         size_label: meta.size_label,
         context_length: meta.context_length,
         is_vision,
+        is_reasoning,
         is_mmproj,
     }
 }
@@ -674,6 +707,11 @@ async fn download_single_file(
 ) -> Result<PathBuf> {
     let dest_path = models_dir.join(filename);
     let tmp_path = models_dir.join(format!("__downloading__{}", filename));
+
+    // Nested filenames (maker/model/file.gguf) need their parent dirs created
+    if let Some(parent) = tmp_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Check if already downloaded
     if dest_path.exists() {
@@ -876,11 +914,17 @@ pub fn abort_download(filename: &str, config: &AppConfig) -> Result<()> {
         std::fs::remove_file(&tmp_path)?;
     }
 
-    // For split models: also clean up temp files for other parts
+    // For split models: also clean up temp files for other parts. The filename
+    // may be nested (maker/model/part.gguf) — keep the directory prefix.
     if let Some((base, _, total)) = huggingface::parse_split_filename(filename) {
+        let rel_dir = std::path::Path::new(filename).parent().unwrap_or_else(|| std::path::Path::new(""));
         for i in 1..=total {
             let part_name = format!("{}-{:05}-of-{:05}.gguf", base, i, total);
-            let tmp = models_dir.join(format!("__downloading__{}", part_name));
+            let tmp = if rel_dir.as_os_str().is_empty() {
+                models_dir.join(format!("__downloading__{}", part_name))
+            } else {
+                models_dir.join(rel_dir).join(format!("__downloading__{}", part_name))
+            };
             if tmp.exists() {
                 std::fs::remove_file(&tmp)?;
             }

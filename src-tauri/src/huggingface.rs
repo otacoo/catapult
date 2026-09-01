@@ -280,6 +280,49 @@ pub fn is_dspark_file(filename: &str) -> bool {
     filename.to_lowercase().contains("dspark")
 }
 
+/// Sanitize a single path component for the filesystem (Windows-safe).
+pub fn sanitize_component(input: &str) -> String {
+    let cleaned: String = input
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | ' ' => c,
+            _ => '_',
+        })
+        .collect();
+    let trimmed = cleaned.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        "_".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Compute the download subfolder for a repo: `owner/model-name`, with the
+/// trailing `-GGUF` suffix (any case) stripped from the model name. Returns
+/// None when the repo_id has no `owner/repo` shape.
+pub fn repo_subdir(repo_id: &str) -> Option<String> {
+    let (owner, repo) = repo_id.split_once('/')?;
+    let owner = owner.trim();
+    let repo = repo.trim();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let repo_lower = repo.to_lowercase();
+    let repo_clean = match repo_lower.strip_suffix("-gguf") {
+        Some(stripped_lower) => {
+            // Recover the original-case prefix (ASCII suffix, safe boundary)
+            let len = stripped_lower.len();
+            repo.get(..len).unwrap_or(repo)
+        }
+        None => repo,
+    };
+    Some(format!(
+        "{}/{}",
+        sanitize_component(owner),
+        sanitize_component(repo_clean)
+    ))
+}
+
 /// Parse a split GGUF filename like `model-00001-of-00003.gguf`.
 /// Returns (base_name, part_number, total_parts).
 pub fn parse_split_filename(filename: &str) -> Option<(String, u32, u32)> {
@@ -447,7 +490,23 @@ pub async fn get_repo_files(client: &reqwest::Client, repo_id: &str) -> Result<V
         })
         .collect();
 
-    Ok(consolidate_files(files))
+    let mut files = consolidate_files(files);
+
+    // Nest files under maker/model subfolders, e.g.
+    // `lmstudio-community/Muse-Spark-1.2/model.gguf` — matches the download
+    // destination so Browse rows key consistently with progress events.
+    if let Some(subdir) = repo_subdir(repo_id) {
+        for f in &mut files {
+            if !f.filename.starts_with(&format!("{}/", subdir)) {
+                f.filename = format!("{}/{}", subdir, f.filename);
+                for p in &mut f.split_parts {
+                    p.filename = format!("{}/{}", subdir, p.filename);
+                }
+            }
+        }
+    }
+
+    Ok(files)
 }
 
 fn convert_model(m: HfApiModel) -> HfModel {
@@ -709,6 +768,41 @@ mod tests {
         assert!(is_dspark_file("DSPARK-lower.gguf"));
         assert!(!is_dspark_file("model-Q4_K_M.gguf"));
         assert!(!is_dspark_file("model-00001-of-00003.gguf"));
+    }
+
+    #[test]
+    fn repo_subdir_strips_gguf_and_nests() {
+        assert_eq!(
+            repo_subdir("lmstudio-community/Muse-Spark-1.2-GGUF").as_deref(),
+            Some("lmstudio-community/Muse-Spark-1.2")
+        );
+        assert_eq!(
+            repo_subdir("meta-llama/Llama-3.1-8B-Instruct-gguf").as_deref(),
+            Some("meta-llama/Llama-3.1-8B-Instruct")
+        );
+        assert_eq!(
+            repo_subdir("unsloth/Qwen3-4B-GGUF").as_deref(),
+            Some("unsloth/Qwen3-4B")
+        );
+    }
+
+    #[test]
+    fn repo_subdir_handles_missing_or_malformed() {
+        assert_eq!(repo_subdir("no-slash"), None);
+        assert_eq!(repo_subdir("owner/"), None);
+        assert_eq!(repo_subdir("/repo"), None);
+        assert_eq!(
+            repo_subdir("owner/has/slashes").as_deref(),
+            Some("owner/has_slashes") // extra '/' sanitized
+        );
+    }
+
+    #[test]
+    fn sanitize_component_replaces_forbidden_chars() {
+        assert_eq!(sanitize_component("a<b>c:d"), "a_b_c_d");
+        assert_eq!(sanitize_component("trailing..."), "trailing");
+        assert_eq!(sanitize_component(""), "_");
+        assert_eq!(sanitize_component("keep-this_1.0"), "keep-this_1.0");
     }
 
     #[test]
