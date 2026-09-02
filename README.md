@@ -4,13 +4,15 @@ A desktop launcher for [llama.cpp](https://github.com/ggml-org/llama.cpp). Manag
 
 A Tauri v2 desktop application (Rust backend + React/TypeScript frontend):
 
+### Download: [ [latest release](https://github.com/otacoo/catapult/releases/latest) ]
+
 <img width="1280" height="808" alt="catapult-ui" src="https://github.com/user-attachments/assets/a39fa2ae-d289-4bdd-a335-2d083666956c" />
 
 ## About this fork
 
 > [!NOTE]
-> This repository is a fork of [pwilkin/catapult](https://github.com/pwilkin/catapult) with various changes.\
-> It continues development as a maintained GUI launcher for llama.cpp; see the [changelog](CHANGELOG.md) for what has changed from upstream.
+> This repository is a fork of [pwilkin/catapult](https://github.com/pwilkin/catapult) with various changes and additions.\
+> It continues development as a maintained GUI launcher for llama.cpp but drops support for the TUI; see the [changelog](CHANGELOG.md) for what has changed from upstream.
 
 ## Features
 
