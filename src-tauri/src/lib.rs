@@ -468,8 +468,10 @@ async fn download_model(
 }
 
 #[tauri::command]
-async fn delete_model(path: String, _state: State<'_, AppState>) -> Result<(), String> {
-    models::delete_model(&std::path::PathBuf::from(path)).map_err(|e| e.to_string())
+async fn delete_model(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let config = state.config.lock().unwrap().clone();
+    let roots = config.all_model_dirs();
+    models::delete_model(&std::path::PathBuf::from(path), &roots).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

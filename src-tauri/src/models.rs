@@ -943,15 +943,20 @@ pub fn abort_download(filename: &str, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-pub fn delete_model(path: &Path) -> Result<()> {
+/// Delete a model and its companions. Removes the model file (or all split
+/// parts), then — when no other model GGUF remains in the folder — the
+/// companion files (mmproj / dspark drafts), and finally any now-empty
+/// folders up to (but not including) the configured models roots.
+pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let parent = path.parent().map(|p| p.to_path_buf());
 
+    // 1. Model file(s) — single or all split parts
     if let Some((base, _, total)) = huggingface::parse_split_filename(filename) {
-        // Delete all parts of the split model
-        if let Some(parent) = path.parent() {
+        if let Some(dir) = &parent {
             for i in 1..=total {
                 let part_name = format!("{}-{:05}-of-{:05}.gguf", base, i, total);
-                let part_path = parent.join(part_name);
+                let part_path = dir.join(part_name);
                 if part_path.exists() {
                     std::fs::remove_file(&part_path)?;
                 }
@@ -959,6 +964,83 @@ pub fn delete_model(path: &Path) -> Result<()> {
         }
     } else if path.exists() {
         std::fs::remove_file(path)?;
+    }
+
+    // 2. Companion files (mmproj / dspark): removed once no other model GGUF
+    // remains in the folder — earlier they would pair with surviving models.
+    if let Some(dir) = &parent {
+        let is_model_gguf = |name_lower: &str| -> bool {
+            name_lower.ends_with(".gguf")
+                && !name_lower.contains("mmproj")
+                && !name_lower.contains("dspark")
+                && !name_lower.starts_with("__downloading__")
+        };
+        let mut models_remaining = false;
+        for entry in std::fs::read_dir(dir)?.flatten() {
+            let name_lower = entry.file_name().to_string_lossy().to_lowercase();
+            if is_model_gguf(&name_lower) {
+                models_remaining = true;
+                break;
+            }
+        }
+
+        if !models_remaining {
+            for entry in std::fs::read_dir(dir)?.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let name_lower = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if name_lower.ends_with(".gguf")
+                    && (name_lower.contains("mmproj") || name_lower.contains("dspark"))
+                {
+                    std::fs::remove_file(&p)?;
+                }
+            }
+        }
+    }
+
+    // 3. Remove now-empty folders up to (but not including) the models roots —
+    // with the nested layout a deleted model can leave `owner/repo/` behind.
+    if let Some(mut dir) = parent {
+        let is_models_root = |dir: &Path| -> bool {
+            let ds = dir.to_string_lossy().to_lowercase();
+            model_roots.iter().any(|r| {
+                let rs = r.to_string_lossy().to_lowercase();
+                let rs = rs.trim_end_matches(['\\', '/']);
+                ds == rs
+            })
+        };
+        let inside_root = |dir: &Path| -> bool {
+            let ds = dir.to_string_lossy().to_lowercase();
+            model_roots.iter().any(|r| {
+                let rs = r.to_string_lossy().to_lowercase();
+                let rs = rs.trim_end_matches(['\\', '/']);
+                ds.starts_with(&rs)
+                    && (ds.len() == rs.len()
+                        || ds.as_bytes().get(rs.len()) == Some(&b'\\')
+                        || ds.as_bytes().get(rs.len()) == Some(&b'/'))
+            })
+        };
+        loop {
+            if is_models_root(&dir) || !inside_root(&dir) {
+                break;
+            }
+            let empty = std::fs::read_dir(&dir)
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(true);
+            if !empty {
+                break;
+            }
+            let parent_dir = match dir.parent() {
+                Some(p) => p.to_path_buf(),
+                None => break,
+            };
+            if std::fs::remove_dir(&dir).is_err() {
+                break;
+            }
+            dir = parent_dir;
+        }
     }
 
     Ok(())
@@ -1122,6 +1204,77 @@ mod tests {
                 assert_eq!(meta.attention_head_count_kv, Some(4), "head_count_kv");
             }
         }
+    }
+
+    // ── delete_model: companion + empty-folder cleanup ──
+
+    fn delete_test_roots(root: &Path) -> Vec<PathBuf> {
+        vec![root.to_path_buf()]
+    }
+
+    #[test]
+    fn delete_model_removes_mmproj_and_empty_dirs() {
+        let root = std::env::temp_dir().join(format!("catapult-del-nested-{}", std::process::id()));
+        let repo_dir = root.join("owner").join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        let model = repo_dir.join("Qwen2.5-VL-7B-Q4_K_M.gguf");
+        let mmproj = repo_dir.join("mmproj-f16.gguf");
+        std::fs::write(&model, b"m").unwrap();
+        std::fs::write(&mmproj, b"v").unwrap();
+
+        delete_model(&model, &delete_test_roots(&root)).unwrap();
+
+        assert!(!model.exists(), "model should be removed");
+        assert!(!mmproj.exists(), "companion mmproj should be removed");
+        assert!(!repo_dir.exists(), "emptied repo folder should be removed");
+        assert!(!root.join("owner").exists(), "emptied owner folder should be removed");
+        assert!(root.exists(), "models root must remain");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_model_keeps_mmproj_when_models_remain() {
+        let root = std::env::temp_dir().join(format!("catapult-del-keep-{}", std::process::id()));
+        let repo_dir = root.join("owner").join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        let q4 = repo_dir.join("Qwen2.5-VL-7B-Q4_K_M.gguf");
+        let q8 = repo_dir.join("Qwen2.5-VL-7B-Q8_0.gguf");
+        let mmproj = repo_dir.join("mmproj-f16.gguf");
+        std::fs::write(&q4, b"m").unwrap();
+        std::fs::write(&q8, b"m2").unwrap();
+        std::fs::write(&mmproj, b"v").unwrap();
+
+        delete_model(&q4, &delete_test_roots(&root)).unwrap();
+
+        assert!(!q4.exists());
+        assert!(q8.exists(), "remaining model must stay");
+        assert!(mmproj.exists(), "mmproj still pairs with the remaining model");
+        assert!(repo_dir.exists(), "folder still has content");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_model_removes_dspark_when_last_model_goes() {
+        let root = std::env::temp_dir().join(format!("catapult-del-dspark-{}", std::process::id()));
+        let repo_dir = root.join("owner").join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        let model = repo_dir.join("DeepSeek-V4-Flash-0731-Q4_K_M.gguf");
+        let draft = repo_dir.join("DeepSeek-V4-Flash-0731-DSpark-draft.gguf");
+        std::fs::write(&model, b"m").unwrap();
+        std::fs::write(&draft, b"d").unwrap();
+
+        delete_model(&model, &delete_test_roots(&root)).unwrap();
+
+        assert!(!model.exists());
+        assert!(!draft.exists(), "orphaned dspark draft should be removed");
+        assert!(!repo_dir.exists(), "emptied repo folder should be removed");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ── mmproj filename prefixing tests ──
