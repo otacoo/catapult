@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.1] - 2026-09-02
+
+### Added
+
+- Added capability badges (Eye = vision, Brain = reasoning)
+  - Both installed and browsing tables will show Eye/Brain next to the model name.
+
+### Changed
+
+- Downloaded models will now download into creator/model subfolders
+
+### Fixed
+
+- Deleting a model will also remove accompanying models like mmproj
+
 ## [0.4.0] - 2026-08-31
 
 ### Added
