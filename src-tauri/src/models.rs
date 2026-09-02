@@ -706,7 +706,16 @@ async fn download_single_file(
     cancel_signal: Arc<AtomicU8>,
 ) -> Result<PathBuf> {
     let dest_path = models_dir.join(filename);
-    let tmp_path = models_dir.join(format!("__downloading__{}", filename));
+    // Keep the partial file next to its destination so resume and the final
+    // rename happen within the same (nested) directory.
+    let tmp_basename = format!(
+        "__downloading__{}",
+        filename.rsplit('/').next().unwrap_or(filename)
+    );
+    let tmp_path = dest_path
+        .parent()
+        .unwrap_or(&models_dir)
+        .join(tmp_basename);
 
     // Nested filenames (maker/model/file.gguf) need their parent dirs created
     if let Some(parent) = tmp_path.parent() {
@@ -909,22 +918,22 @@ async fn download_single_file(
 
 pub fn abort_download(filename: &str, config: &AppConfig) -> Result<()> {
     let models_dir = config.models_dir()?;
-    let tmp_path = models_dir.join(format!("__downloading__{}", filename));
+    let dest_path = models_dir.join(filename);
+    let dir = dest_path.parent().unwrap_or(&models_dir);
+
+    // Partial file for this download (single file or first split part) lives
+    // next to its destination, named `__downloading__<basename>`.
+    let basename = filename.rsplit('/').next().unwrap_or(filename);
+    let tmp_path = dir.join(format!("__downloading__{}", basename));
     if tmp_path.exists() {
         std::fs::remove_file(&tmp_path)?;
     }
 
-    // For split models: also clean up temp files for other parts. The filename
-    // may be nested (maker/model/part.gguf) — keep the directory prefix.
-    if let Some((base, _, total)) = huggingface::parse_split_filename(filename) {
-        let rel_dir = std::path::Path::new(filename).parent().unwrap_or_else(|| std::path::Path::new(""));
+    // For split models: also clean up temp files for other parts (same dir)
+    if let Some((base, _, total)) = huggingface::parse_split_filename(basename) {
         for i in 1..=total {
             let part_name = format!("{}-{:05}-of-{:05}.gguf", base, i, total);
-            let tmp = if rel_dir.as_os_str().is_empty() {
-                models_dir.join(format!("__downloading__{}", part_name))
-            } else {
-                models_dir.join(rel_dir).join(format!("__downloading__{}", part_name))
-            };
+            let tmp = dir.join(format!("__downloading__{}", part_name));
             if tmp.exists() {
                 std::fs::remove_file(&tmp)?;
             }
@@ -1154,6 +1163,36 @@ mod tests {
     }
 
     // ── mmproj metadata detection tests ──
+
+    #[test]
+    fn abort_download_cleans_nested_partial_files() {
+        let dir = std::env::temp_dir().join(format!("catapult-abort-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let nested = dir.join("owner").join("repo");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let config = AppConfig {
+            download_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+
+        // Single-file partial lives next to its destination
+        let single = nested.join("__downloading__model-Q4_K_M.gguf");
+        std::fs::write(&single, b"partial").unwrap();
+        abort_download("owner/repo/model-Q4_K_M.gguf", &config).unwrap();
+        assert!(!single.exists(), "single partial should be removed");
+
+        // Split partials in the same nested folder
+        let p1 = nested.join("__downloading__model-00001-of-00002.gguf");
+        let p2 = nested.join("__downloading__model-00002-of-00002.gguf");
+        std::fs::write(&p1, b"a").unwrap();
+        std::fs::write(&p2, b"b").unwrap();
+        abort_download("owner/repo/model-00001-of-00002.gguf", &config).unwrap();
+        assert!(!p1.exists(), "split part 1 should be removed");
+        assert!(!p2.exists(), "split part 2 should be removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn is_mmproj_by_metadata_clip_architecture() {

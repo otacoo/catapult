@@ -395,6 +395,22 @@ async fn download_model(
         }
     };
 
+    // Keep split parts next to the main file inside the repo subfolder
+    let rel_dir = std::path::Path::new(&save_filename)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string());
+    let parts = parts
+        .into_iter()
+        .map(|mut p| {
+            if let Some(ref dir) = rel_dir {
+                if !p.filename.contains('/') {
+                    p.filename = format!("{}/{}", dir, p.filename);
+                }
+            }
+            p
+        })
+        .collect();
+
     let file = HfFile {
         filename: save_filename.clone(),
         size_bytes,
