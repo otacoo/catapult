@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.2] - 2026-09-03
+
+### Added
+
+- Update button on the Dashboard that downloads, installs and relaunches the app
+- Model-aware arg sanitizing: drops `--swa-full`/`--context-shift` where unsupported, adds `--load-mode none` with CPU MoE
+
+### Changed
+
+- Quick Bench button matches Auto-estimate style; card shows "Load a model first." without a model
+- App Updates and Appearance cards share one Dashboard row
+- Presets dropdown closes on outside click
+
+### Fixed
+
+- Disabled MCP servers were still spawned by llama-server
+- llama-bench left running after bench timeout; concurrent benches could stack up
+- Quick Bench card disappeared when switching tabs mid-run
+
 ## [0.4.1] - 2026-09-02
 
 ### Added
