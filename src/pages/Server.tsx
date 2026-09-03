@@ -22,6 +22,10 @@ import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedCo
 import Toggle from "../components/Toggle";
 import MemoryVisualizer from "../components/MemoryVisualizer";
 import { sanitizeTools } from "../utils/tools";
+import {
+  getQuickBenchEnabled,
+  subscribeQuickBench,
+} from "../utils/appSettings";
 
 // ── Utility components ──────────────────────────────────────────────────────
 
@@ -339,6 +343,9 @@ export default function Server() {
   const [searchIdx, setSearchIdx] = useState(0);
   const [showResults, setShowResults] = useState(false);
   const [matches, setMatches] = useState<SettingMatch[]>([]);
+  const [quickBenchEnabled, setQuickBenchEnabled] = useState(getQuickBenchEnabled());
+
+  useEffect(() => subscribeQuickBench(setQuickBenchEnabled), []);
 
   // Close the presets dropdown when clicking outside of it
   useEffect(() => {
@@ -834,10 +841,12 @@ export default function Server() {
               <Zap size={12} className={estimating ? "animate-pulse" : ""} />
               Auto-estimate
             </button>
-            <button className="btn-secondary text-xs py-1 px-2" onClick={runBench} disabled={benchLoading || !config.model_path}
-              title="Run 1-rep llama-bench (512 prompt + 128 gen) with current threads/batch">
-              <span className={benchLoading ? "animate-spin inline-block" : ""}>◷</span> Quick Bench
-            </button>
+            {quickBenchEnabled && (
+              <button className="btn-secondary text-xs py-1 px-2" onClick={runBench} disabled={benchLoading || !config.model_path}
+                title="Run 1-rep llama-bench (512 prompt + 128 gen) with current threads/batch">
+                <span className={benchLoading ? "animate-spin inline-block" : ""}>◷</span> Quick Bench
+              </button>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -973,7 +982,7 @@ export default function Server() {
         )}
 
         {/* Quick bench result */}
-        {(benchResult || benchLoading || benchError || !config.model_path) && (
+        {quickBenchEnabled && (benchResult || benchLoading || benchError || !config.model_path) && (
           <div className="card">
             <div className="flex items-center justify-between">
               <h2 className="section-title mb-0">Quick Bench</h2>

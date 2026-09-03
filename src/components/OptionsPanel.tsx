@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink } from "lucide-react";
 import type { AppConfig } from "../types";
 import Toggle from "./Toggle";
 import AppUpdatesCard from "./AppUpdatesCard";
 import AppearanceCard from "./AppearanceCard";
-import CatapultIcon from "./CatapultIcon";
+import { setQuickBenchEnabled } from "../utils/appSettings";
 
 export default function OptionsPanel({ open, onClose }: {
   open: boolean;
@@ -15,11 +14,6 @@ export default function OptionsPanel({ open, onClose }: {
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-
-  useEffect(() => {
-    getVersion().then(setAppVersion).catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (open) {
@@ -56,6 +50,14 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  const setQuickBench = async (enabled: boolean) => {
+    setAppConfig((c) => (c ? { ...c, enable_quick_bench: enabled } : c));
+    setQuickBenchEnabled(enabled);
+    try {
+      await invoke("set_enable_quick_bench", { enabled });
+    } catch {}
+  };
+
   return (
     <div
       ref={panelRef}
@@ -73,15 +75,17 @@ export default function OptionsPanel({ open, onClose }: {
             checked={appConfig?.close_to_tray ?? false}
             onChange={setCloseToTray}
           />
+          <Toggle
+            label="Enable Quick Bench"
+            hint="Show the Quick Bench button and card on the Run page, and the Bench tab."
+            checked={appConfig?.enable_quick_bench ?? true}
+            onChange={setQuickBench}
+          />
         </div>
       </div>
       <div className="card">
-        <div className="flex items-center gap-2 mb-2">
-          <CatapultIcon size={20} className="text-primary-light" />
+        <div className="flex justify-center mb-2">
           <span className="text-sm font-semibold text-gray-200 tracking-tight">Catapult</span>
-          {appVersion && (
-            <span className="text-xs text-gray-500 tabular-nums">v{appVersion}</span>
-          )}
         </div>
         <p className="text-xs text-gray-500 mb-2">
           A llama.cpp launcher, licensed under the{" "}

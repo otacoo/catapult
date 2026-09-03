@@ -277,6 +277,13 @@ async fn set_close_to_tray(enabled: bool, state: State<'_, AppState>, app: AppHa
 }
 
 #[tauri::command]
+async fn set_enable_quick_bench(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.enable_quick_bench = enabled;
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_available_backends(_state: State<'_, AppState>) -> Result<Vec<BackendInfo>, String> {
     let system = hardware::get_system_info().map_err(|e| e.to_string())?;
     Ok(system.available_backends)
@@ -1048,6 +1055,7 @@ pub fn run() {
             set_auto_delete_runtimes,
             set_auto_check_updates,
             set_close_to_tray,
+            set_enable_quick_bench,
             get_available_backends,
             // Models
             list_installed_models,

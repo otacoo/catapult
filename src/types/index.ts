@@ -286,6 +286,8 @@ export interface AppConfig {
   last_preset: string | null;
   /** Show in notification area; close hides to tray instead of quitting. */
   close_to_tray: boolean;
+  /** Enable Quick Bench (Run header button/card and Bench tab). */
+  enable_quick_bench: boolean;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

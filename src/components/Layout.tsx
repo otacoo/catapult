@@ -15,18 +15,24 @@ import {
   Settings,
 } from "lucide-react";
 import { clsx } from "clsx";
+import type { LucideIcon } from "lucide-react";
 import CatapultIcon from "./CatapultIcon";
 import WindowControls from "./WindowControls";
 import OptionsPanel from "./OptionsPanel";
 import Chat from "../pages/Chat";
+import {
+  getQuickBenchEnabled,
+  loadQuickBenchEnabled,
+  subscribeQuickBench,
+} from "../utils/appSettings";
 
-const navItems = [
+const navItems: { to: string; label: string; icon: LucideIcon; quickBench?: boolean }[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/runtime", label: "Runtime", icon: Download },
   { to: "/models", label: "Models", icon: Database },
   { to: "/tools", label: "Tools", icon: Wrench },
   { to: "/server", label: "Run", icon: Play },
-  { to: "/bench", label: "Bench", icon: FlaskConical },
+  { to: "/bench", label: "Bench", icon: FlaskConical, quickBench: true },
   { to: "/api", label: "API", icon: Plug },
   { to: "/chat", label: "Chat", icon: MessageSquare },
 ];
@@ -53,6 +59,12 @@ export default function Layout() {
   const onDashboard = location.pathname === "/dashboard";
   const [optionsOpen, setOptionsOpen] = useState(false);
   const optionsBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [quickBench, setQuickBench] = useState(getQuickBenchEnabled());
+
+  useEffect(() => {
+    loadQuickBenchEnabled();
+    return subscribeQuickBench(setQuickBench);
+  }, []);
 
   // Close the options panel when clicking outside of it (gear button included,
   // so its click toggles rather than re-opens).
@@ -112,7 +124,9 @@ export default function Layout() {
 
         {/* Nav */}
         <nav className="relative z-10 flex items-center gap-0.5">
-          {navItems.map(({ to, label, icon: Icon }) => (
+          {navItems
+            .filter((item) => !item.quickBench || quickBench)
+            .map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}

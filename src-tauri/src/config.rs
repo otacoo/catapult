@@ -38,6 +38,8 @@ pub enum ActiveRuntime {
 
 fn default_false() -> bool { false }
 
+fn default_true() -> bool { true }
+
 /// UI theme preference. `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -132,6 +134,9 @@ pub struct AppConfig {
     /// window there on close instead of quitting.
     #[serde(default)]
     pub close_to_tray: bool,
+    /// Enable the Quick Bench feature (Run header button/card and Bench tab).
+    #[serde(default = "default_true")]
+    pub enable_quick_bench: bool,
 }
 
 impl AppConfig {
