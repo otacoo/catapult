@@ -2,10 +2,24 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::process::Command;
 
 use crate::config::AppConfig;
 use crate::runtime::find_file_recursive;
+
+/// Only one llama-bench may run at a time: two benches loading the same model
+/// onto the same GPU contend for memory/compute and can starve each other past
+/// the timeout. This guards against double-invocation from any entry point.
+static BENCH_RUNNING: AtomicBool = AtomicBool::new(false);
+
+struct BenchRunGuard;
+
+impl Drop for BenchRunGuard {
+    fn drop(&mut self) {
+        BENCH_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchResult {
@@ -93,6 +107,11 @@ pub async fn run_quick_bench(
     n_ctx: Option<u32>,
     n_gpu_layers: Option<i32>,
 ) -> Result<BenchResult> {
+    if BENCH_RUNNING.swap(true, Ordering::SeqCst) {
+        anyhow::bail!("A benchmark is already running");
+    }
+    let _run_guard = BenchRunGuard;
+
     let runtime_info = crate::runtime::get_runtime_info(app_config)?;
     let runtime_dir = app_config.runtime_dir().context("No runtime installed")?;
     let bench_bin = find_bench_binary(&runtime_dir)
@@ -133,13 +152,25 @@ pub async fn run_quick_bench(
         cmd.creation_flags(0x08000000);
     }
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        cmd.output(),
+    // kill_on_drop ensures llama-bench never survives as an orphan: if the
+    // wait future is dropped (timeout below), the child is killed instead of
+    // silently running on and consuming GPU/CPU resources.
+    cmd.kill_on_drop(true);
+
+    let child = cmd.spawn().context("Failed to spawn llama-bench")?;
+    // Generous limit: model loading alone can take minutes on large models.
+    // On timeout the future (and the child, via kill_on_drop) is dropped.
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        child.wait_with_output(),
     )
     .await
-    .context("Benchmark timed out after 120s")?
-    .context("Failed to spawn llama-bench")?;
+    {
+        Ok(res) => res.context("Failed to run llama-bench")?,
+        Err(_) => {
+            anyhow::bail!("Benchmark timed out after 300s — llama-bench was stopped");
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

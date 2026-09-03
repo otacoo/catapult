@@ -224,6 +224,16 @@ const SESSION_PRESET_KEY = "catapult_server_preset";
 const SESSION_TAB_KEY = "catapult_server_tab";
 const SESSION_STATUS_KEY = "catapult_server_status";
 
+// Quick Bench state lives at module scope (like the Chat iframe): the backend
+// bench keeps running while the Run page is unmounted on route change, so the
+// card must survive the remount instead of resetting to an idle state.
+interface BenchSession {
+  loading: boolean;
+  result: BenchResult | null;
+  error: string | null;
+}
+let benchSession: BenchSession = { loading: false, result: null, error: null };
+
 // Mirror of server::migrate_extra_params. Renames/drops flags removed in
 // newer llama.cpp builds so old session state and imported presets keep working.
 const REMOVED_EP_KEYS = ["spec-ngram-size-n", "spec-ngram-size-m", "spec-ngram-min-hits"] as const;
@@ -318,9 +328,9 @@ export default function Server() {
   const [memoryEstimate, setMemoryEstimate] = useState<MemoryEstimate | null>(loadSessionEstimate);
   const [suggestionNotes, setSuggestionNotes] = useState<string[] | null>(null);
   const [estimating, setEstimating] = useState(false);
-  const [benchResult, setBenchResult] = useState<BenchResult | null>(null);
-  const [benchLoading, setBenchLoading] = useState(false);
-  const [benchError, setBenchError] = useState<string | null>(null);
+  const [benchResult, setBenchResult] = useState<BenchResult | null>(benchSession.result);
+  const [benchLoading, setBenchLoading] = useState(benchSession.loading);
+  const [benchError, setBenchError] = useState<string | null>(benchSession.error);
   const [benchShowDetails, setBenchShowDetails] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -677,8 +687,10 @@ export default function Server() {
   };
 
   const runBench = async () => {
+    if (benchSession.loading) return;
     const model = models.find((m) => m.path === config.model_path);
     if (!model) { setError("Select a model first."); return; }
+    benchSession = { loading: true, result: null, error: null };
     setBenchLoading(true);
     setBenchError(null);
     setBenchResult(null);
@@ -693,8 +705,10 @@ export default function Server() {
         nCtx: config.n_ctx,
         nGpuLayers: config.n_gpu_layers,
       });
+      benchSession = { loading: false, result: res, error: null };
       setBenchResult(res);
     } catch (e) {
+      benchSession = { loading: false, result: null, error: String(e) };
       setBenchError(String(e));
     } finally {
       setBenchLoading(false);
@@ -1119,11 +1133,11 @@ export default function Server() {
                 onChange={(v) => setConfig((c) => ({ ...c, cache_type_v: v }))} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="SWA Full" hint="Use full-size sliding window attention cache" checked={hasFlag("swa-full")} onChange={(v) => setFlag("swa-full", v)} />
+              <Toggle label="SWA Full" hint="Full-size SWA cache — only applies to SWA models (auto-dropped otherwise)" checked={hasFlag("swa-full")} onChange={(v) => setFlag("swa-full", v)} />
               <Toggle label="KV Offload" hint="Offload KV cache to GPU (default: on)" checked={!hasFlag("no-kv-offload")} onChange={(v) => setFlag("no-kv-offload", !v)} />
               <Toggle label="KV Unified" hint="Single unified KV buffer shared across sequences" checked={hasFlag("kv-unified") || (!hasFlag("no-kv-unified") && config.parallel <= 1)}
                 onChange={(v) => { setFlag("kv-unified", v); setFlag("no-kv-unified", !v); }} />
-              <Toggle label="Context Shift" hint="Use context shift on infinite text generation" checked={hasFlag("context-shift")} onChange={(v) => { setFlag("context-shift", v); setFlag("no-context-shift", !v); }} />
+              <Toggle label="Context Shift" hint="Shift context on infinite generation — not supported by SWA/hybrid models (auto-dropped)" checked={hasFlag("context-shift")} onChange={(v) => { setFlag("context-shift", v); setFlag("no-context-shift", !v); }} />
               <Toggle label="Cache Prompt" hint="Enable prompt caching (default: on)" checked={!hasFlag("no-cache-prompt")} onChange={(v) => setFlag("no-cache-prompt", !v)} />
               <Toggle label="Cache Idle Slots" hint="Save and clear idle slots on new task (default: on, requires KV unified + cache-ram)"
                 checked={!hasFlag("no-cache-idle-slots")} onChange={(v) => setFlag("no-cache-idle-slots", !v)} />
@@ -1190,7 +1204,7 @@ export default function Server() {
               <Toggle label="Check Tensors" hint="Validate model tensor data on load" checked={hasFlag("check-tensors")} onChange={(v) => setFlag("check-tensors", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <NumberInput label="N CPU MoE Layers" hint="Keep MoE experts on CPU — guide: 32 on 12GB" value={getEpNum("n-cpu-moe")} min={0}
+              <NumberInput label="N CPU MoE Layers" hint="Keep MoE experts on CPU — guide: 32 on 12GB (adds --load-mode none automatically)" value={getEpNum("n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("n-cpu-moe", v)} />
               <NumberInput label="N CPU MoE Layers (Draft)" hint="Keep MoE weights of first N layers on CPU for draft" value={getEpNum("spec-draft-n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("spec-draft-n-cpu-moe", v)} />
