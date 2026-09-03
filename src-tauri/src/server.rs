@@ -297,11 +297,14 @@ pub async fn start_server(
         }
     }
 
-    let mut args = build_args(config);
+    let (mut args, arg_notes) = build_args_with_notes(config);
     args.extend(mcp_args(mcp_config_path.map(|p| p.as_path())));
 
     let cmdline = format!("{} {}", server_binary.display(), args.join(" "));
     log::info!("Starting llama-server: {}", cmdline);
+    for note in &arg_notes {
+        log::info!("server config: {}", note);
+    }
 
     let mut cmd = Command::new(server_binary);
     cmd.args(&args)
@@ -339,10 +342,18 @@ pub async fn start_server(
         s.config = Some(config.clone());
         // Add commandline as first log entry (after clear)
         s.log_lines.push(format!("$ {}", cmdline));
+        for note in &arg_notes {
+            s.log_lines.push(format!("[catapult] {}", note));
+        }
     }
 
     // Emit commandline as first log event
     log_cb(format!("$ {}", cmdline));
+
+    // Surface model-aware argument adjustments so they aren't invisible
+    for note in &arg_notes {
+        log_cb(format!("[catapult] {}", note));
+    }
 
     if let Some(path) = mcp_config_path {
         log_cb(format!(
@@ -689,7 +700,81 @@ pub fn kill_server_sync(state: &SharedServerState) {
 }
 
 pub fn build_args(config: &ServerConfig) -> Vec<String> {
+    build_args_with_notes(config).0
+}
+
+/// Model-aware sanitizing of extra params, applied right before spawning.
+/// Returns the (possibly adjusted) extra params plus human-readable notes for
+/// each adjustment so the UI can surface them in Server Logs.
+///
+/// 1. `--swa-full` is dropped for models without SWA layers (llama-server
+///    would only log "swa_full is not supported by this model").
+/// 2. `--context-shift` is dropped for models whose cache cannot shift
+///    positions (iSWA / hybrid / recurrent / sparse caches).
+/// 3. `--load-mode none` is injected when CPU-resident tensor overrides
+///    (n-cpu-moe / cpu-moe / ot) are in play and the user hasn't picked a
+///    load mode — mmap hurts load performance in that setup.
+fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, Vec<String>) {
+    let mut extra = config.extra_params.clone();
+    let mut notes = Vec::new();
+    if config.model_path.is_empty() {
+        return (extra, notes);
+    }
+    let meta = crate::models::read_model_metadata(std::path::Path::new(&config.model_path));
+    let is_swa = meta.as_ref().map(|m| m.is_swa).unwrap_or(false);
+    let can_shift = meta
+        .as_ref()
+        .and_then(|m| m.architecture.as_deref())
+        .map(|arch| !crate::models::cache_cannot_shift_arch(arch));
+
+    if extra.contains_key("swa-full") && !is_swa {
+        extra.remove("swa-full");
+        notes.push(
+            "--swa-full dropped: this model has no SWA layers (llama-server would ignore it)"
+                .to_string(),
+        );
+    }
+
+    if extra.contains_key("context-shift") && can_shift == Some(false) {
+        extra.remove("context-shift");
+        notes.push(
+            "--context-shift dropped: this model's cache does not support shifting (llama-server would disable it)"
+                .to_string(),
+        );
+    }
+
+    let parse_num = |v: Option<&String>| -> u64 {
+        v.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0)
+    };
+    let cpu_tensors = parse_num(extra.get("n-cpu-moe")) > 0
+        || parse_num(extra.get("spec-draft-n-cpu-moe")) > 0
+        || extra.contains_key("cpu-moe")
+        || extra.contains_key("spec-draft-cpu-moe")
+        || extra
+            .get("ot")
+            .map(|v| v.contains("cpu"))
+            .unwrap_or(false);
+    let load_mode_chosen = extra.contains_key("load-mode")
+        || extra.contains_key("no-mmap")
+        || config.no_mmap;
+    if cpu_tensors && !load_mode_chosen {
+        extra.insert("load-mode".to_string(), "none".to_string());
+        notes.push(
+            "--load-mode none added: CPU-resident MoE tensors load faster without mmap"
+                .to_string(),
+        );
+    }
+
+    (extra, notes)
+}
+
+pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>) {
     let mut args = Vec::new();
+    let (extra_sanitized, notes) = sanitize_extra_for_model(config);
+    let config = ServerConfig {
+        extra_params: extra_sanitized,
+        ..config.clone()
+    };
 
     args.push("--model".to_string());
     args.push(config.model_path.clone());
@@ -837,7 +922,7 @@ pub fn build_args(config: &ServerConfig) -> Vec<String> {
         }
     }
 
-    args
+    (args, notes)
 }
 
 /// Build a suggested config based on system info and model size
@@ -1011,6 +1096,179 @@ mod tests {
         let args = build_args(&config);
         let idx = args.iter().position(|a| a == "--parallel").unwrap();
         assert_eq!(args[idx + 1], "1");
+    }
+
+    // ── model-aware extra param sanitizing ───────────────────────────────────
+
+    fn write_test_gguf(dir: &std::path::Path, arch: &str, extra_kv: Option<(&str, u32)>) -> std::path::PathBuf {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        let kv_count = 1 + u64::from(extra_kv.is_some());
+        buf.extend_from_slice(&kv_count.to_le_bytes());
+        let push_str = |buf: &mut Vec<u8>, s: &str| {
+            buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            buf.extend_from_slice(s.as_bytes());
+        };
+        push_str(&mut buf, "general.architecture");
+        buf.extend_from_slice(&8u32.to_le_bytes());
+        push_str(&mut buf, arch);
+        if let Some((k, v)) = extra_kv {
+            push_str(&mut buf, k);
+            buf.extend_from_slice(&4u32.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        let path = dir.join(format!("model-{}.gguf", arch));
+        std::fs::write(&path, &buf).unwrap();
+        path
+    }
+
+    fn gguf_test_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("catapult-srv-{}-{}", label, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn build_args_drops_swa_full_for_non_swa_model() {
+        let dir = gguf_test_dir("swa-drop");
+        let model = write_test_gguf(&dir, "qwen3", None);
+        let mut extra = HashMap::new();
+        extra.insert("swa-full".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: model.to_string_lossy().to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--swa-full".to_string()));
+        assert!(notes.iter().any(|n| n.contains("--swa-full")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_args_keeps_swa_full_for_swa_model() {
+        let dir = gguf_test_dir("swa-keep");
+        let model = write_test_gguf(&dir, "gemma3", None);
+        let mut extra = HashMap::new();
+        extra.insert("swa-full".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: model.to_string_lossy().to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        assert!(args.contains(&"--swa-full".to_string()));
+        assert!(!notes.iter().any(|n| n.contains("--swa-full")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_args_detects_swa_via_metadata_keys() {
+        let dir = gguf_test_dir("swa-key");
+        let model = write_test_gguf(
+            &dir,
+            "customarch",
+            Some(("customarch.attention.slide_window", 1024)),
+        );
+        let mut extra = HashMap::new();
+        extra.insert("swa-full".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: model.to_string_lossy().to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        assert!(args.contains(&"--swa-full".to_string()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_args_drops_context_shift_for_non_shiftable_cache() {
+        let dir = gguf_test_dir("shift-drop");
+        // qwen35moe uses a hybrid linear-attention cache: shifting is a no-op
+        let model = write_test_gguf(&dir, "qwen35moe", None);
+        let mut extra = HashMap::new();
+        extra.insert("context-shift".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: model.to_string_lossy().to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--context-shift".to_string()));
+        assert!(notes.iter().any(|n| n.contains("--context-shift")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_args_keeps_context_shift_for_plain_cache() {
+        let dir = gguf_test_dir("shift-keep");
+        let model = write_test_gguf(&dir, "qwen3", None);
+        let mut extra = HashMap::new();
+        extra.insert("context-shift".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: model.to_string_lossy().to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        assert!(args.contains(&"--context-shift".to_string()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_args_keeps_context_shift_when_metadata_unreadable() {
+        let mut extra = HashMap::new();
+        extra.insert("context-shift".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: "/nonexistent/model.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        assert!(args.contains(&"--context-shift".to_string()));
+    }
+
+    #[test]
+    fn build_args_adds_load_mode_none_with_cpu_moe() {
+        let mut extra = HashMap::new();
+        extra.insert("n-cpu-moe".to_string(), "99".to_string());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
+        assert_eq!(args[idx + 1], "none");
+        assert!(notes.iter().any(|n| n.contains("--load-mode")));
+    }
+
+    #[test]
+    fn build_args_respects_explicit_load_mode() {
+        let mut extra = HashMap::new();
+        extra.insert("n-cpu-moe".to_string(), "99".to_string());
+        extra.insert("load-mode".to_string(), "mmap".to_string());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
+        assert_eq!(args[idx + 1], "mmap");
+    }
+
+    #[test]
+    fn build_args_no_load_mode_without_cpu_overrides() {
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--load-mode".to_string()));
     }
 
     #[test]

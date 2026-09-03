@@ -101,6 +101,7 @@ Run page is a two-column split: full-width model selector on top, config tabs + 
 - `n_gpu_layers = -1` means "all layers on GPU". `0` means CPU-only.
 - `--flash-attn` takes a parameter: `on`, `off`, or `auto` (default: `auto`).
 - `--ctx-size 0` means "loaded from model" (the default).
+- `build_args` sanitizes extra params against the model's GGUF metadata and surfaces adjustments as `[catapult]` lines in Server Logs: `--swa-full` is dropped for non-SWA models, `--context-shift` for models with non-shiftable caches (iSWA/hybrid/recurrent archs, see `models::cache_cannot_shift_arch`), and `--load-mode none` is injected when CPU tensor overrides (n-cpu-moe/cpu-moe/ot) are used without an explicit load mode.
 - `seed: Option<u64>` in Rust — the UI shows `-1` for random, maps to `None` (omits `--seed` flag).
 - Server presets exclude `model_path`, `mmproj_path`, and `working_dir` (per-session, not config).
 - Built-in tools are limited to the set supported across llama.cpp builds (`read_file`, `file_glob_search`, `grep_search`, `exec_shell_command`, `write_file`, `edit_file`, `get_info`); unknown names in stored configs are dropped and the selection is managed app-wide via `AppConfig.server_tools` on the Tools/MCP page. `start_server` calls `apply_global_tools` to override any preset/session `tools` value, and the arg builder re-sanitizes — full selection collapses to `tools=all`; `exec_shell_command` needs an explicit confirm.

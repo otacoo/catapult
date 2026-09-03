@@ -48,6 +48,74 @@ pub struct GgufMeta {
     pub capabilities: Vec<String>,
     /// `tokenizer.chat_template` when present (used for reasoning detection)
     pub chat_template: Option<String>,
+    /// True when the model uses sliding-window attention (SWA layers, detected
+    /// via the architecture or explicit SWA metadata keys). `--swa-full` only
+    /// applies to these models.
+    pub is_swa: bool,
+}
+
+/// Architectures llama.cpp implements with sliding-window attention layers
+/// (iSWA cache). `--swa-full` is only meaningful for these.
+pub fn is_swa_arch(arch: &str) -> bool {
+    matches!(
+        arch,
+        "gemma2"
+            | "gemma3"
+            | "gemma3n"
+            | "gemma4"
+            | "gemma4-assistant"
+            | "gemma-embedding"
+            | "llama4"
+            | "qwen3next"
+            | "qwen35"
+            | "qwen35moe"
+            | "qwen4exp"
+            | "exaone4"
+            | "granite_swa"
+    )
+}
+
+/// Architectures whose llama.cpp memory/cache cannot shift token positions
+/// (iSWA, hybrid linear attention, recurrent, sparse, or M-RoPE caches).
+/// `--context-shift` is silently disabled for these by llama-server.
+pub fn cache_cannot_shift_arch(arch: &str) -> bool {
+    matches!(
+        arch,
+        "gemma2"
+            | "gemma3"
+            | "gemma3n"
+            | "gemma4"
+            | "gemma4-assistant"
+            | "gemma-embedding"
+            | "llama4"
+            | "qwen3next"
+            | "qwen35"
+            | "qwen35moe"
+            | "qwen4exp"
+            | "exaone4"
+            | "granite_swa"
+            | "granitehybrid"
+            | "lfm2"
+            | "lfm2moe"
+            | "minimax-m2"
+            | "kimi-linear"
+            | "kimi-k3"
+            | "glm-dsa"
+            | "step35"
+            | "mamba"
+            | "mamba2"
+            | "jamba"
+            | "rwkv6"
+            | "rwkv6qwen2"
+            | "rwkv7"
+            | "arwkv7"
+            | "falcon-h1"
+            | "nemotron-h"
+            | "nemotron-h-moe"
+            | "qwen2vl"
+            | "qwen3vl"
+            | "qwen3vlmoe"
+    )
 }
 
 /// Read GGUF header metadata from a model file. Returns None if the file
@@ -122,6 +190,10 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val as u64);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val as u64);
+                } else if key.ends_with(".attention.slide_window")
+                    || key.ends_with(".attention.swa_length")
+                {
+                    meta.is_swa = true;
                 }
             }
             10 | 11 => {
@@ -138,6 +210,10 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val);
+                } else if key.ends_with(".attention.slide_window")
+                    || key.ends_with(".attention.swa_length")
+                {
+                    meta.is_swa = true;
                 }
             }
             0 | 1 => { let mut b = [0u8; 1]; f.read_exact(&mut b).ok()?; }
@@ -173,6 +249,14 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                 }
             }
             _ => break,
+        }
+    }
+
+    // SWA-ness via architecture: llama.cpp hardcodes SWA per arch, and only
+    // some converters write explicit SWA keys (checked above).
+    if let Some(arch) = &meta.architecture {
+        if is_swa_arch(arch) {
+            meta.is_swa = true;
         }
     }
 
