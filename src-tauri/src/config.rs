@@ -128,6 +128,10 @@ pub struct AppConfig {
     /// Last preset selected in the Run tab, persisted across app restarts.
     #[serde(default)]
     pub last_preset: Option<String>,
+    /// Show Catapult in the notification area (system tray) and hide the
+    /// window there on close instead of quitting.
+    #[serde(default)]
+    pub close_to_tray: bool,
 }
 
 impl AppConfig {

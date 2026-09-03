@@ -1,9 +1,5 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "react-router-dom";
 import {
   Cpu,
@@ -19,12 +15,6 @@ import {
   Trash2,
   CheckCircle,
   Eye,
-  RefreshCw,
-  ArrowUpCircle,
-  Download,
-  ExternalLink,
-  Moon,
-  Sun,
 } from "lucide-react";
 import type {
   SystemInfo,
@@ -33,14 +23,10 @@ import type {
   ServerStatus,
   ServerConfig,
   AppConfig,
-  AppTheme,
 } from "../types";
 
 import { mbToGb, shortCpuName, shortGpuName, quantColor } from "../utils/format";
-import { THEME_OPTIONS, setThemePreference } from "../utils/theme";
 import { sanitizeTools } from "../utils/tools";
-import CatapultIcon from "../components/CatapultIcon";
-import Toggle from "../components/Toggle";
 
 function StatusDot({ ok }: { ok: boolean }) {
   return (
@@ -64,17 +50,6 @@ export default function Dashboard() {
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-
-  // ── App updates ──
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [updateAvailable, setUpdateAvailable] = useState<boolean>(false);
-  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [checkedUpdate, setCheckedUpdate] = useState(false);
-  const [updating, setUpdating] = useState(false);
-  const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
-  const [installNote, setInstallNote] = useState<string | null>(null);
 
   const loadData = async () => {
     const [sys, rt, mdls, srv, cfg] = await Promise.all([
@@ -105,93 +80,10 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    getVersion().then(setAppVersion);
-  }, []);
-
-  useEffect(() => {
-    if (appConfig?.auto_check_updates) {
-      checkForUpdate();
-    }
-  }, [appConfig?.auto_check_updates]);
-
   const selectedModel = models.find(
     (m) => m.path === appConfig?.selected_model
   );
   const launchModel = selectedModel ?? models[0];
-
-  const checkForUpdate = async () => {
-    setCheckingUpdate(true);
-    setCheckedUpdate(false);
-    setError(null);
-    try {
-      const update = await check();
-      setUpdateAvailable(update != null);
-      setUpdateVersion(update?.version ?? null);
-      setPendingUpdate(update);
-    } catch {
-      // noop
-    } finally {
-      setCheckingUpdate(false);
-      setCheckedUpdate(true);
-    }
-  };
-
-  const installUpdate = async () => {
-    if (!pendingUpdate) return;
-    setUpdating(true);
-    setDownloadPercent(null);
-    setInstallNote(null);
-    setError(null);
-    try {
-      let total = 0;
-      let downloaded = 0;
-      await pendingUpdate.downloadAndInstall((event) => {
-        switch (event.event) {
-          case "Started":
-            total = event.data.contentLength ?? 0;
-            downloaded = 0;
-            break;
-          case "Progress":
-            downloaded += event.data.chunkLength;
-            if (total > 0) {
-              setDownloadPercent(Math.min(100, (downloaded / total) * 100));
-            }
-            break;
-          case "Finished":
-            setDownloadPercent(100);
-            break;
-        }
-      });
-      setInstallNote("Installer launched — Catapult will close and reopen.");
-      await relaunch();
-    } catch (e) {
-      setError(String(e));
-      setUpdating(false);
-    }
-  };
-
-  const openReleasesPage = async () => {
-    try {
-      await openUrl("https://github.com/otacoo/catapult/releases");
-    } catch {}
-  };
-
-  const setAutoCheckUpdates = async (enabled: boolean) => {
-    try {
-      await invoke("set_auto_check_updates", { enabled });
-      const cfg = await invoke<AppConfig>("get_config");
-      setAppConfig(cfg);
-    } catch {}
-  };
-
-  const handleTheme = async (theme: AppTheme) => {
-    setThemePreference(theme);
-    setAppConfig((c) => (c ? { ...c, theme } : c));
-    try {
-      await invoke("set_theme", { theme });
-    } catch {}
-  };
 
   const quickLaunch = async () => {
     if (!launchModel || !runtime?.installed) return;
@@ -541,112 +433,6 @@ export default function Dashboard() {
             <p className="text-xs text-gray-500">Not running</p>
           )}
         </button>
-      </div>
-
-      {/* App Updates + Appearance */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Check for Updates */}
-        <div className="card lg:col-span-1">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="section-title mb-0">App Updates</h2>
-            {appVersion && (
-              <span className="text-xs text-gray-500 tabular-nums">v{appVersion}</span>
-            )}
-          </div>
-          <div className="space-y-3">
-            <Toggle label="Check for updates on app start"
-              checked={appConfig?.auto_check_updates ?? false}
-              onChange={setAutoCheckUpdates} />
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                className="btn-secondary text-xs"
-                onClick={checkForUpdate}
-                disabled={checkingUpdate || updating}
-              >
-                <RefreshCw size={13} className={checkingUpdate ? "animate-spin" : ""} />
-                Check now
-              </button>
-              {checkingUpdate && (
-                <span className="text-xs text-gray-500">Checking…</span>
-              )}
-              {checkedUpdate && updateAvailable && !updating && (
-                <>
-                  <button
-                    className="btn-primary text-xs"
-                    onClick={installUpdate}
-                  >
-                    <Download size={13} />
-                    Update to v{updateVersion}
-                  </button>
-                  <button
-                    className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1"
-                    onClick={openReleasesPage}
-                    title="Open the GitHub releases page"
-                  >
-                    <ExternalLink size={12} />
-                    Releases
-                  </button>
-                </>
-              )}
-              {checkedUpdate && updateAvailable && updating && (
-                <span className="flex items-center gap-2 text-xs text-gray-400">
-                  <ArrowUpCircle size={13} className="text-primary-light" />
-                  {downloadPercent != null
-                    ? `Downloading update… ${downloadPercent.toFixed(0)}%`
-                    : "Downloading update…"}
-                </span>
-              )}
-              {checkedUpdate && !updateAvailable && !updating && (
-                <span className="text-xs text-accent-green">Up to date</span>
-              )}
-            </div>
-            {updating && downloadPercent != null && (
-              <div className="w-full h-1.5 bg-surface-3 rounded overflow-hidden">
-                <div
-                  className="h-full bg-primary transition-all duration-150"
-                  style={{ width: `${downloadPercent}%` }}
-                />
-              </div>
-            )}
-            {installNote && (
-              <p className="text-xs text-accent-yellow">{installNote}</p>
-            )}
-          </div>
-        </div>
-
-        {/* Appearance */}
-        <div className="card lg:col-span-2">
-          <h2 className="section-title mb-1">Appearance</h2>
-          <p className="section-desc">Choose how Catapult looks.</p>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {THEME_OPTIONS.map((opt) => {
-              const active = (appConfig?.theme ?? "system") === opt.value;
-              const iconCls = active ? "text-primary-light" : "text-gray-500";
-              return (
-                <button
-                  key={opt.value}
-                  onClick={() => handleTheme(opt.value)}
-                  className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded border text-center transition-colors ${
-                    active
-                      ? "border-primary bg-primary/10 text-gray-200"
-                      : "border-border bg-surface-3 hover:bg-surface-4 text-gray-400"
-                  }`}
-                >
-                  {opt.value === "system" && <Monitor size={18} className={iconCls} />}
-                  {opt.value === "dark" && <Moon size={18} className={iconCls} />}
-                  {opt.value === "light" && <Sun size={18} className={iconCls} />}
-                  {opt.value === "catapult" && (
-                    <CatapultIcon size={18} className={iconCls} />
-                  )}
-                  <span className="text-xs font-medium">{opt.label}</span>
-                  <span className="text-[10px] text-gray-500 leading-tight">
-                    {opt.description}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
       </div>
 
       {/* Quick start */}

@@ -284,6 +284,8 @@ export interface AppConfig {
   mcp_disabled: string[];
   /** Last preset selected in Run tab, for restore on next launch. */
   last_preset: string | null;
+  /** Show in notification area; close hides to tray instead of quitting. */
+  close_to_tray: boolean;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

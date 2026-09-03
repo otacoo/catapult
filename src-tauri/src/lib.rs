@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+pub mod tray;
+
 // ── App State ────────────────────────────────────────────────────────────────
 
 pub struct AppState {
@@ -262,6 +264,16 @@ async fn set_auto_check_updates(enabled: bool, state: State<'_, AppState>) -> Re
     let mut config = state.config.lock().unwrap();
     config.auto_check_updates = enabled;
     config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_close_to_tray(enabled: bool, state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        config.close_to_tray = enabled;
+        config.save().map_err(|e| e.to_string())?;
+    }
+    tray::sync_tray(&app).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -992,6 +1004,26 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            tray::sync_tray(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Close-to-tray: hide the window instead of quitting.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let close_to_tray = window
+                    .app_handle()
+                    .state::<AppState>()
+                    .config
+                    .lock()
+                    .unwrap()
+                    .close_to_tray;
+                if close_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .manage(AppState {
             config: Mutex::new(config),
             server: server::new_server_state(),
@@ -1015,6 +1047,7 @@ pub fn run() {
             remove_custom_runtime,
             set_auto_delete_runtimes,
             set_auto_check_updates,
+            set_close_to_tray,
             get_available_backends,
             // Models
             list_installed_models,

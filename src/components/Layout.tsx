@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Download,
@@ -12,10 +12,12 @@ import {
   MessageSquare,
   Plug,
   FlaskConical,
+  Settings,
 } from "lucide-react";
 import { clsx } from "clsx";
 import CatapultIcon from "./CatapultIcon";
 import WindowControls from "./WindowControls";
+import OptionsPanel from "./OptionsPanel";
 import Chat from "../pages/Chat";
 
 const navItems = [
@@ -49,9 +51,29 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const onDashboard = location.pathname === "/dashboard";
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  // Close the options panel when clicking outside of it (gear button included,
+  // so its click toggles rather than re-opens).
+  useEffect(() => {
+    if (!optionsOpen) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inPanel = target instanceof Element && target.closest("[data-options-panel]");
+      if (!inPanel && !(optionsBtnRef.current && optionsBtnRef.current.contains(target))) {
+        setOptionsOpen(false);
+      }
+    };
+    const t = setTimeout(() => document.addEventListener("mousedown", onDocMouseDown), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("mousedown", onDocMouseDown);
+    };
+  }, [optionsOpen]);
 
   return (
-    <div className="flex flex-col h-full bg-surface-0">
+    <div className="relative flex flex-col h-full bg-surface-0">
       {/* Title bar — custom, replaces OS decorations */}
       <div
         className="relative flex items-center h-11 px-3 border-b border-primary/25 shrink-0 bg-primary/8"
@@ -109,10 +131,28 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Window controls */}
-        <div className="relative z-10 ml-auto">
+        {/* Options + window controls */}
+        <div className="relative z-10 ml-auto flex items-center">
+          <button
+            ref={optionsBtnRef}
+            onClick={() => setOptionsOpen((v) => !v)}
+            className={clsx(
+              "w-8 h-8 mr-1 flex items-center justify-center rounded transition-colors",
+              optionsOpen
+                ? "bg-primary/20 text-primary-light"
+                : "text-gray-400 hover:text-gray-200 hover:bg-primary/10"
+            )}
+            title="Options"
+          >
+            <Settings size={15} />
+          </button>
           <WindowControls />
         </div>
+      </div>
+
+      {/* Options panel — stays mounted so update checks keep running */}
+      <div data-options-panel>
+        <OptionsPanel open={optionsOpen} onClose={() => setOptionsOpen(false)} />
       </div>
 
       {/* Main */}
