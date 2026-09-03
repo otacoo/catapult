@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExternalLink } from "lucide-react";
 import type { AppConfig } from "../types";
 import Toggle from "./Toggle";
 import AppUpdatesCard from "./AppUpdatesCard";
 import AppearanceCard from "./AppearanceCard";
+import CatapultIcon from "./CatapultIcon";
 
 export default function OptionsPanel({ open, onClose }: {
   open: boolean;
@@ -11,6 +15,11 @@ export default function OptionsPanel({ open, onClose }: {
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -41,11 +50,17 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  const openRepo = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch {}
+  };
+
   return (
     <div
       ref={panelRef}
       style={{ display: open ? undefined : "none" }}
-      className="absolute right-2 top-12 z-50 w-[400px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-3.5rem)] overflow-y-auto space-y-4 p-1"
+      className="absolute right-2 top-12 z-50 w-[400px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-3.5rem)] overflow-y-auto space-y-4 p-2 bg-surface-1 border border-border rounded shadow-xl"
     >
       <AppUpdatesCard />
       <AppearanceCard />
@@ -58,6 +73,43 @@ export default function OptionsPanel({ open, onClose }: {
             checked={appConfig?.close_to_tray ?? false}
             onChange={setCloseToTray}
           />
+        </div>
+      </div>
+      <div className="card">
+        <div className="flex items-center gap-2 mb-2">
+          <CatapultIcon size={20} className="text-primary-light" />
+          <span className="text-sm font-semibold text-gray-200 tracking-tight">Catapult</span>
+          {appVersion && (
+            <span className="text-xs text-gray-500 tabular-nums">v{appVersion}</span>
+          )}
+        </div>
+        <p className="text-xs text-gray-500 mb-2">
+          A llama.cpp launcher, licensed under the{" "}
+          <a
+            href="#"
+            onClick={(e) => { e.preventDefault(); openRepo("https://www.apache.org/licenses/LICENSE-2.0"); }}
+            className="text-gray-400 hover:text-gray-200 underline decoration-gray-700 hover:decoration-gray-400"
+          >
+            Apache License 2.0
+          </a>.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <button
+            onClick={() => openRepo("https://github.com/pwilkin/catapult")}
+            className="text-gray-400 hover:text-gray-200 inline-flex items-center gap-1"
+            title="Original repository by Piotr Wilkin"
+          >
+            <ExternalLink size={11} />
+            pwilkin/catapult
+          </button>
+          <button
+            onClick={() => openRepo("https://github.com/otacoo/catapult")}
+            className="text-gray-400 hover:text-gray-200 inline-flex items-center gap-1"
+            title="This fork"
+          >
+            <ExternalLink size={11} />
+            otacoo/catapult
+          </button>
         </div>
       </div>
     </div>
