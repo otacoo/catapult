@@ -807,7 +807,7 @@ export default function Server() {
               <Zap size={12} className={estimating ? "animate-pulse" : ""} />
               Auto-estimate
             </button>
-            <button className="btn-ghost text-xs py-1 px-2" onClick={runBench} disabled={benchLoading || !config.model_path}
+            <button className="btn-secondary text-xs py-1 px-2" onClick={runBench} disabled={benchLoading || !config.model_path}
               title="Run 1-rep llama-bench (512 prompt + 128 gen) with current threads/batch">
               <span className={benchLoading ? "animate-spin inline-block" : ""}>◷</span> Quick Bench
             </button>
@@ -946,7 +946,7 @@ export default function Server() {
         )}
 
         {/* Quick bench result */}
-        {(benchResult || benchLoading || benchError) && (
+        {(benchResult || benchLoading || benchError || !config.model_path) && (
           <div className="card">
             <div className="flex items-center justify-between">
               <h2 className="section-title mb-0">Quick Bench</h2>
@@ -956,6 +956,10 @@ export default function Server() {
                 </button>
               )}
             </div>
+            {!config.model_path ? (
+              <p className="text-xs text-gray-500 mt-2">Load a model first.</p>
+            ) : (
+              <>
             {benchLoading && <p className="text-xs text-gray-500 mt-2">Running 1-rep bench (512 prompt + 128 gen) with current threads/batch…</p>}
             {benchError && <p className="text-xs text-accent-red break-words mt-2">{benchError}</p>}
             {benchResult && (
@@ -979,6 +983,8 @@ export default function Server() {
                   </pre>
                 )}
               </div>
+            )}
+              </>
             )}
           </div>
         )}
