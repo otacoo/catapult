@@ -334,12 +334,12 @@ pub fn effective_config(cfg: &McpConfig) -> McpConfig {
     }
 }
 
-fn effective_path() -> Result<PathBuf> {
-    Ok(mcp_config_path()?.with_file_name("mcp_effective.json"))
+fn effective_path(base: &Path) -> Result<PathBuf> {
+    Ok(base.with_file_name("mcp_effective.json"))
 }
 
-fn remove_stale_effective() {
-    if let Ok(p) = effective_path() {
+fn remove_stale_effective(base: &Path) {
+    if let Ok(p) = effective_path(base) {
         let _ = std::fs::remove_file(p);
     }
 }
@@ -351,18 +351,26 @@ fn remove_stale_effective() {
 /// `disabled` holds the names of servers toggled off app-side; they are
 /// filtered out (and if none remain, no flag is emitted).
 pub fn runtime_mcp_config_path(disabled: &[String]) -> Result<Option<PathBuf>> {
-    let cfg = load()?;
-    let cfg = filter_disabled(&cfg, disabled);
+    runtime_mcp_config_path_at(&mcp_config_path()?, disabled)
+}
+
+fn runtime_mcp_config_path_at(base: &Path, disabled: &[String]) -> Result<Option<PathBuf>> {
+    let raw = load_at(base)?;
+    let cfg = filter_disabled(&raw, disabled);
     if cfg.servers.is_empty() {
-        remove_stale_effective();
+        remove_stale_effective(base);
         return Ok(None);
     }
     let effective = effective_config(&cfg);
-    if serde_json::to_string(&effective)? == serde_json::to_string(&cfg)? {
-        remove_stale_effective();
-        return Ok(Some(mcp_config_path()?));
+    // The original file can only be handed over as-is when it already matches
+    // what llama.cpp should see (no disabled servers lingering, no shim wrap).
+    // Comparing against the filtered in-memory config is not enough: the file
+    // on disk still carries disabled entries, and llama.cpp reads the file.
+    if serde_json::to_string(&effective)? == serde_json::to_string(&raw)? {
+        remove_stale_effective(base);
+        return Ok(Some(base.to_path_buf()));
     }
-    let path = effective_path()?;
+    let path = effective_path(base)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -542,6 +550,65 @@ mod tests {
         assert!(!content.contains("enabled"));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disabled_server_is_not_leaked_into_runtime_config() {
+        // Regression: when filtering disabled servers out left no commands that
+        // need the Windows shim wrap, the *original* mcp.json (still carrying
+        // the disabled entry) was handed to llama.cpp, which spawned it anyway.
+        let dir = temp_dir("runtime-disabled");
+        let base = dir.join("mcp.json");
+        save_at(&[
+            McpServerEntry {
+                name: "context7".to_string(),
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@upstash/context7-mcp".to_string()],
+                env: HashMap::new(),
+                cwd: None,
+                timeout_ms: None,
+                enabled: true,
+            },
+            McpServerEntry {
+                name: "tool".to_string(),
+                command: "C:/tools/tool.exe".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                timeout_ms: None,
+                enabled: true,
+            },
+        ], &base).unwrap();
+
+        // Remaining server is a real .exe (no wrap needed): previously the raw
+        // file was returned and the disabled `context7` leaked to llama.cpp.
+        let resolved = runtime_mcp_config_path_at(&base, &["context7".to_string()]).unwrap();
+        assert!(resolved.is_some());
+        let resolved = resolved.unwrap();
+        let content = std::fs::read_to_string(&resolved).unwrap();
+        assert!(!content.contains("context7"), "disabled server must not reach llama.cpp: {}", content);
+        assert!(content.contains("tool.exe"));
+
+        // Nothing disabled and nothing to wrap -> the original file is reused.
+        let wrap_free = dir.join("mcp_nowrap.json");
+        save_at(&[McpServerEntry {
+            name: "tool".to_string(),
+            command: "C:/tools/tool.exe".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            timeout_ms: None,
+            enabled: true,
+        }], &wrap_free).unwrap();
+        let same = runtime_mcp_config_path_at(&wrap_free, &[]).unwrap();
+        assert_eq!(same.as_deref(), Some(wrap_free.as_path()));
+
+        // All disabled -> no flag at all, and the stale runtime copy is gone.
+        let none = runtime_mcp_config_path_at(&base, &["context7".to_string(), "tool".to_string()]).unwrap();
+        assert!(none.is_none());
+        assert!(!dir.join("mcp_effective.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
