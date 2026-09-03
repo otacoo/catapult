@@ -543,106 +543,109 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Check for Updates */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="section-title mb-0">App Updates</h2>
-          {appVersion && (
-            <span className="text-xs text-gray-500 tabular-nums">v{appVersion}</span>
-          )}
-        </div>
-        <div className="space-y-3">
-          <Toggle label="Check for updates on app start"
-            checked={appConfig?.auto_check_updates ?? false}
-            onChange={setAutoCheckUpdates} />
-          <div className="flex items-center gap-3">
-            <button
-              className="btn-secondary text-xs"
-              onClick={checkForUpdate}
-              disabled={checkingUpdate || updating}
-            >
-              <RefreshCw size={13} className={checkingUpdate ? "animate-spin" : ""} />
-              Check now
-            </button>
-            {checkingUpdate && (
-              <span className="text-xs text-gray-500">Checking…</span>
-            )}
-            {checkedUpdate && updateAvailable && !updating && (
-              <>
-                <button
-                  className="btn-primary text-xs"
-                  onClick={installUpdate}
-                >
-                  <Download size={13} />
-                  Update to v{updateVersion}
-                </button>
-                <button
-                  className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1"
-                  onClick={openReleasesPage}
-                  title="Open the GitHub releases page"
-                >
-                  <ExternalLink size={12} />
-                  Releases
-                </button>
-              </>
-            )}
-            {checkedUpdate && updateAvailable && updating && (
-              <span className="flex items-center gap-2 text-xs text-gray-400">
-                <ArrowUpCircle size={13} className="text-primary-light" />
-                {downloadPercent != null
-                  ? `Downloading update… ${downloadPercent.toFixed(0)}%`
-                  : "Downloading update…"}
-              </span>
-            )}
-            {checkedUpdate && !updateAvailable && !updating && (
-              <span className="text-xs text-accent-green">Up to date</span>
+      {/* App Updates + Appearance */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Check for Updates */}
+        <div className="card lg:col-span-1">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="section-title mb-0">App Updates</h2>
+            {appVersion && (
+              <span className="text-xs text-gray-500 tabular-nums">v{appVersion}</span>
             )}
           </div>
-          {updating && downloadPercent != null && (
-            <div className="w-full h-1.5 bg-surface-3 rounded overflow-hidden">
-              <div
-                className="h-full bg-primary transition-all duration-150"
-                style={{ width: `${downloadPercent}%` }}
-              />
-            </div>
-          )}
-          {installNote && (
-            <p className="text-xs text-accent-yellow">{installNote}</p>
-          )}
-        </div>
-      </div>
-
-      {/* Appearance */}
-      <div className="card">
-        <h2 className="section-title mb-1">Appearance</h2>
-        <p className="section-desc">Choose how Catapult looks.</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {THEME_OPTIONS.map((opt) => {
-            const active = (appConfig?.theme ?? "system") === opt.value;
-            const iconCls = active ? "text-primary-light" : "text-gray-500";
-            return (
+          <div className="space-y-3">
+            <Toggle label="Check for updates on app start"
+              checked={appConfig?.auto_check_updates ?? false}
+              onChange={setAutoCheckUpdates} />
+            <div className="flex flex-wrap items-center gap-3">
               <button
-                key={opt.value}
-                onClick={() => handleTheme(opt.value)}
-                className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded border text-center transition-colors ${
-                  active
-                    ? "border-primary bg-primary/10 text-gray-200"
-                    : "border-border bg-surface-3 hover:bg-surface-4 text-gray-400"
-                }`}
+                className="btn-secondary text-xs"
+                onClick={checkForUpdate}
+                disabled={checkingUpdate || updating}
               >
-                {opt.value === "system" && <Monitor size={18} className={iconCls} />}
-                {opt.value === "dark" && <Moon size={18} className={iconCls} />}
-                {opt.value === "light" && <Sun size={18} className={iconCls} />}
-                {opt.value === "catapult" && (
-                  <CatapultIcon size={18} className={iconCls} />
-                )}
-                <span className="text-xs font-medium">{opt.label}</span>
-                <span className="text-[10px] text-gray-500 leading-tight">
-                  {opt.description}
-                </span>
+                <RefreshCw size={13} className={checkingUpdate ? "animate-spin" : ""} />
+                Check now
               </button>
-            );
-          })}
+              {checkingUpdate && (
+                <span className="text-xs text-gray-500">Checking…</span>
+              )}
+              {checkedUpdate && updateAvailable && !updating && (
+                <>
+                  <button
+                    className="btn-primary text-xs"
+                    onClick={installUpdate}
+                  >
+                    <Download size={13} />
+                    Update to v{updateVersion}
+                  </button>
+                  <button
+                    className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1"
+                    onClick={openReleasesPage}
+                    title="Open the GitHub releases page"
+                  >
+                    <ExternalLink size={12} />
+                    Releases
+                  </button>
+                </>
+              )}
+              {checkedUpdate && updateAvailable && updating && (
+                <span className="flex items-center gap-2 text-xs text-gray-400">
+                  <ArrowUpCircle size={13} className="text-primary-light" />
+                  {downloadPercent != null
+                    ? `Downloading update… ${downloadPercent.toFixed(0)}%`
+                    : "Downloading update…"}
+                </span>
+              )}
+              {checkedUpdate && !updateAvailable && !updating && (
+                <span className="text-xs text-accent-green">Up to date</span>
+              )}
+            </div>
+            {updating && downloadPercent != null && (
+              <div className="w-full h-1.5 bg-surface-3 rounded overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-150"
+                  style={{ width: `${downloadPercent}%` }}
+                />
+              </div>
+            )}
+            {installNote && (
+              <p className="text-xs text-accent-yellow">{installNote}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Appearance */}
+        <div className="card lg:col-span-2">
+          <h2 className="section-title mb-1">Appearance</h2>
+          <p className="section-desc">Choose how Catapult looks.</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {THEME_OPTIONS.map((opt) => {
+              const active = (appConfig?.theme ?? "system") === opt.value;
+              const iconCls = active ? "text-primary-light" : "text-gray-500";
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => handleTheme(opt.value)}
+                  className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded border text-center transition-colors ${
+                    active
+                      ? "border-primary bg-primary/10 text-gray-200"
+                      : "border-border bg-surface-3 hover:bg-surface-4 text-gray-400"
+                  }`}
+                >
+                  {opt.value === "system" && <Monitor size={18} className={iconCls} />}
+                  {opt.value === "dark" && <Moon size={18} className={iconCls} />}
+                  {opt.value === "light" && <Sun size={18} className={iconCls} />}
+                  {opt.value === "catapult" && (
+                    <CatapultIcon size={18} className={iconCls} />
+                  )}
+                  <span className="text-xs font-medium">{opt.label}</span>
+                  <span className="text-[10px] text-gray-500 leading-tight">
+                    {opt.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 

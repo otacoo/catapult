@@ -334,10 +334,23 @@ export default function Server() {
   const [benchShowDetails, setBenchShowDetails] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const presetMenuRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [searchIdx, setSearchIdx] = useState(0);
   const [showResults, setShowResults] = useState(false);
   const [matches, setMatches] = useState<SettingMatch[]>([]);
+
+  // Close the presets dropdown when clicking outside of it
+  useEffect(() => {
+    if (!showPresetMenu) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (presetMenuRef.current && !presetMenuRef.current.contains(e.target as Node)) {
+        setShowPresetMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [showPresetMenu]);
 
   // Wrappers that persist to sessionStorage
   const setConfig: typeof setConfigRaw = useCallback((v) => {
@@ -762,7 +775,7 @@ export default function Server() {
           <h1 className="text-2xl font-bold text-gray-100">Run Server</h1>
           <div className="flex items-center gap-2 mt-1">
             {/* Preset controls */}
-            <div className="relative">
+            <div className="relative" ref={presetMenuRef}>
               <button className="btn-ghost text-xs py-1 px-2" onClick={() => setShowPresetMenu(!showPresetMenu)}>
                 <FolderOpen size={12} />
                 {activePreset ?? "Default"}
