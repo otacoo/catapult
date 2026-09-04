@@ -284,6 +284,17 @@ async fn set_enable_quick_bench(enabled: bool, state: State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
+async fn set_router_models(paths: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.router_models = paths
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_available_backends(_state: State<'_, AppState>) -> Result<Vec<BackendInfo>, String> {
     let system = hardware::get_system_info().map_err(|e| e.to_string())?;
     Ok(system.available_backends)
@@ -614,11 +625,16 @@ async fn start_server(
     // imported configs don't fail with "argument has been removed".
     server::migrate_extra_params(&mut config.extra_params);
 
+    // Router mode: no single model selected — register the pinned models via a
+    // generated models-preset so they can be loaded on demand (WebUI picker).
+    let router_preset = server::write_router_preset(&config, &app_config).map_err(|e| e.to_string())?;
+
     server::start_server(
         &server_binary,
         &config,
         server_state,
         mcp_config_path.as_ref(),
+        router_preset.as_ref(),
         move |line| {
             let _ = app.emit("server_log", &line);
         },
@@ -1056,6 +1072,7 @@ pub fn run() {
             set_auto_check_updates,
             set_close_to_tray,
             set_enable_quick_bench,
+            set_router_models,
             get_available_backends,
             // Models
             list_installed_models,

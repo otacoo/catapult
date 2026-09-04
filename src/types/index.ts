@@ -288,6 +288,8 @@ export interface AppConfig {
   close_to_tray: boolean;
   /** Enable Quick Bench (Run header button/card and Bench tab). */
   enable_quick_bench: boolean;
+  /** Model paths registered for llama-server router mode (multi-model). */
+  router_models: string[];
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

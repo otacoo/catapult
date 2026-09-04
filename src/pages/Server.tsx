@@ -16,9 +16,10 @@ import {
   Trash2,
   Eye,
   Zap,
+  Layers,
   Search,
 } from "lucide-react";
-import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig, BenchResult } from "../types";
+import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig, BenchResult, AppConfig } from "../types";
 import Toggle from "../components/Toggle";
 import MemoryVisualizer from "../components/MemoryVisualizer";
 import { sanitizeTools } from "../utils/tools";
@@ -435,6 +436,26 @@ export default function Server() {
     });
   };
 
+  // ── Router mode (multi-model) ─────────────────────────────────────────────
+
+  const [routerModels, setRouterModels] = useState<string[]>([]);
+
+  useEffect(() => {
+    invoke<AppConfig>("get_config")
+      .then((c) => setRouterModels(c.router_models ?? []))
+      .catch(() => {});
+  }, []);
+
+  const toggleRouterModel = async (path: string) => {
+    const next = routerModels.includes(path)
+      ? routerModels.filter((p) => p !== path)
+      : [...routerModels, path];
+    setRouterModels(next);
+    try {
+      await invoke("set_router_models", { paths: next });
+    } catch {}
+  };
+
   // Working directory — persists to backend config so it survives restarts
   const setWorkingDir = (v: string) => {
     const path = v.trim() || null;
@@ -754,8 +775,20 @@ export default function Server() {
     await applyModelConfig(m.path);
   };
 
+  // Clicking the dot of the already-selected model deselects it: with at
+  // least one pinned router model this switches to router mode (no single
+  // model loaded; models are picked on demand).
+  const handleModelToggle = async (m: ModelInfo) => {
+    if (config.model_path !== m.path) {
+      await handleModelChange(m);
+      return;
+    }
+    setConfig((c) => ({ ...c, model_path: "", mmproj_path: null }));
+    invoke("set_selected_model", { modelPath: null }).catch(() => {});
+  };
+
   const startServer = async () => {
-    if (!config.model_path) { setError("Please select a model."); return; }
+    if (!config.model_path && routerModels.length === 0) { setError("Please select a model."); return; }
     setError(null); setLogs([]); setShowLogs(true);
     try {
       await invoke("start_server", { config });
@@ -871,7 +904,7 @@ export default function Server() {
           {isRunning ? (
             <button className="btn-danger" onClick={stopServer}><Square size={14} /> Stop</button>
           ) : (
-            <button className="btn-primary" onClick={startServer} disabled={!config.model_path}>
+            <button className="btn-primary" onClick={startServer} disabled={!config.model_path && routerModels.length === 0}>
               <Play size={14} /> Launch
             </button>
           )}
@@ -917,6 +950,13 @@ export default function Server() {
                         )}
                       </span>
                     )}
+                    {!selected && !showModelList && (
+                      <span className="text-sm text-gray-400 truncate">
+                        {routerModels.length > 0
+                          ? <>Router mode — {routerModels.length} model{routerModels.length !== 1 ? "s" : ""} (pick in WebUI)</>
+                          : "No model selected"}
+                      </span>
+                    )}
                   </div>
                   {showModelList
                     ? <ChevronUp size={14} className="text-gray-500 shrink-0" />
@@ -924,6 +964,11 @@ export default function Server() {
                 </button>
                 {showModelList && (
                   <div className="space-y-2 mt-3">
+                    {routerModels.length === 0 && (
+                      <p className="text-xs text-gray-500 px-1">
+                        Tip: pin models with the <Layers size={10} className="inline mx-0.5" /> icon to run without a single model (router mode) and pick them on demand.
+                      </p>
+                    )}
                     {[...models].sort((a, b) => {
                       const aFav = favorites.includes(a.id) ? 0 : 1;
                       const bFav = favorites.includes(b.id) ? 0 : 1;
@@ -931,16 +976,28 @@ export default function Server() {
                       return a.name.localeCompare(b.name);
                     }).map((m) => {
                       const isSelected = config.model_path === m.path;
+                      const inRouter = routerModels.includes(m.path);
                       const hasVision = m.is_vision && !!m.mmproj_path;
                       return (
-                        <button key={m.id}
+                        <div key={m.id}
                           className={`w-full flex items-center gap-3 px-3 py-2.5 border text-left transition-colors ${
                             isSelected ? "border-primary/60 bg-primary/10" : "border-border hover:border-border-strong hover:bg-surface-3"
-                          }`}
-                          onClick={() => { handleModelChange(m); setShowModelList(false); }}>
-                          <div className={`w-3 h-3 rounded-full border-2 shrink-0 ${isSelected ? "border-primary bg-primary" : "border-gray-600"}`} />
+                          }`}>
+                          <button className="shrink-0" title={isSelected ? "Deselect (run without a single model)" : "Select as the model"}
+                            onClick={() => { handleModelToggle(m); }}>
+                            <div className={`w-3 h-3 rounded-full border-2 ${isSelected ? "border-primary bg-primary" : "border-gray-600"}`} />
+                          </button>
                           <HardDrive size={13} className="text-gray-500 shrink-0" />
-                          <span className="flex-1 text-sm text-gray-200 truncate">{m.name}</span>
+                          <button className="flex-1 min-w-0 text-left"
+                            onClick={() => { handleModelToggle(m); }}>
+                            <span className="text-sm text-gray-200 truncate">{m.name}</span>
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleRouterModel(m.path); }}
+                            className={`shrink-0 px-1 ${inRouter ? "text-primary-light" : "text-gray-600 hover:text-gray-400"}`}
+                            title={inRouter ? "Registered for router mode — click to remove" : "Register for router mode (load on demand)"}>
+                            <Layers size={13} />
+                          </button>
                           {hasVision && (
                             <span className="badge-blue text-[10px]" title={`Vision: ${m.mmproj_path}`}>
                               <Eye size={9} className="mr-0.5" /> Vision
@@ -953,7 +1010,7 @@ export default function Server() {
                           )}
                           {m.quant && <span className="badge-purple text-[10px]">{m.quant}</span>}
                           <span className="text-xs text-gray-500">{(m.size_bytes / 1024 ** 3).toFixed(1)} GB</span>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>

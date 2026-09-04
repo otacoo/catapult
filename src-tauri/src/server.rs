@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
+use crate::config::AppConfig;
 use crate::hardware::{suggest_config_with_layers, SystemInfo};
 
 /// File tools offered across llama.cpp builds. Some builds add extra tools
@@ -287,6 +288,7 @@ pub async fn start_server(
     config: &ServerConfig,
     state: SharedServerState,
     mcp_config_path: Option<&PathBuf>,
+    router_preset: Option<&PathBuf>,
     log_cb: impl Fn(String) + Send + Sync + 'static,
 ) -> Result<()> {
     // Check not already running
@@ -298,6 +300,10 @@ pub async fn start_server(
     }
 
     let (mut args, arg_notes) = build_args_with_notes(config);
+    if let Some(preset) = router_preset {
+        args.push("--models-preset".to_string());
+        args.push(preset.to_string_lossy().to_string());
+    }
     args.extend(mcp_args(mcp_config_path.map(|p| p.as_path())));
 
     let cmdline = format!("{} {}", server_binary.display(), args.join(" "));
@@ -776,8 +782,13 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
         ..config.clone()
     };
 
-    args.push("--model".to_string());
-    args.push(config.model_path.clone());
+    // Router mode: no single model selected — llama-server exposes registered
+    // models (via --models-preset) for on-demand load instead of loading one.
+    let router_mode = config.model_path.is_empty();
+    if !router_mode {
+        args.push("--model".to_string());
+        args.push(config.model_path.clone());
+    }
 
     if let Some(ref mmproj) = config.mmproj_path {
         if !mmproj.is_empty() {
@@ -800,17 +811,21 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     // (except --n-gpu-layers is always passed so the user's explicit value is
     // honored even with --fit on — llama.cpp's fit logic respects explicit
     // values for the field it's not sizing).
-    let fit = config.extra_params.get("fit").map(|s| s.as_str()).unwrap_or("on");
-    args.push("--n-gpu-layers".to_string());
-    args.push(config.n_gpu_layers.to_string());
-    if fit == "off" {
-        args.push("--ctx-size".to_string());
-        args.push(config.n_ctx.to_string());
-        args.push("--fit".to_string());
-        args.push("off".to_string());
-    } else {
-        args.push("--fit".to_string());
-        args.push("on".to_string());
+    // In router mode these are per-model concerns; children use their own
+    // defaults (the router's base args are merged onto every model preset).
+    if !router_mode {
+        let fit = config.extra_params.get("fit").map(|s| s.as_str()).unwrap_or("on");
+        args.push("--n-gpu-layers".to_string());
+        args.push(config.n_gpu_layers.to_string());
+        if fit == "off" {
+            args.push("--ctx-size".to_string());
+            args.push(config.n_ctx.to_string());
+            args.push("--fit".to_string());
+            args.push("off".to_string());
+        } else {
+            args.push("--fit".to_string());
+            args.push("on".to_string());
+        }
     }
 
     if let Some(threads) = config.n_threads {
@@ -923,6 +938,49 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     }
 
     (args, notes)
+}
+
+/// Generate a llama-server router-mode `--models-preset` INI registering the
+/// app-pinned router models. Only used when starting with no single model
+/// selected; each section name is the model's file stem (`model = <path>` is
+/// the llama.cpp preset key form).
+pub fn write_router_preset(
+    config: &ServerConfig,
+    app_config: &AppConfig,
+) -> Result<Option<PathBuf>> {
+    if !config.model_path.is_empty() || app_config.router_models.is_empty() {
+        return Ok(None);
+    }
+    let dir = dirs::data_dir()
+        .context("Cannot find data directory")?
+        .join("catapult");
+    std::fs::create_dir_all(&dir)?;
+    let mut ini = String::new();
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for raw in &app_config.router_models {
+        let path = raw.trim();
+        if path.is_empty() || !std::path::Path::new(path).is_file() {
+            continue;
+        }
+        let base = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("model")
+            .to_string();
+        let mut name = base.clone();
+        let mut i = 1;
+        while !used.insert(name.clone()) {
+            i += 1;
+            name = format!("{}-{}", base, i);
+        }
+        ini.push_str(&format!("[{}]\nmodel = {}\n\n", name, path));
+    }
+    if ini.is_empty() {
+        return Ok(None);
+    }
+    let path = dir.join("router_models.ini");
+    std::fs::write(&path, ini)?;
+    Ok(Some(path))
 }
 
 /// Build a suggested config based on system info and model size

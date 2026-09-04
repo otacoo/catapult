@@ -137,6 +137,12 @@ pub struct AppConfig {
     /// Enable the Quick Bench feature (Run header button/card and Bench tab).
     #[serde(default = "default_true")]
     pub enable_quick_bench: bool,
+    /// Model paths registered for llama-server router mode: when the Run page
+    /// has no single model selected, the server starts without `--model` and
+    /// these are exposed via a generated `--models-preset` INI, loadable on
+    /// demand (from the WebUI picker or the API).
+    #[serde(default)]
+    pub router_models: Vec<String>,
 }
 
 impl AppConfig {
