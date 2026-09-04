@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.3] - 2026-09-04
+
+### Added
+
+- Options menu (gear icon): App Updates, Appearance, General toggles and About
+- Router mode: launch without a single model; pinned models are registered for on-demand loading
+
+### Changed
+
+- Models can be deselected on Run and Dashboard to run without a single model
+- Quick Bench can be toggled off in the options menu
+
+
 ## [0.4.2] - 2026-09-03
 
 ### Added
