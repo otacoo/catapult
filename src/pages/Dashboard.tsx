@@ -132,8 +132,9 @@ export default function Dashboard() {
   };
 
   const selectForServer = async (modelPath: string) => {
+    const next = appConfig?.selected_model === modelPath ? null : modelPath;
     try {
-      await invoke("set_selected_model", { modelPath });
+      await invoke("set_selected_model", { modelPath: next });
       const cfg = await invoke<AppConfig>("get_config");
       setAppConfig(cfg);
     } catch {}
@@ -541,7 +542,7 @@ export default function Dashboard() {
                   <button
                     className="shrink-0"
                     onClick={() => selectForServer(m.path)}
-                    title={isSelected ? "Selected for server" : "Use for server"}
+                    title={isSelected ? "Deselect model" : "Use for server"}
                   >
                     <CheckCircle
                       size={14}

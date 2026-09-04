@@ -71,13 +71,13 @@ export default function OptionsPanel({ open, onClose }: {
         <div className="space-y-3">
           <Toggle
             label="Show in notification area"
-            hint="Keep Catapult in the system tray; closing the window hides it there instead of quitting."
+            hint="Closing hides Catapult to the tray instead of quitting."
             checked={appConfig?.close_to_tray ?? false}
             onChange={setCloseToTray}
           />
           <Toggle
             label="Enable Quick Bench"
-            hint="Show the Quick Bench button and card on the Run page, and the Bench tab."
+            hint="Toggle benchmarking tools."
             checked={appConfig?.enable_quick_bench ?? true}
             onChange={setQuickBench}
           />
