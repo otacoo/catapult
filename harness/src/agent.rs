@@ -152,6 +152,9 @@ pub struct AgentRun<'a> {
     pub registry: Arc<ToolRegistry>,
     pub engine: Arc<PermissionEngine>,
     pub model: Option<String>,
+    /// Reasoning effort hint for reasoning-capable models
+    /// ("low"|"medium"|"high"|"max"|"xhigh"; None = server default).
+    pub reasoning_effort: Option<String>,
     pub max_turns: usize,
     /// When set, the orchestrator may delegate via `spawn_subagent`. The
     /// subagent runs with a registry stripped of `spawn_subagent` and filtered
@@ -165,7 +168,9 @@ pub struct AgentRun<'a> {
 pub struct AgentOutcome {
     pub text: String,
     pub gen_tokens: usize,
+    pub prompt_tokens: Option<u64>,
     pub tokens_per_sec: Option<f64>,
+    pub elapsed_ms: u64,
 }
 
 impl AgentRun<'_> {
@@ -193,12 +198,15 @@ impl AgentRun<'_> {
 
             // 1. Stream one completion, accumulating content + tool deltas.
             // Metrics: content/tool deltas ≈ tokens; first-delta → finish
-            // gives the tokens-per-second of the answer.
+            // gives the tokens-per-second and response time of the answer.
+            // Reasoning deltas are forwarded (UI shows "Thinking…") but are
+            // excluded from answer text and speed metrics.
             let mut collector = StreamCollector::default();
             let mut text_acc = String::new();
             let mut deltas = 0usize;
             let mut first_delta: Option<std::time::Instant> = None;
             let mut usage_tokens: Option<u64> = None;
+            let mut usage_prompt: Option<u64> = None;
             let mut on_delta = |ev: StreamEvent| {
                 match &ev {
                     StreamEvent::Content { text } => {
@@ -206,7 +214,8 @@ impl AgentRun<'_> {
                         deltas += 1;
                     }
                     StreamEvent::ToolCallDelta { .. } => deltas += 1,
-                    StreamEvent::Usage { completion_tokens, .. } => {
+                    StreamEvent::Usage { prompt_tokens, completion_tokens } => {
+                        usage_prompt = Some(*prompt_tokens);
                         usage_tokens = Some(*completion_tokens);
                     }
                     _ => {}
@@ -224,6 +233,7 @@ impl AgentRun<'_> {
                     self.model.as_deref(),
                     history,
                     Some(&self.registry.tool_schemas()),
+                    self.reasoning_effort.as_deref(),
                     &*should_stop,
                     &mut on_delta,
                 )
@@ -241,11 +251,11 @@ impl AgentRun<'_> {
                     tool_call_id: None,
                 });
                 let elapsed = first_delta
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or_else(|| turn_started.elapsed().as_secs_f64());
+                    .map(|t| t.elapsed())
+                    .unwrap_or_else(|| turn_started.elapsed());
                 let tokens = usage_tokens.unwrap_or(deltas as u64) as usize;
                 let tokens_per_sec = if deltas > 0 {
-                    Some(tokens as f64 / elapsed.max(0.001))
+                    Some(tokens as f64 / elapsed.as_secs_f64().max(0.001))
                 } else {
                     None
                 };
@@ -253,7 +263,9 @@ impl AgentRun<'_> {
                 return Ok(AgentOutcome {
                     text: text_acc,
                     gen_tokens: tokens,
+                    prompt_tokens: usage_prompt,
                     tokens_per_sec: tokens_per_sec.filter(|v| *v > 0.0 && v.is_finite()),
+                    elapsed_ms: elapsed.as_millis() as u64,
                 });
             }
 
@@ -463,6 +475,7 @@ impl AgentRun<'_> {
                 registry,
                 engine: self.engine.clone(),
                 model: sub.model.clone().or_else(|| self.model.clone()),
+                reasoning_effort: self.reasoning_effort.clone(),
                 max_turns: sub.max_turns,
                 subagents: None, // no recursion: the strip above is belt-and-braces
             };

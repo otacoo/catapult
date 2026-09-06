@@ -5,19 +5,22 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowUp,
+  Brain,
   Check,
   Copy,
+  Eye,
   FileWarning,
   FolderOpen,
   Play,
   Plus,
   RefreshCw,
   Square,
+  ChevronDown,
   Trash2,
   Wrench,
   X,
 } from "lucide-react";
-import type { ServerStatus, HarnessRunResult, SessionInfo } from "../types";
+import type { ServerStatus, HarnessRunResult, SessionInfo, HarnessCapabilities } from "../types";
 
 // ── Shared server-gate states ───────────────────────────────────────────────
 
@@ -56,7 +59,17 @@ function ServerStopped() {
 // ── Items (messages + tool activity) ────────────────────────────────────────
 
 type Item =
-  | { kind: "msg"; role: "user" | "assistant"; content: string; model?: string; tokps?: number | null }
+  | {
+      kind: "msg";
+      role: "user" | "assistant";
+      content: string;
+      model?: string;
+      tokps?: number | null;
+      time?: number;
+      elapsedMs?: number;
+      tokens?: number;
+      reasoning?: string;
+    }
   | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string } }
   | {
       kind: "approval";
@@ -66,6 +79,19 @@ type Item =
       args: string;
       resolved?: "denied" | "once" | "session";
     };
+
+const REASONING_OPTIONS = [
+  { value: "", label: "Reasoning: default" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
+  { value: "xhigh", label: "X-High" },
+] as const;
+
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
 
 // ── Sidebar: projects + sessions ────────────────────────────────────────────
 
@@ -206,20 +232,28 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   );
 }
 
-// ── Response footer (model, tok/s, copy, delete) ────────────────────────────
+// ── Response footer (model, tok/s, time, tokens, copy, delete) ──────────────
 
-function ResponseFooter({ model, tokps, onCopy, onDelete }: {
+function ResponseFooter({ model, tokps, elapsedMs, tokens, onCopy, onDelete }: {
   model?: string;
   tokps?: number | null;
+  elapsedMs?: number;
+  tokens?: number;
   onCopy: () => void;
   onDelete?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-gray-600">
+    <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-gray-600 select-text">
       {model && <span className="font-mono truncate max-w-[200px]">{model}</span>}
       {tokps != null && tokps > 0 && (
         <span className="tabular-nums">{tokps.toFixed(1)} t/s</span>
+      )}
+      {tokens != null && tokens > 0 && <span className="tabular-nums">{tokens} tok</span>}
+      {elapsedMs != null && elapsedMs > 0 && (
+        <span className="tabular-nums">
+          {elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`}
+        </span>
       )}
       <button
         className="ml-auto inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
@@ -243,6 +277,41 @@ function ResponseFooter({ model, tokps, onCopy, onDelete }: {
   );
 }
 
+// ── Collapsible reasoning block ("Thinking…") ───────────────────────────────
+
+function ReasoningBlock({ text, streaming, open, onToggle }: {
+  text: string;
+  streaming?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
+  const [openLocal, setOpenLocal] = useState(false);
+  const isOpen = open ?? openLocal;
+  const toggle = onToggle ?? (() => setOpenLocal((v) => !v));
+  return (
+    <div className="rounded border border-border bg-surface-3/60 px-2.5 py-1.5 text-[11px] text-gray-400 mb-1.5">
+      <button
+        className="w-full flex items-center gap-1.5 text-left"
+        onClick={toggle}
+        title={isOpen ? "Hide reasoning" : "Show reasoning"}
+      >
+        <Brain size={11} className="text-gray-500 shrink-0" />
+        <span className="text-gray-500">
+          {streaming ? "Thinking…" : isOpen ? "Reasoning" : "Show reasoning"}
+        </span>
+        <span className={`ml-auto transition-transform ${isOpen ? "rotate-180" : ""}`}>
+          <ChevronDown size={12} />
+        </span>
+      </button>
+      {isOpen && (
+        <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug mt-1.5 max-h-56 overflow-y-auto select-text">
+          {text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 // ── Harness chat (agent loop with sandboxed tools) ──────────────────────────
 
 function HarnessChat() {
@@ -252,6 +321,11 @@ function HarnessChat() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState<string | null>(null);
+  // Reasoning buffer for the in-flight run (shown as a collapsible block).
+  const [reasoningText, setReasoningText] = useState<string | null>(null);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState("");
+  const [caps, setCaps] = useState<HarnessCapabilities | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const approvalSeq = useRef(0);
@@ -264,6 +338,7 @@ function HarnessChat() {
       } catch {}
     };
     invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
+    invoke<HarnessCapabilities>("harness_agent_capabilities").then(setCaps).catch(() => {});
     poll();
     const id = setInterval(poll, 2000);
     return () => clearInterval(id);
@@ -314,18 +389,25 @@ function HarnessChat() {
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [items, streamText]);
+  }, [items, streamText, reasoningText]);
 
   const send = async () => {
     const text = input.trim();
     if (!text || streaming) return;
-    setItems((prev) => [...prev, { kind: "msg", role: "user", content: text }]);
+    setItems((prev) => [
+      ...prev,
+      { kind: "msg", role: "user", content: text, time: Date.now() } as Item,
+    ]);
     setInput("");
     setStreaming(true);
     setStreamText("");
+    setReasoningText(null);
+    setReasoningOpen(false);
     setError(null);
 
     let acc = "";
+    let reasoningAcc = "";
+    let contentStarted = false;
     const channel = new Channel<string>();
     channel.onmessage = (raw) => {
       let ev: Record<string, unknown>;
@@ -338,9 +420,22 @@ function HarnessChat() {
         case "content":
           acc += ev.text ?? "";
           setStreamText(acc);
+          // The answer started — collapse the reasoning block automatically
+          // (the user can still expand it manually afterwards).
+          if (!contentStarted) {
+            contentStarted = true;
+            setReasoningOpen(false);
+          }
+          break;
+        case "reasoning":
+          reasoningAcc += ev.text ?? "";
+          setReasoningText(reasoningAcc);
+          // Collapsed by default ("Thinking…" label) — expandable via chevron.
           break;
         case "tool_call":
           setStreamText(null);
+          setReasoningText(null);
+          setReasoningOpen(false);
           setItems((prev) => [
             ...prev,
             {
@@ -395,7 +490,11 @@ function HarnessChat() {
     };
 
     try {
-      const res = await invoke<HarnessRunResult>("harness_agent_send", { message: text, onEvent: channel });
+      const res = await invoke<HarnessRunResult>("harness_agent_send", {
+        message: text,
+        reasoningEffort: reasoningEffort || null,
+        onEvent: channel,
+      });
       setItems((prev) => [
         ...prev,
         {
@@ -404,6 +503,9 @@ function HarnessChat() {
           content: res.text || acc || "(no response)",
           model: res.model,
           tokps: res.tokens_per_sec ?? null,
+          elapsedMs: res.elapsed_ms,
+          tokens: res.gen_tokens,
+          reasoning: reasoningAcc || undefined,
         } as Item,
       ]);
     } catch (e) {
@@ -512,28 +614,50 @@ function HarnessChat() {
           </button>
         </div>
 
-        {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+        {/* Messages — select-text re-enables selection (body disables it for the title bar) */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3 select-text">
           {items.length === 0 && streamText === null && <EmptyState tools={tools} />}
           {items.map((it, i) => {
             if (it.kind === "msg") {
+              const isUser = it.role === "user";
+              const isLastAssistant = it.role === "assistant" && i === lastAssistantIdx;
               return (
-                <div key={i} className={`flex ${it.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div key={i} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
                   <div className="max-w-[80%]">
+                    {isUser && (
+                      <div className="text-[10px] text-gray-600 mb-0.5 text-right select-text">
+                        {it.time ? formatTime(it.time) : ""}
+                      </div>
+                    )}
+                    {it.reasoning && (
+                      <ReasoningBlock text={it.reasoning} />
+                    )}
                     <div
-                      className={`rounded px-3 py-2 text-sm whitespace-pre-wrap break-words ${
-                        it.role === "user" ? "bg-primary/20 text-gray-100" : "bg-surface-2 text-gray-200"
+                      className={`rounded px-3 py-2 text-sm whitespace-pre-wrap break-words select-text ${
+                        isUser ? "bg-primary/20 text-gray-100" : "bg-surface-2 text-gray-200"
                       }`}
                     >
                       {it.content}
                     </div>
-                    {it.role === "assistant" && (
+                    {!isUser ? (
                       <ResponseFooter
                         model={it.model}
                         tokps={it.tokps}
+                        elapsedMs={it.elapsedMs}
+                        tokens={it.tokens}
                         onCopy={() => navigator.clipboard.writeText(it.content).catch(() => {})}
-                        onDelete={i === lastAssistantIdx ? () => deleteResponse(i) : undefined}
+                        onDelete={isLastAssistant && !streaming ? () => deleteResponse(i) : undefined}
                       />
+                    ) : (
+                      <div className="flex items-center justify-end mt-1 px-1 text-[10px] text-gray-600">
+                        <button
+                          className="inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
+                          onClick={() => navigator.clipboard.writeText(it.content).catch(() => {})}
+                          title="Copy message"
+                        >
+                          <Copy size={10} /> Copy
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -594,14 +718,26 @@ function HarnessChat() {
               </div>
             );
           })}
-          {streamText !== null && (
-            <div className="flex justify-start">
-              <div className="max-w-[80%] rounded px-3 py-2 text-sm bg-surface-2 text-gray-200 whitespace-pre-wrap break-words">
-                {streamText}
-                {streaming && <span className="ml-0.5 inline-block w-2 h-4 bg-gray-500 animate-pulse align-middle" />}
-              </div>
+        {reasoningText !== null && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] w-full">
+              <ReasoningBlock
+                text={reasoningText}
+                streaming
+                open={reasoningOpen}
+                onToggle={() => setReasoningOpen((v) => !v)}
+              />
             </div>
-          )}
+          </div>
+        )}
+        {streamText !== null && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] rounded px-3 py-2 text-sm bg-surface-2 text-gray-200 whitespace-pre-wrap break-words select-text">
+              {streamText}
+              {streaming && <span className="ml-0.5 inline-block w-2 h-4 bg-gray-500 animate-pulse align-middle" />}
+            </div>
+          </div>
+        )}
           {streaming && streamText === null && items.length > 0 && (
             <div className="flex justify-start">
               <RefreshCw size={13} className="animate-spin text-gray-500" />
@@ -617,6 +753,36 @@ function HarnessChat() {
 
         {/* Input */}
         <div className="border-t border-border p-3 flex items-end gap-2">
+          {/* Capability badges + reasoning effort */}
+          <div className="flex flex-col gap-1 shrink-0 pb-0.5">
+            {(caps?.vision || caps?.reasoning) && (
+              <div className="flex items-center gap-1.5">
+                {caps?.vision && (
+                  <span title="Model supports vision (image input — attach support coming soon)">
+                    <Eye size={13} className="text-accent-blue" />
+                  </span>
+                )}
+                {caps?.reasoning && (
+                  <span title="Model supports reasoning (thinking)">
+                    <Brain size={13} className="text-primary-light" />
+                  </span>
+                )}
+              </div>
+            )}
+            <select
+              className="input py-1 px-1.5 text-[10px] w-24"
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value)}
+              title="Reasoning effort (depends on model support; ignored by non-reasoning servers)"
+              disabled={streaming}
+            >
+              {REASONING_OPTIONS.map((o) => (
+                <option key={o.value || "default"} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <textarea
             className="input flex-1 resize-none h-16 text-sm"
             placeholder="Send a message…"

@@ -553,6 +553,7 @@ pub async fn set_harness_roles(
 #[tauri::command]
 pub async fn harness_agent_send(
     message: String,
+    reasoning_effort: Option<String>,
     on_event: Channel<String>,
     state: State<'_, AppState>,
     app: AppHandle,
@@ -622,6 +623,7 @@ pub async fn harness_agent_send(
         registry: Arc::new(registry),
         engine: state.harness.engine.clone(),
         model: orchestrator_id.clone(),
+        reasoning_effort: reasoning_effort.filter(|e| !e.is_empty() && e != "default"),
         max_turns: max_turns as usize,
         subagents: Some(harness::agent::Subagents {
             jail,
@@ -656,6 +658,8 @@ pub async fn harness_agent_send(
             model,
             tokens_per_sec: outcome.tokens_per_sec,
             gen_tokens: outcome.gen_tokens,
+            prompt_tokens: outcome.prompt_tokens,
+            elapsed_ms: outcome.elapsed_ms,
         }),
         Err(e) => Err(e.to_string()),
     }
@@ -670,6 +674,47 @@ pub struct RunResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_per_sec: Option<f64>,
     pub gen_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+    pub elapsed_ms: u64,
+}
+
+/// Capabilities of the active model (GGUF metadata): vision (mmproj) and
+/// reasoning — shown as badges next to the chat input.
+#[derive(Debug, Serialize)]
+pub struct HarnessCapabilities {
+    pub vision: bool,
+    pub reasoning: bool,
+}
+
+#[tauri::command]
+pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<HarnessCapabilities, String> {
+    // Prefer the orchestrator role model; fall back to the single loaded model.
+    let path = {
+        let c = state.config.lock().unwrap();
+        let role = c.harness_roles.orchestrator.clone();
+        let single = {
+            let s = state.server.lock().unwrap();
+            s.config
+                .as_ref()
+                .filter(|cfg| !cfg.model_path.is_empty())
+                .map(|cfg| cfg.model_path.clone())
+        };
+        role.or(single)
+    };
+    let Some(path) = path else {
+        return Ok(HarnessCapabilities { vision: false, reasoning: false });
+    };
+    let meta = crate::models::read_model_metadata(std::path::Path::new(&path));
+    let has_cap = |want: &str| {
+        meta.as_ref()
+            .map(|m| m.capabilities.iter().any(|c| c.eq_ignore_ascii_case(want)))
+            .unwrap_or(false)
+    };
+    Ok(HarnessCapabilities {
+        vision: has_cap("vision"),
+        reasoning: has_cap("reasoning"),
+    })
 }
 
 struct RunningGuard(Arc<HarnessRuntime>);

@@ -65,6 +65,9 @@ impl ChatMessage {
 pub enum StreamEvent {
     /// Incremental assistant text.
     Content { text: String },
+    /// Incremental model reasoning (`reasoning_content` deltas; shown as a
+    /// collapsed "Thinking…" block in the UI, excluded from answer metrics).
+    ReasoningDelta { text: String },
     /// Incremental tool-call data, assembled by `StreamCollector`.
     ToolCallDelta {
         index: usize,
@@ -264,6 +267,11 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
     }
     let choice = v.get("choices")?.get(0)?;
     let delta = choice.get("delta")?;
+    if let Some(text) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+        if !text.is_empty() {
+            return Some(StreamEvent::ReasoningDelta { text: text.to_string() });
+        }
+    }
     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
         if !text.is_empty() {
             return Some(StreamEvent::Content { text: text.to_string() });
@@ -327,6 +335,7 @@ impl LlmClient {
         model: Option<&str>,
         messages: &[ChatMessage],
         tools: Option<&[Value]>,
+        reasoning_effort: Option<&str>,
         should_stop: impl Fn() -> bool,
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<String> {
@@ -337,6 +346,9 @@ impl LlmClient {
         });
         if let Some(m) = model {
             body["model"] = Value::from(m);
+        }
+        if let Some(effort) = reasoning_effort {
+            body["reasoning_effort"] = Value::from(effort);
         }
         if let Some(t) = tools {
             body["tools"] = Value::from(t.to_vec());

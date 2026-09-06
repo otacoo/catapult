@@ -312,6 +312,14 @@ export interface HarnessRunResult {
   model?: string;
   tokens_per_sec?: number | null;
   gen_tokens: number;
+  prompt_tokens?: number | null;
+  elapsed_ms: number;
+}
+
+/** Model capability badges for the chat input row. */
+export interface HarnessCapabilities {
+  vision: boolean;
+  reasoning: boolean;
 }
 
 /** Sidebar session entry. */
