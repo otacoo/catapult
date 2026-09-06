@@ -22,8 +22,11 @@ import OptionsPanel from "./OptionsPanel";
 import Chat from "../pages/Chat";
 import {
   getQuickBenchEnabled,
+  getUpdateState,
   loadQuickBenchEnabled,
   subscribeQuickBench,
+  subscribeUpdateState,
+  checkForAppUpdateOnStartup,
 } from "../utils/appSettings";
 
 const navItems: { to: string; label: string; icon: LucideIcon; quickBench?: boolean }[] = [
@@ -60,10 +63,17 @@ export default function Layout() {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const optionsBtnRef = useRef<HTMLButtonElement | null>(null);
   const [quickBench, setQuickBench] = useState(getQuickBenchEnabled());
+  const [updateState, setUpdateStateLocal] = useState(getUpdateState());
 
   useEffect(() => {
     loadQuickBenchEnabled();
-    return subscribeQuickBench(setQuickBench);
+    checkForAppUpdateOnStartup();
+    const unsubQuick = subscribeQuickBench(setQuickBench);
+    const unsubUpdate = subscribeUpdateState(setUpdateStateLocal);
+    return () => {
+      unsubQuick();
+      unsubUpdate();
+    };
   }, []);
 
   // Close the options panel when clicking outside of it (gear button included,
@@ -151,14 +161,17 @@ export default function Layout() {
             ref={optionsBtnRef}
             onClick={() => setOptionsOpen((v) => !v)}
             className={clsx(
-              "w-8 h-8 mr-1 flex items-center justify-center rounded transition-colors",
+              "relative w-8 h-8 mr-1 flex items-center justify-center rounded transition-colors",
               optionsOpen
                 ? "bg-primary/20 text-primary-light"
                 : "text-gray-400 hover:text-gray-200 hover:bg-primary/10"
             )}
-            title="Options"
+            title="Settings"
           >
             <Settings size={15} />
+            {updateState.available && !optionsOpen && (
+              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent-yellow" />
+            )}
           </button>
           <WindowControls />
         </div>
