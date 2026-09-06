@@ -76,6 +76,9 @@ pub enum StreamEvent {
         arguments_delta: String,
     },
     Finish { reason: String },
+    /// Usage stats (arrives in the final chunk when the server supports
+    /// `stream_options.include_usage`).
+    Usage { prompt_tokens: u64, completion_tokens: u64 },
 }
 
 /// Accumulates deltas into complete tool calls; argument fragments are repaired
@@ -251,6 +254,14 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
         return Some(StreamEvent::Finish { reason: "stop".into() });
     }
     let v: Value = serde_json::from_str(data).ok()?;
+    if let Some(usage) = v.get("usage").filter(|u| u.is_object()) {
+        if let (Some(p), Some(c)) = (
+            usage.get("prompt_tokens").and_then(|t| t.as_u64()),
+            usage.get("completion_tokens").and_then(|t| t.as_u64()),
+        ) {
+            return Some(StreamEvent::Usage { prompt_tokens: p, completion_tokens: c });
+        }
+    }
     let choice = v.get("choices")?.get(0)?;
     let delta = choice.get("delta")?;
     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
@@ -322,6 +333,7 @@ impl LlmClient {
         let mut body = serde_json::json!({
             "messages": messages,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         if let Some(m) = model {
             body["model"] = Value::from(m);

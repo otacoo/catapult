@@ -300,6 +300,26 @@ export interface AppConfig {
   harness_subagent_max_turns: number;
   /** Model roles (requires router mode): which model plans vs. executes. */
   harness_roles: { orchestrator: string | null; worker: string | null };
+  /** Chat projects: contained working directories shown in the Chat sidebar. */
+  harness_projects: { id: string; name: string; path: string; created: number }[];
+  /** Id of the project the Chat view currently has open. */
+  harness_active_project: string | null;
+}
+
+/** Agent run result: text plus the metadata shown under each response. */
+export interface HarnessRunResult {
+  text: string;
+  model?: string;
+  tokens_per_sec?: number | null;
+  gen_tokens: number;
+}
+
+/** Sidebar session entry. */
+export interface SessionInfo {
+  id: string;
+  title: string;
+  updated: number;
+  project?: string | null;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

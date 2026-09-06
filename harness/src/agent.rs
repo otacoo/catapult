@@ -159,6 +159,15 @@ pub struct AgentRun<'a> {
     pub subagents: Option<Subagents>,
 }
 
+/// Result of a full agent run: the final answer plus stream metrics for the
+/// UI (model name/tokens-per-second footer).
+#[derive(Debug, Clone, Default)]
+pub struct AgentOutcome {
+    pub text: String,
+    pub gen_tokens: usize,
+    pub tokens_per_sec: Option<f64>,
+}
+
 impl AgentRun<'_> {
     /// Drive the loop to completion. Mutates `history` in place (system +
     /// conversation, including tool messages). Returns the final assistant
@@ -170,7 +179,7 @@ impl AgentRun<'_> {
         gate: Arc<dyn ApprovalGate>,
         mut on_stream: impl FnMut(StreamEvent) + Send,
         mut on_event: impl FnMut(AgentEvent) + Send,
-    ) -> Result<String> {
+    ) -> Result<AgentOutcome> {
         let mut turns_used = 0usize;
         let mut sub_seq = 0usize;
         loop {
@@ -183,15 +192,32 @@ impl AgentRun<'_> {
             }
 
             // 1. Stream one completion, accumulating content + tool deltas.
+            // Metrics: content/tool deltas ≈ tokens; first-delta → finish
+            // gives the tokens-per-second of the answer.
             let mut collector = StreamCollector::default();
             let mut text_acc = String::new();
+            let mut deltas = 0usize;
+            let mut first_delta: Option<std::time::Instant> = None;
+            let mut usage_tokens: Option<u64> = None;
             let mut on_delta = |ev: StreamEvent| {
-                if let StreamEvent::Content { text } = &ev {
-                    text_acc.push_str(text);
+                match &ev {
+                    StreamEvent::Content { text } => {
+                        text_acc.push_str(text);
+                        deltas += 1;
+                    }
+                    StreamEvent::ToolCallDelta { .. } => deltas += 1,
+                    StreamEvent::Usage { completion_tokens, .. } => {
+                        usage_tokens = Some(*completion_tokens);
+                    }
+                    _ => {}
+                }
+                if first_delta.is_none() {
+                    first_delta = Some(std::time::Instant::now());
                 }
                 collector.push(&ev);
                 on_stream(ev);
             };
+            let turn_started = std::time::Instant::now();
             let finish = self
                 .client
                 .chat_stream(
@@ -214,8 +240,21 @@ impl AgentRun<'_> {
                     tool_calls: None,
                     tool_call_id: None,
                 });
+                let elapsed = first_delta
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or_else(|| turn_started.elapsed().as_secs_f64());
+                let tokens = usage_tokens.unwrap_or(deltas as u64) as usize;
+                let tokens_per_sec = if deltas > 0 {
+                    Some(tokens as f64 / elapsed.max(0.001))
+                } else {
+                    None
+                };
                 let _ = finish;
-                return Ok(text_acc);
+                return Ok(AgentOutcome {
+                    text: text_acc,
+                    gen_tokens: tokens,
+                    tokens_per_sec: tokens_per_sec.filter(|v| *v > 0.0 && v.is_finite()),
+                });
             }
 
             // 2. Assistant message with tool calls must precede tool results.
@@ -444,18 +483,18 @@ impl AgentRun<'_> {
                 on_event(ev);
             };
             let mut noop = |_ev: StreamEvent| {};
-            let report = run
+            let outcome = run
                 .run(&mut history, should_stop.clone(), gate, &mut noop, &mut nested)
                 .await?;
 
             // Cap the report entering the orchestrator transcript.
             const REPORT_CAP: usize = 16_000;
-            let report = if report.chars().count() > REPORT_CAP {
-                let mut t: String = report.chars().take(REPORT_CAP).collect();
+            let report = if outcome.text.chars().count() > REPORT_CAP {
+                let mut t: String = outcome.text.chars().take(REPORT_CAP).collect();
                 t.push_str("\n[report truncated]");
                 t
             } else {
-                report
+                outcome.text
             };
             on_event(AgentEvent::SubagentFinished {
                 call_id: call_ref,

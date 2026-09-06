@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, ipc::Channel, State};
 
 use crate::AppState;
@@ -53,6 +53,144 @@ pub struct HarnessRuntime {
     /// MCP server sessions + their tool listings (built once per app run;
     /// invalidated when the Tools page saves mcp.json).
     pub mcp: Mutex<Option<Arc<Vec<McpConnection>>>>,
+    /// Id of the session file currently open (None = new one on next send).
+    pub session_id: Mutex<Option<String>>,
+}
+
+/// Shape of a persisted session file.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PersistedSession {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub created: i64,
+    pub updated: i64,
+    pub messages: Vec<ChatMessage>,
+}
+
+/// Listing entry for the Chat sidebar.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub title: String,
+    pub updated: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+pub fn session_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("catapult").join("sessions"))
+}
+
+fn session_file(id: &str) -> Option<PathBuf> {
+    session_dir().map(|d| d.join(format!("{}.json", id)))
+}
+
+/// Stable-ish id from a timestamp: `s<millis>`.
+fn new_session_id() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("s{}", now)
+}
+
+fn session_title(history: &[ChatMessage]) -> String {
+    let first_user = history
+        .iter()
+        .find(|m| m.role == "user")
+        .and_then(|m| m.content.clone())
+        .unwrap_or_default();
+    let mut t: String = first_user.lines().next().unwrap_or("New chat").to_string();
+    if t.chars().count() > 60 {
+        t = t.chars().take(60).collect();
+        t.push('…');
+    }
+    t
+}
+
+/// Read a persisted session; None when missing/corrupt.
+fn read_session_file(path: &std::path::Path) -> Option<PersistedSession> {
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Resume the most recently updated session (app start).
+fn load_session(state: &AppState) {
+    let rt = &state.harness;
+    if rt.session_loaded.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(dir) = session_dir() else { return };
+    let mut best: Option<PersistedSession> = None;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(s) = read_session_file(&path) {
+                let replace = match &best {
+                    Some(b) => s.updated > b.updated,
+                    None => true,
+                };
+                if replace {
+                    best = Some(s);
+                }
+            }
+        }
+    }
+    if let Some(s) = best {
+        *rt.history.lock().unwrap() = s.messages;
+        *rt.session_id.lock().unwrap() = Some(s.id);
+    }
+}
+
+/// Save the current transcript under its id (creating the id if needed).
+fn save_session(state: &AppState) {
+    let Some(dir) = session_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let history = state.harness.history.lock().unwrap().clone();
+    if history.iter().all(|m| m.role != "user") {
+        return; // nothing worth persisting
+    }
+    let id = state
+        .harness
+        .session_id
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(new_session_id);
+    *state.harness.session_id.lock().unwrap() = Some(id.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let created = session_file(&id)
+        .and_then(|p| read_session_file(&p))
+        .map(|s| s.created)
+        .unwrap_or(now);
+    let project = {
+        let c = state.config.lock().unwrap();
+        c.harness_active_project
+            .as_ref()
+            .and_then(|id| c.harness_projects.iter().find(|p| &p.id == id))
+            .map(|p| p.path.clone())
+    };
+    let session = PersistedSession {
+        id: id.clone(),
+        title: session_title(&history),
+        project,
+        created,
+        updated: now,
+        messages: history,
+    };
+    if let Some(file) = session_file(&id) {
+        if let Ok(json) = serde_json::to_string(&session) {
+            let _ = std::fs::write(file, json);
+        }
+    }
 }
 
 impl HarnessRuntime {
@@ -65,6 +203,7 @@ impl HarnessRuntime {
             session_loaded: std::sync::atomic::AtomicBool::new(false),
             notice_shown: std::sync::atomic::AtomicBool::new(false),
             mcp: Mutex::new(None),
+            session_id: Mutex::new(None),
         }
     }
 }
@@ -160,11 +299,6 @@ pub struct McpConnection {
     pub tools: Vec<harness::mcp::McpToolInfo>,
 }
 
-/// On-disk session transcript (resumed on the next app start).
-fn session_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("catapult").join("sessions").join("current.json"))
-}
-
 /// Approval gate implementation: emits `harness_approval` to the UI and parks
 /// on the pending oneshot until `harness_agent_decide` resolves it.
 struct UiGate {
@@ -200,48 +334,41 @@ impl ApprovalGate for UiGate {
     }
 }
 
-fn load_session(state: &AppState) {
-    let rt = &state.harness;
-    if rt.session_loaded.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    if let Some(path) = session_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(history) = serde_json::from_str::<Vec<ChatMessage>>(&content) {
-                *rt.history.lock().unwrap() = history;
+/// The path of the currently active chat project (or None).
+fn active_project_path(config: &crate::config::AppConfig) -> Option<String> {
+    let id = config.harness_active_project.as_ref()?;
+    config
+        .harness_projects
+        .iter()
+        .find(|p| &p.id == id)
+        .map(|p| p.path.clone())
+}
+
+/// Resolve (and create) the sandboxed project root: the active chat project,
+/// else the current server working directory, else the shared workspace.
+fn project_root(state: &AppState) -> Result<PathBuf, String> {
+    let active = {
+        let c = state.config.lock().unwrap();
+        active_project_path(&c)
+    };
+    let dir = match active {
+        Some(d) => PathBuf::from(d),
+        None => {
+            let working = {
+                let s = state.server.lock().unwrap();
+                s.config
+                    .as_ref()
+                    .and_then(|c| c.working_dir.clone())
+                    .filter(|d| !d.trim().is_empty())
+            };
+            match working {
+                Some(d) => PathBuf::from(d),
+                None => dirs::data_dir()
+                    .ok_or("Cannot find data directory")?
+                    .join("catapult")
+                    .join("workspace"),
             }
         }
-    }
-}
-
-fn save_session(state: &AppState) {
-    if let Some(path) = session_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let history = state.harness.history.lock().unwrap().clone();
-        if let Ok(json) = serde_json::to_string(&history) {
-            let _ = std::fs::write(&path, json);
-        }
-    }
-}
-
-/// Resolve (and create) the sandboxed project root: the current server
-/// working directory when set, else the shared Catapult workspace.
-fn project_root(state: &AppState) -> Result<PathBuf, String> {
-    let working = {
-        let s = state.server.lock().unwrap();
-        s.config
-            .as_ref()
-            .and_then(|c| c.working_dir.clone())
-            .filter(|d| !d.trim().is_empty())
-    };
-    let dir = match working {
-        Some(d) => PathBuf::from(d),
-        None => dirs::data_dir()
-            .ok_or("Cannot find data directory")?
-            .join("catapult")
-            .join("workspace"),
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -429,7 +556,7 @@ pub async fn harness_agent_send(
     on_event: Channel<String>,
     state: State<'_, AppState>,
     app: AppHandle,
-) -> Result<String, String> {
+) -> Result<RunResult, String> {
     if state
         .harness
         .running
@@ -494,7 +621,7 @@ pub async fn harness_agent_send(
         client: &client,
         registry: Arc::new(registry),
         engine: state.harness.engine.clone(),
-        model: orchestrator_id,
+        model: orchestrator_id.clone(),
         max_turns: max_turns as usize,
         subagents: Some(harness::agent::Subagents {
             jail,
@@ -517,7 +644,32 @@ pub async fn harness_agent_send(
     // conversation stays inspectable and resumes after a restart).
     *state.harness.history.lock().unwrap() = history;
     save_session(&state);
-    result.map_err(|e| e.to_string())
+
+    // Resolve the display model name: the role model id, else the loaded one.
+    let model = match orchestrator_id.clone() {
+        Some(id) => Some(id),
+        None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
+    };
+    match result {
+        Ok(outcome) => Ok(RunResult {
+            text: outcome.text,
+            model,
+            tokens_per_sec: outcome.tokens_per_sec,
+            gen_tokens: outcome.gen_tokens,
+        }),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Run-result payload for the Chat UI (model + speed under each response).
+#[derive(Debug, Serialize)]
+pub struct RunResult {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_sec: Option<f64>,
+    pub gen_tokens: usize,
 }
 
 struct RunningGuard(Arc<HarnessRuntime>);
@@ -562,12 +714,139 @@ pub async fn harness_agent_decide(
 #[tauri::command]
 pub async fn harness_agent_reset(state: State<'_, AppState>) -> Result<(), String> {
     state.harness.history.lock().unwrap().clear();
-    if let Some(path) = session_path() {
-        let _ = std::fs::remove_file(path);
-    }
+    *state.harness.session_id.lock().unwrap() = None;
     let mut pending = state.harness.pending.lock().unwrap();
     if let Some(tx) = pending.take() {
         let _ = tx.send(Approved::Denied);
     }
     Ok(())
+}
+
+/// The current runtime transcript (frontend rebuilds its view after a session
+/// load or project switch).
+#[tauri::command]
+pub async fn harness_agent_history(state: State<'_, AppState>) -> Result<Vec<ChatMessage>, String> {
+    Ok(state.harness.history.lock().unwrap().clone())
+}
+
+// ── Sessions ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn harness_sessions_list() -> Result<Vec<SessionInfo>, String> {
+    let Some(dir) = session_dir() else { return Ok(vec![]) };
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(s) = read_session_file(&path) {
+                out.push(SessionInfo {
+                    id: s.id,
+                    title: s.title,
+                    updated: s.updated,
+                    project: s.project,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| b.updated.cmp(&a.updated));
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn harness_session_load(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let Some(path) = session_file(&id) else {
+        return Err("Unknown session".to_string());
+    };
+    let s = read_session_file(&path).ok_or("Session file is corrupt")?;
+    *state.harness.history.lock().unwrap() = s.messages;
+    *state.harness.session_id.lock().unwrap() = Some(s.id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn harness_session_delete(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if state.harness.session_id.lock().unwrap().as_deref() == Some(id.as_str()) {
+        // Deleting the open session also starts a fresh one.
+        state.harness.history.lock().unwrap().clear();
+        *state.harness.session_id.lock().unwrap() = None;
+    }
+    if let Some(path) = session_file(&id) {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Rewind: drop the most recent user turn (message + everything after it).
+#[tauri::command]
+pub async fn harness_agent_rewind(state: State<'_, AppState>) -> Result<(), String> {
+    let mut history = state.harness.history.lock().unwrap();
+    let Some(idx) = history.iter().rposition(|m| m.role == "user") else {
+        return Ok(());
+    };
+    history.truncate(idx);
+    drop(history);
+    save_session(&state);
+    Ok(())
+}
+
+// ── Projects (contained working directories) ────────────────────────────────
+
+#[tauri::command]
+pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err("Empty path".to_string());
+    }
+    let abs = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !abs.is_dir() {
+        return Err("Not a directory".to_string());
+    }
+    let name = abs
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let id = abs.to_string_lossy().to_lowercase().replace('\\', "/").replace(':', "");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut config = state.config.lock().unwrap();
+    if config.harness_projects.iter().any(|p| p.id == id) {
+        config.harness_active_project = Some(id);
+    } else {
+        config.harness_projects.push(crate::config::HarnessProject {
+            id: id.clone(),
+            name,
+            path: abs.to_string_lossy().to_string(),
+            created: now,
+        });
+        config.harness_active_project = Some(id);
+    }
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn harness_project_remove(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.harness_projects.retain(|p| p.id != id);
+    if config.harness_active_project.as_deref() == Some(id.as_str()) {
+        config.harness_active_project = None;
+    }
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn harness_project_active(id: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    if let Some(id) = &id {
+        if !config.harness_projects.iter().any(|p| &p.id == id) {
+            return Err("Unknown project".to_string());
+        }
+    }
+    config.harness_active_project = id;
+    config.save().map_err(|e| e.to_string())
 }

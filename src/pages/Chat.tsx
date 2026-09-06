@@ -1,9 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
-import { ArrowUp, Check, FileWarning, Hammer, Play, RefreshCw, Square, Wrench, X } from "lucide-react";
-import type { ServerStatus } from "../types";
+import {
+  ArrowUp,
+  Check,
+  Copy,
+  FileWarning,
+  FolderOpen,
+  Play,
+  Plus,
+  RefreshCw,
+  Square,
+  Trash2,
+  Wrench,
+  X,
+} from "lucide-react";
+import type { ServerStatus, HarnessRunResult, SessionInfo } from "../types";
 
 // ── Shared server-gate states ───────────────────────────────────────────────
 
@@ -39,10 +53,10 @@ function ServerStopped() {
   );
 }
 
-// ── Harness chat (agent loop with sandboxed tools) ──────────────────────────
+// ── Items (messages + tool activity) ────────────────────────────────────────
 
 type Item =
-  | { kind: "msg"; role: "user" | "assistant"; content: string }
+  | { kind: "msg"; role: "user" | "assistant"; content: string; model?: string; tokps?: number | null }
   | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string } }
   | {
       kind: "approval";
@@ -53,11 +67,183 @@ type Item =
       resolved?: "denied" | "once" | "session";
     };
 
-interface ToolListing {
-  name: string;
-  description: string;
-  approval: string;
+// ── Sidebar: projects + sessions ────────────────────────────────────────────
+
+// ── Sidebar: projects + sessions ────────────────────────────────────────────
+
+function ChatSidebar({ onProjectChanged, onSessionPicked }: {
+  onProjectChanged: () => void;
+  onSessionPicked: () => void;
+}) {
+  const [projects, setProjects] = useState<{ id: string; name: string; path: string }[]>([]);
+  const [active, setActive] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+
+  const refreshProjects = async () => {
+    try {
+      const c = await invoke<{ harness_projects: typeof projects; harness_active_project: string | null }>("get_config");
+      setProjects(c.harness_projects ?? []);
+      setActive(c.harness_active_project);
+    } catch {}
+  };
+
+  const refreshSessions = async () => {
+    try {
+      setSessions(await invoke<SessionInfo[]>("harness_sessions_list"));
+    } catch {}
+  };
+
+  useEffect(() => {
+    refreshProjects();
+    refreshSessions();
+    const id = setInterval(refreshSessions, 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addProject = async () => {
+    const picked = await openDialog({ directory: true, multiple: false });
+    if (typeof picked === "string" && picked) {
+      await invoke("harness_project_add", { path: picked }).catch(() => {});
+      await refreshProjects();
+      onProjectChanged();
+    }
+  };
+
+  const removeProject = async (id: string) => {
+    await invoke("harness_project_remove", { id }).catch(() => {});
+    await refreshProjects();
+    onProjectChanged();
+  };
+
+  const activateProject = async (id: string | null) => {
+    await invoke("harness_project_active", { id }).catch(() => {});
+    setActive(id);
+    onProjectChanged();
+  };
+
+  const deleteSession = async (id: string) => {
+    await invoke("harness_session_delete", { id }).catch(() => {});
+    await refreshSessions();
+    onSessionPicked();
+  };
+
+  const loadSession = async (id: string) => {
+    await invoke("harness_session_load", { id }).catch(() => {});
+    onSessionPicked();
+  };
+
+  return (
+    <aside className="w-60 shrink-0 border-r border-border bg-surface-1 flex flex-col overflow-y-auto">
+      {/* Projects */}
+      <div className="p-3 border-b border-border">
+        <div className="flex items-center justify-between px-1 mb-1.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Projects</span>
+          <button
+            className="text-gray-500 hover:text-gray-200 transition-colors"
+            onClick={addProject}
+            title="Add a project (working directory)"
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+        <div className="space-y-0.5">
+          {projects.map((p) => (
+            <div
+              key={p.id}
+              className={`group flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer transition-colors ${
+                p.id === active ? "bg-primary/20 text-primary-light" : "text-gray-400 hover:text-gray-200 hover:bg-primary/10"
+              }`}
+              onClick={() => activateProject(p.id)}
+              title={p.path}
+            >
+              <FolderOpen size={12} className="shrink-0" />
+              <span className="flex-1 truncate">{p.name}</span>
+              <button
+                className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-accent-red"
+                onClick={(e) => { e.stopPropagation(); removeProject(p.id); }}
+                title="Remove project (files stay untouched)"
+              >
+                <Trash2 size={11} />
+              </button>
+            </div>
+          ))}
+          {projects.length === 0 && (
+            <p className="text-[11px] text-gray-600 px-2 leading-snug">
+              Add a folder to sandbox the agent to a project.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Sessions */}
+      <div className="flex-1 overflow-y-auto p-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1">Sessions</span>
+        <div className="space-y-0.5 mt-1.5">
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className="group flex items-center gap-2 px-2 py-1.5 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-primary/10 cursor-pointer transition-colors"
+              onClick={() => loadSession(s.id)}
+              title={new Date(s.updated * 1000).toLocaleString()}
+            >
+              <span className="flex-1 truncate">{s.title}</span>
+              <button
+                className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-accent-red"
+                onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                title="Delete session"
+              >
+                <Trash2 size={11} />
+              </button>
+            </div>
+          ))}
+          {sessions.length === 0 && (
+            <p className="text-[11px] text-gray-600 px-2 leading-snug">No sessions yet.</p>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
 }
+
+// ── Response footer (model, tok/s, copy, delete) ────────────────────────────
+
+function ResponseFooter({ model, tokps, onCopy, onDelete }: {
+  model?: string;
+  tokps?: number | null;
+  onCopy: () => void;
+  onDelete?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-gray-600">
+      {model && <span className="font-mono truncate max-w-[200px]">{model}</span>}
+      {tokps != null && tokps > 0 && (
+        <span className="tabular-nums">{tokps.toFixed(1)} t/s</span>
+      )}
+      <button
+        className="ml-auto inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
+        onClick={() => {
+          onCopy();
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+        title="Copy response"
+      >
+        {copied ? <Check size={10} /> : <Copy size={10} />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+      {onDelete && (
+        <button className="inline-flex items-center gap-1 hover:text-accent-red transition-colors" onClick={onDelete} title="Delete this response and rewind to your message">
+          <Trash2 size={10} />
+          Delete
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Harness chat (agent loop with sandboxed tools) ──────────────────────────
 
 function HarnessChat() {
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
@@ -67,6 +253,7 @@ function HarnessChat() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const approvalSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -81,6 +268,27 @@ function HarnessChat() {
     const id = setInterval(poll, 2000);
     return () => clearInterval(id);
   }, []);
+
+  // Rebuild the visible transcript from the backend (after a session load,
+  // project switch, or reset). User + plain assistant turns are restored;
+  // tool-call detail lives server-side.
+  const restoreFromBackend = async () => {
+    try {
+      const messages = await invoke<{ role: string; content?: string | null; tool_calls?: unknown }[]>(
+        "harness_agent_history",
+      );
+      const restored: Item[] = [];
+      for (const m of messages) {
+        if (m.role === "user" && m.content) {
+          restored.push({ kind: "msg", role: "user", content: m.content });
+        } else if (m.role === "assistant" && m.content && !m.tool_calls) {
+          restored.push({ kind: "msg", role: "assistant", content: m.content });
+        }
+      }
+      setItems(restored);
+      setError(null);
+    } catch {}
+  };
 
   // Approval prompts arrive via a global event while the send invoke is still
   // pending (the loop parks until the user decides).
@@ -152,14 +360,6 @@ function HarnessChat() {
             ),
           );
           break;
-        case "notice":
-          if (typeof ev.text === "string" && ev.text) {
-            setItems((prev) => [
-              ...prev,
-              { kind: "tool", callId: `notice-${Date.now()}`, tool: "note", args: ev.text as string },
-            ]);
-          }
-          break;
         case "subagent_spawned":
           setStreamText(null);
           setItems((prev) => [
@@ -181,16 +381,30 @@ function HarnessChat() {
             ),
           );
           break;
+        case "notice":
+          if (typeof ev.text === "string" && ev.text) {
+            setItems((prev) => [
+              ...prev,
+              { kind: "tool", callId: `notice-${Date.now()}`, tool: "note", args: ev.text as string },
+            ]);
+          }
+          break;
         default:
           break;
       }
     };
 
     try {
-      const finish = await invoke<string>("harness_agent_send", { message: text, onEvent: channel });
+      const res = await invoke<HarnessRunResult>("harness_agent_send", { message: text, onEvent: channel });
       setItems((prev) => [
         ...prev,
-        { kind: "msg", role: "assistant", content: acc || `(no response — ${finish})` } as Item,
+        {
+          kind: "msg",
+          role: "assistant",
+          content: res.text || acc || "(no response)",
+          model: res.model,
+          tokps: res.tokens_per_sec ?? null,
+        } as Item,
       ]);
     } catch (e) {
       const msg = String(e);
@@ -221,13 +435,41 @@ function HarnessChat() {
     } catch {}
   };
 
-  const resetChat = async () => {
+  const newChat = async () => {
     if (streaming) return;
     try {
       await invoke("harness_agent_reset");
     } catch {}
     setItems([]);
     setError(null);
+  };
+
+  // Delete = rewind: drop the response and the user turn that produced it.
+  const lastAssistantIdx = (() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "msg" && it.role === "assistant") return i;
+    }
+    return -1;
+  })();
+  const lastUserIdx = (() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "msg" && it.role === "user") return i;
+    }
+    return -1;
+  })();
+
+  const deleteResponse = async (idx: number) => {
+    if (idx !== lastAssistantIdx || streaming) return;
+    try {
+      await invoke("harness_agent_rewind");
+      setItems((prev) => prev.slice(0, lastUserIdx));
+      setInput((prev) => {
+        const removed = items[lastUserIdx];
+        return removed && removed.kind === "msg" ? removed.content : prev;
+      });
+    } catch {}
   };
 
   if (status.type === "starting") {
@@ -238,167 +480,203 @@ function HarnessChat() {
   }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-1.5 border-b border-border">
-        <span className="text-xs text-gray-500 flex items-center gap-1.5">
-          <Hammer size={12} className="text-primary-light" />
-          Agent · sandboxed tools
-        </span>
-        <button
-          className="text-xs text-gray-500 hover:text-gray-300"
-          onClick={resetChat}
-          disabled={streaming}
-          title="Start a new conversation"
-        >
-          New chat
-        </button>
-      </div>
+    <div className="flex-1 flex min-h-0">
+      {sidebarOpen && (
+        <ChatSidebar
+          onProjectChanged={() => {
+            restoreFromBackend();
+          }}
+          onSessionPicked={() => {
+            restoreFromBackend();
+          }}
+        />
+      )}
 
-      {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
-        {items.length === 0 && streamText === null && (
-          <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
-            <p className="text-base font-semibold text-gray-200">Catapult Chat</p>
-            <p className="text-sm text-gray-500 max-w-md">
-              The agent can use these sandboxed tools in the project directory:
-            </p>
-            {tools && tools.length > 0 && (
-              <div className="flex flex-col gap-1.5 max-w-lg text-left">
-                {tools.map((t) => (
-                  <div key={t.name} className="flex items-start gap-2 rounded border border-border bg-surface-2 px-2.5 py-1.5">
-                    <Wrench size={11} className="text-gray-500 shrink-0 mt-0.5" />
-                    <div className="min-w-0">
-                      <p className="text-xs">
-                        <span className="text-gray-300 font-medium font-mono">{t.name}</span>
-                        <span className={`ml-2 text-[10px] ${t.approval === "auto" ? "text-accent-green" : "text-accent-yellow"}`}>
-                          {t.approval}
-                        </span>
-                      </p>
-                      <p className="text-[11px] text-gray-500 leading-snug">{t.description}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        {items.map((it, i) => {
-          if (it.kind === "msg") {
-            return (
-              <div key={i} className={`flex ${it.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[80%] rounded px-3 py-2 text-sm whitespace-pre-wrap break-words ${
-                    it.role === "user" ? "bg-primary/20 text-gray-100" : "bg-surface-2 text-gray-200"
-                  }`}
-                >
-                  {it.content}
-                </div>
-              </div>
-            );
-          }
-          if (it.kind === "tool") {
-            return (
-              <div key={i} className="flex justify-start">
-                <div className="max-w-[85%] rounded border border-border bg-surface-2 px-3 py-2 text-xs">
-                  <p className="text-gray-400 flex items-center gap-1.5 mb-1">
-                    <Wrench size={11} className="text-gray-500 shrink-0" />
-                    <span className="text-gray-300 font-medium">{it.tool}</span>
-                    <span className="text-gray-600 truncate">{it.args}</span>
-                  </p>
-                  {it.output && (
-                    <pre
-                      className={`whitespace-pre-wrap break-words text-[11px] leading-snug max-h-40 overflow-y-auto ${
-                        it.output.ok ? "text-gray-400" : "text-accent-yellow"
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-1.5 border-b border-border">
+          <button
+            className="text-xs text-gray-500 hover:text-gray-300"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          >
+            {sidebarOpen ? "◀ Sidebar" : "▶ Sidebar"}
+          </button>
+          <button
+            className="text-xs text-gray-500 hover:text-gray-300"
+            onClick={newChat}
+            disabled={streaming}
+            title="Start a new conversation"
+          >
+            New chat
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+          {items.length === 0 && streamText === null && <EmptyState tools={tools} />}
+          {items.map((it, i) => {
+            if (it.kind === "msg") {
+              return (
+                <div key={i} className={`flex ${it.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className="max-w-[80%]">
+                    <div
+                      className={`rounded px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                        it.role === "user" ? "bg-primary/20 text-gray-100" : "bg-surface-2 text-gray-200"
                       }`}
                     >
-                      {it.output.text}
-                    </pre>
+                      {it.content}
+                    </div>
+                    {it.role === "assistant" && (
+                      <ResponseFooter
+                        model={it.model}
+                        tokps={it.tokps}
+                        onCopy={() => navigator.clipboard.writeText(it.content).catch(() => {})}
+                        onDelete={i === lastAssistantIdx ? () => deleteResponse(i) : undefined}
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            }
+            if (it.kind === "tool") {
+              return (
+                <div key={i} className="flex justify-start">
+                  <div className="max-w-[85%] rounded border border-border bg-surface-2 px-3 py-2 text-xs">
+                    <p className="text-gray-400 flex items-center gap-1.5 mb-1">
+                      <Wrench size={11} className="text-gray-500 shrink-0" />
+                      <span className="text-gray-300 font-medium">{it.tool}</span>
+                      <span className="text-gray-600 truncate">{it.args}</span>
+                    </p>
+                    {it.output && (
+                      <pre
+                        className={`whitespace-pre-wrap break-words text-[11px] leading-snug max-h-40 overflow-y-auto ${
+                          it.output.ok ? "text-gray-400" : "text-accent-yellow"
+                        }`}
+                      >
+                        {it.output.text}
+                      </pre>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+            // Approval card
+            return (
+              <div key={i} className="flex justify-start">
+                <div className="max-w-[85%] rounded border border-accent-yellow/40 bg-accent-yellow/5 px-3 py-2 text-xs">
+                  <p className="text-gray-300 flex items-center gap-1.5 mb-1">
+                    <FileWarning size={11} className="text-accent-yellow shrink-0" />
+                    Approval requested: <span className="font-medium">{it.tool}</span>
+                    {it.command && <span className="badge-gray text-[10px]">{it.command}</span>}
+                  </p>
+                  <pre className="whitespace-pre-wrap break-words text-[11px] text-gray-400 mb-2 max-h-40 overflow-y-auto">
+                    {it.args}
+                  </pre>
+                  {!it.resolved ? (
+                    <div className="flex items-center gap-2">
+                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "once")}>
+                        <Check size={11} /> Allow once
+                      </button>
+                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "session")}>
+                        <Check size={11} /> Allow session (30 min)
+                      </button>
+                      <button className="btn-ghost py-1 px-2 text-accent-red" onClick={() => decide(it.seq, null)}>
+                        <X size={11} /> Deny
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-gray-600">
+                      {it.resolved === "denied" ? "Denied" : `Allowed (${it.resolved})`}
+                    </p>
                   )}
                 </div>
               </div>
             );
-          }
-          // Approval card
-          return (
-            <div key={i} className="flex justify-start">
-              <div className="max-w-[85%] rounded border border-accent-yellow/40 bg-accent-yellow/5 px-3 py-2 text-xs">
-                <p className="text-gray-300 flex items-center gap-1.5 mb-1">
-                  <FileWarning size={11} className="text-accent-yellow shrink-0" />
-                  Approval requested: <span className="font-medium">{it.tool}</span>
-                  {it.command && <span className="badge-gray text-[10px]">{it.command}</span>}
-                </p>
-                <pre className="whitespace-pre-wrap break-words text-[11px] text-gray-400 mb-2 max-h-40 overflow-y-auto">
-                  {it.args}
-                </pre>
-                {!it.resolved ? (
-                  <div className="flex items-center gap-2">
-                    <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "once")}>
-                      <Check size={11} /> Allow once
-                    </button>
-                    <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "session")}>
-                      <Check size={11} /> Allow session (30 min)
-                    </button>
-                    <button className="btn-ghost py-1 px-2 text-accent-red" onClick={() => decide(it.seq, null)}>
-                      <X size={11} /> Deny
-                    </button>
-                  </div>
-                ) : (
-                  <p className="text-gray-600">
-                    {it.resolved === "denied" ? "Denied" : `Allowed (${it.resolved})`}
-                  </p>
-                )}
+          })}
+          {streamText !== null && (
+            <div className="flex justify-start">
+              <div className="max-w-[80%] rounded px-3 py-2 text-sm bg-surface-2 text-gray-200 whitespace-pre-wrap break-words">
+                {streamText}
+                {streaming && <span className="ml-0.5 inline-block w-2 h-4 bg-gray-500 animate-pulse align-middle" />}
               </div>
             </div>
-          );
-        })}
-        {streamText !== null && (
-          <div className="flex justify-start">
-            <div className="max-w-[80%] rounded px-3 py-2 text-sm bg-surface-2 text-gray-200 whitespace-pre-wrap break-words">
-              {streamText}
-              {streaming && <span className="ml-0.5 inline-block w-2 h-4 bg-gray-500 animate-pulse align-middle" />}
+          )}
+          {streaming && streamText === null && items.length > 0 && (
+            <div className="flex justify-start">
+              <RefreshCw size={13} className="animate-spin text-gray-500" />
             </div>
-          </div>
-        )}
-        {streaming && streamText === null && items.length > 0 && (
-          <div className="flex justify-start">
-            <RefreshCw size={13} className="animate-spin text-gray-500" />
-          </div>
-        )}
-      </div>
+          )}
+        </div>
 
-      {error && (
-        <div className="px-6 pb-2">
-          <p className="text-xs text-accent-red break-words">{error}</p>
+        {error && (
+          <div className="px-6 pb-2">
+            <p className="text-xs text-accent-red break-words">{error}</p>
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="border-t border-border p-3 flex items-end gap-2">
+          <textarea
+            className="input flex-1 resize-none h-16 text-sm"
+            placeholder="Send a message…"
+            value={input}
+            disabled={streaming}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          {streaming ? (
+            <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">
+              <Square size={13} />
+              Stop
+            </button>
+          ) : (
+            <button className="btn-primary shrink-0" onClick={send} disabled={!input.trim()} title="Send">
+              <ArrowUp size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface ToolListing {
+  name: string;
+  description: string;
+  approval: string;
+}
+
+function EmptyState({ tools }: { tools: ToolListing[] | null }) {
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
+      <p className="text-base font-semibold text-gray-200">Catapult Chat</p>
+      <p className="text-sm text-gray-500 max-w-md">
+        The agent can use these sandboxed tools in the project directory:
+      </p>
+      {tools && tools.length > 0 && (
+        <div className="flex flex-col gap-1.5 max-w-lg text-left">
+          {tools.map((t) => (
+            <div key={t.name} className="flex items-start gap-2 rounded border border-border bg-surface-2 px-2.5 py-1.5">
+              <Wrench size={11} className="text-gray-500 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs">
+                  <span className="text-gray-300 font-medium font-mono">{t.name}</span>
+                  <span className={`ml-2 text-[10px] ${t.approval === "auto" ? "text-accent-green" : "text-accent-yellow"}`}>
+                    {t.approval}
+                  </span>
+                </p>
+                <p className="text-[11px] text-gray-500 leading-snug">{t.description}</p>
+              </div>
+            </div>
+          ))}
         </div>
       )}
-
-      {/* Input */}
-      <div className="border-t border-border p-3 flex items-end gap-2">
-        <textarea
-          className="input flex-1 resize-none h-16 text-sm"
-          placeholder="Send a message…"
-          value={input}
-          disabled={streaming}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-        />
-        {streaming ? (
-          <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">
-            <Square size={13} />
-            Stop
-          </button>
-        ) : (
-          <button className="btn-primary shrink-0" onClick={send} disabled={!input.trim()} title="Send">
-            <ArrowUp size={14} />
-          </button>
-        )}
-      </div>
     </div>
   );
 }

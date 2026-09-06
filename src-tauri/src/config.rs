@@ -55,6 +55,19 @@ pub struct HarnessRoles {
     pub worker: Option<String>,
 }
 
+/// A chat project: a contained working directory the agent is sandboxed to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HarnessProject {
+    /// Stable id (slug of the path at add time).
+    pub id: String,
+    /// Display name (folder name).
+    pub name: String,
+    /// Absolute path of the working directory.
+    pub path: String,
+    #[serde(default)]
+    pub created: i64,
+}
+
 /// UI theme preference. `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -172,6 +185,12 @@ pub struct AppConfig {
     /// (worker subagents). Requires router mode.
     #[serde(default)]
     pub harness_roles: HarnessRoles,
+    /// Chat projects: contained working directories shown in the Chat sidebar.
+    #[serde(default)]
+    pub harness_projects: Vec<HarnessProject>,
+    /// Id of the project the Chat view currently has open.
+    #[serde(default)]
+    pub harness_active_project: Option<String>,
 }
 
 impl AppConfig {
