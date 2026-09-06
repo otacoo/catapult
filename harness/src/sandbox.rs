@@ -41,22 +41,39 @@ fn normalize(path: &Path) -> PathBuf {
     }
 }
 
-/// Canonicalize `path`, falling back to canonicalizing the parent directory
-/// for targets that do not exist yet (write targets). The final component is
-/// re-attached verbatim, so new files are jailed by their parent directory.
+/// Canonicalize `path` for a write target. The target may not exist; resolve
+/// the *deepest existing ancestor* canonically and re-attach the remaining
+/// (lexical) components. Suffix components cannot contain symlinks (they
+/// don't exist), so the canonical ancestor check is sufficient.
 fn canonicalize_target(path: &Path) -> Result<PathBuf> {
     match std::fs::canonicalize(path) {
         Ok(p) => Ok(p),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let file_name = path
-                .file_name()
-                .with_context(|| format!("Path has no final component: {}", path.display()))?;
-            let parent = path
-                .parent()
-                .with_context(|| format!("Path has no parent: {}", path.display()))?;
-            let parent = std::fs::canonicalize(parent)
-                .with_context(|| format!("Parent directory does not exist: {}", parent.display()))?;
-            Ok(parent.join(file_name))
+            let lex = lexical_normalize(path);
+            // Walk up to the deepest existing ancestor.
+            let mut probe: &Path = lex.as_path();
+            let mut suffix_rev: Vec<std::ffi::OsString> = Vec::new();
+            loop {
+                match probe.parent() {
+                    Some(parent) => {
+                        if let Some(name) = probe.file_name() {
+                            suffix_rev.push(name.to_os_string());
+                        }
+                        probe = parent;
+                    }
+                    None => bail!("Path has no existing ancestor: {}", path.display()),
+                }
+                if std::fs::metadata(probe).is_ok() {
+                    break;
+                }
+            }
+            let base = std::fs::canonicalize(probe)
+                .with_context(|| format!("Cannot resolve {}", probe.display()))?;
+            let mut out = base;
+            for comp in suffix_rev.iter().rev() {
+                out.push(comp);
+            }
+            Ok(out)
         }
         Err(e) => Err(e).with_context(|| format!("Cannot resolve path {}", path.display())),
     }
@@ -145,9 +162,19 @@ impl PathJail {
         PathScope::Denied
     }
 
+    /// Anchor a tool-supplied path: relative paths are relative to the jail
+    /// root (models must not — and cannot — resolve against the app's CWD).
+    fn anchored(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            lexical_normalize(path)
+        } else {
+            self.root.join(lexical_normalize(path))
+        }
+    }
+
     /// Validate a read target. Returns the canonical, resolved path.
     pub fn check_read(&self, path: &Path) -> Result<PathBuf> {
-        let canonical = canonicalize_target(path)?;
+        let canonical = canonicalize_target(&self.anchored(path))?;
         match self.scope(&canonical) {
             PathScope::Project | PathScope::ExtraRead | PathScope::ExtraWrite => Ok(canonical),
             PathScope::Denied => bail!(
@@ -158,10 +185,12 @@ impl PathJail {
     }
 
     /// Validate a write target. Returns the canonical, resolved path. The
-    /// target itself may not exist yet; its parent must. Extra-read roots are
+    /// target and intermediate directories may not exist yet; the deepest
+    /// existing ancestor is canonicalized (symlinks cannot exist in missing
+    /// components, so the check stays airtight). Extra-read roots are
     /// read-only by definition and never writable.
     pub fn check_write(&self, path: &Path) -> Result<PathBuf> {
-        let canonical = canonicalize_target(path)?;
+        let canonical = canonicalize_target(&self.anchored(path))?;
         match self.scope(&canonical) {
             PathScope::Project | PathScope::ExtraWrite => Ok(canonical),
             PathScope::ExtraRead => bail!(
@@ -215,10 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn write_to_missing_parent_is_denied() {
+    fn missing_parents_resolve_within_jail() {
         let root = temp_dir("missing-parent");
         let jail = jail_from(&root);
-        assert!(jail.check_write(&root.join("no").join("such.txt")).is_err());
+        // Missing intermediate directories still resolve inside the jail
+        // (the deepest existing ancestor is checked; the tool layer mkdirs).
+        assert!(jail.check_write(&root.join("no").join("such.txt")).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 

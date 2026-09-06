@@ -6,6 +6,8 @@
 
 pub mod client;
 pub mod jsonfix;
+pub mod permissions;
 pub mod sandbox;
+pub mod tools;
 
 pub use sandbox::{PathJail, PathScope};
