@@ -1,0 +1,9 @@
+[package]
+name = "harness"
+version = "0.4.3"
+edition = "2024"
+license = "Apache-2.0"
+description = "Catapult agent harness: sandboxed tools, orchestrator and subagents"
+
+[dependencies]
+anyhow = "1"

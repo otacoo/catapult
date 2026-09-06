@@ -292,6 +292,8 @@ export interface AppConfig {
   enable_quick_bench: boolean;
   /** Model paths registered for llama-server router mode (multi-model). */
   router_models: string[];
+  /** Chat implementation: agent harness (default) or llama-server WebUI. */
+  harness_chat: boolean;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

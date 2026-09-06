@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
-import { Play, RefreshCw } from "lucide-react";
+import { Play, RefreshCw, Hammer } from "lucide-react";
 import type { ServerStatus } from "../types";
 
-export default function Chat() {
+function WebUIChat() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -67,6 +67,48 @@ export default function Chat() {
         <span className="text-xs text-gray-500 font-mono">{chatUrl}</span>
       </div>
       <iframe ref={iframeRef} src={chatUrl} className="flex-1 w-full border-0" allow="clipboard-write" title="llama.cpp Chat" />
+    </div>
+  );
+}
+
+export default function Chat() {
+  const [harnessChat, setHarnessChat] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    invoke<{ harness_chat: boolean }>("get_config")
+      .then((c) => setHarnessChat(c.harness_chat ?? true))
+      .catch(() => setHarnessChat(true));
+  }, []);
+
+  if (harnessChat === false) {
+    return <WebUIChat />;
+  }
+
+  // Harness chat shell — Phase 1 lands the streaming agent loop; the sandboxed
+  // project sidebar and agent tabs build on top of this surface.
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-5 p-8">
+      <div className="text-center">
+        <p className="text-base font-semibold text-gray-200 flex items-center justify-center gap-2">
+          <Hammer size={16} className="text-primary-light" />
+          Catapult Chat (harness)
+        </p>
+        <p className="text-sm text-gray-500 mt-1 max-w-md">
+          The agent harness is under construction. Use the llama-server WebUI for now —
+          it stays fully supported via the Options menu.
+        </p>
+      </div>
+      <button
+        className="btn-secondary text-xs"
+        onClick={async () => {
+          setHarnessChat(false);
+          try {
+            await invoke("set_harness_chat", { enabled: false });
+          } catch {}
+        }}
+      >
+        Use WebUI for now
+      </button>
     </div>
   );
 }

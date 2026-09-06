@@ -18,6 +18,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+harness = { path = "../harness" }
 tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"

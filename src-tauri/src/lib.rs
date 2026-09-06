@@ -295,6 +295,13 @@ async fn set_router_models(paths: Vec<String>, state: State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
+async fn set_harness_chat(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.harness_chat = enabled;
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_available_backends(_state: State<'_, AppState>) -> Result<Vec<BackendInfo>, String> {
     let system = hardware::get_system_info().map_err(|e| e.to_string())?;
     Ok(system.available_backends)
@@ -1073,6 +1080,7 @@ pub fn run() {
             set_close_to_tray,
             set_enable_quick_bench,
             set_router_models,
+            set_harness_chat,
             get_available_backends,
             // Models
             list_installed_models,

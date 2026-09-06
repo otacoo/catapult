@@ -143,6 +143,10 @@ pub struct AppConfig {
     /// demand (from the WebUI picker or the API).
     #[serde(default)]
     pub router_models: Vec<String>,
+    /// Chat implementation to use: the Catapult agent harness (default) or
+    /// the classic llama-server WebUI. The WebUI stays fully supported.
+    #[serde(default = "default_true")]
+    pub harness_chat: bool,
 }
 
 impl AppConfig {

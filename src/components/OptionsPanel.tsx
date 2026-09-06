@@ -58,6 +58,13 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  const setHarnessChat = async (enabled: boolean) => {
+    setAppConfig((c) => (c ? { ...c, harness_chat: enabled } : c));
+    try {
+      await invoke("set_harness_chat", { enabled });
+    } catch {}
+  };
+
   return (
     <div
       ref={panelRef}
@@ -80,6 +87,12 @@ export default function OptionsPanel({ open, onClose }: {
             hint="Toggle benchmarking tools."
             checked={appConfig?.enable_quick_bench ?? true}
             onChange={setQuickBench}
+          />
+          <Toggle
+            label="Use Catapult Chat"
+            hint="Agent harness chat; off uses the llama-server WebUI."
+            checked={appConfig?.harness_chat ?? true}
+            onChange={setHarnessChat}
           />
         </div>
       </div>
