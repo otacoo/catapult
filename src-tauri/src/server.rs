@@ -107,6 +107,11 @@ pub struct ServerConfig {
     pub min_p: f32,
     pub top_p: f32,
     pub n_predict: i32,
+    /// When true, no sampling parameters are passed at all (`--temp`,
+    /// `--top-k`, `--min-p`, `--top-p` are omitted) so the server or a
+    /// harness can use its own defaults.
+    #[serde(default)]
+    pub disable_sampling: bool,
     // Batching
     pub n_batch: u32,
     pub n_ubatch: u32,
@@ -149,6 +154,7 @@ impl Default for ServerConfig {
             min_p: 0.05,
             top_p: 0.95,
             n_predict: -1,
+            disable_sampling: false,
             n_batch: 512,
             n_ubatch: 512,
             cont_batching: true,
@@ -836,34 +842,47 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     args.push("--flash-attn".to_string());
     args.push(config.flash_attn.clone());
 
-    args.push("--cache-type-k".to_string());
-    args.push(config.cache_type_k.clone());
+    // Cache types: empty = omit, letting llama-server use its own default.
+    if !config.cache_type_k.is_empty() {
+        args.push("--cache-type-k".to_string());
+        args.push(config.cache_type_k.clone());
+    }
+    if !config.cache_type_v.is_empty() {
+        args.push("--cache-type-v".to_string());
+        args.push(config.cache_type_v.clone());
+    }
 
-    args.push("--cache-type-v".to_string());
-    args.push(config.cache_type_v.clone());
+    // Sampling params: omitted entirely when disabled so the server/harness
+    // defaults apply.
+    if !config.disable_sampling {
+        args.push("--temp".to_string());
+        args.push(format!("{:.2}", config.temperature));
 
-    args.push("--temp".to_string());
-    args.push(format!("{:.2}", config.temperature));
+        args.push("--top-k".to_string());
+        args.push(config.top_k.to_string());
 
-    args.push("--top-k".to_string());
-    args.push(config.top_k.to_string());
+        args.push("--min-p".to_string());
+        args.push(format!("{:.4}", config.min_p));
 
-    args.push("--min-p".to_string());
-    args.push(format!("{:.4}", config.min_p));
-
-    args.push("--top-p".to_string());
-    args.push(format!("{:.4}", config.top_p));
+        args.push("--top-p".to_string());
+        args.push(format!("{:.4}", config.top_p));
+    }
 
     if config.n_predict != -1 {
         args.push("--n-predict".to_string());
         args.push(config.n_predict.to_string());
     }
 
-    args.push("--batch-size".to_string());
-    args.push(config.n_batch.to_string());
+    // Batch sizes: 0 = omit, letting llama-server auto-size.
+    if config.n_batch > 0 {
+        args.push("--batch-size".to_string());
+        args.push(config.n_batch.to_string());
+    }
 
-    args.push("--ubatch-size".to_string());
-    args.push(config.n_ubatch.to_string());
+    if config.n_ubatch > 0 {
+        args.push("--ubatch-size".to_string());
+        args.push(config.n_ubatch.to_string());
+    }
 
     if config.cont_batching {
         args.push("--cont-batching".to_string());
@@ -1327,6 +1346,54 @@ mod tests {
         };
         let (args, _) = build_args_with_notes(&config);
         assert!(!args.contains(&"--load-mode".to_string()));
+    }
+
+    #[test]
+    fn build_args_omits_sampling_when_disabled() {
+        let config = ServerConfig {
+            disable_sampling: true,
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        for flag in ["--temp", "--top-k", "--min-p", "--top-p"] {
+            assert!(!args.contains(&flag.to_string()), "{} must be omitted", flag);
+        }
+    }
+
+    #[test]
+    fn build_args_passes_sampling_by_default() {
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        for flag in ["--temp", "--top-k", "--min-p", "--top-p"] {
+            assert!(args.contains(&flag.to_string()));
+        }
+    }
+
+    #[test]
+    fn build_args_omits_cache_types_when_empty() {
+        let config = ServerConfig {
+            cache_type_k: String::new(),
+            cache_type_v: String::new(),
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        assert!(!args.contains(&"--cache-type-k".to_string()));
+        assert!(!args.contains(&"--cache-type-v".to_string()));
+    }
+
+    #[test]
+    fn build_args_omits_batch_sizes_when_zero() {
+        let config = ServerConfig {
+            n_batch: 0,
+            n_ubatch: 0,
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        assert!(!args.contains(&"--batch-size".to_string()));
+        assert!(!args.contains(&"--ubatch-size".to_string()));
     }
 
     #[test]

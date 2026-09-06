@@ -215,6 +215,8 @@ export interface ServerConfig {
   min_p: number;
   top_p: number;
   n_predict: number;
+  /** Omit all sampling flags so the server/harness defaults apply. */
+  disable_sampling: boolean;
   n_batch: number;
   n_ubatch: number;
   cont_batching: boolean;

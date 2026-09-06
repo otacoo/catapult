@@ -176,6 +176,7 @@ const DEFAULT_CONFIG: ServerConfig = {
   min_p: 0.05,
   top_p: 0.95,
   n_predict: -1,
+  disable_sampling: false,
   n_batch: 2048,
   n_ubatch: 512,
   cont_batching: true,
@@ -741,8 +742,8 @@ export default function Server() {
         nPrompt: 512,
         nGen: 128,
         nThreads: config.n_threads,
-        batchSize: config.n_batch,
-        ubatchSize: config.n_ubatch,
+        batchSize: config.n_batch > 0 ? config.n_batch : null,
+        ubatchSize: config.n_ubatch > 0 ? config.n_ubatch : null,
         nCtx: config.n_ctx,
         nGpuLayers: config.n_gpu_layers,
       });
@@ -1190,10 +1191,10 @@ export default function Server() {
             <div className="grid grid-cols-2 gap-3">
               <NumberInput label="Max Tokens" hint="-1 = unlimited" value={config.n_predict} min={-1}
                 onChange={(v) => setConfig((c) => ({ ...c, n_predict: v ?? -1 }))} />
-              <NumberInput label="Batch Size" hint="Auto: 2048 (4096 if ≥16GB VRAM), ≥ ubatch" value={config.n_batch} min={1} max={16384} step={32}
-                onChange={(v) => setConfig((c) => ({ ...c, n_batch: v ?? 2048 }))} />
-              <NumberInput label="Micro-batch Size" hint="Auto: 512 (1024 if ≥16GB VRAM)" value={config.n_ubatch} min={1} max={16384} step={32}
-                onChange={(v) => setConfig((c) => ({ ...c, n_ubatch: v ?? 512 }))} />
+              <NumberInput label="Batch Size" hint="0 = omit (server default); Auto: 2048 (4096 if ≥16GB VRAM), ≥ ubatch" value={config.n_batch} min={0} max={16384} step={32}
+                onChange={(v) => setConfig((c) => ({ ...c, n_batch: v ?? 0 }))} />
+              <NumberInput label="Micro-batch Size" hint="0 = omit (server default); Auto: 512 (1024 if ≥16GB VRAM)" value={config.n_ubatch} min={0} max={16384} step={32}
+                onChange={(v) => setConfig((c) => ({ ...c, n_ubatch: v ?? 0 }))} />
               <NumberInput label="Keep Tokens" hint="Tokens to keep from initial prompt (0=none, -1=all)" value={getEpNum("keep")}
                 onChange={(v) => setEpNum("keep", v)} />
             </div>
@@ -1204,11 +1205,11 @@ export default function Server() {
                 options={[{ value: "auto", label: "Auto" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setConfig((c) => ({ ...c, flash_attn: v }))} />
               <div /> {/* spacer */}
-              <SelectInput label="KV Cache Type (K)" value={config.cache_type_k}
-                options={KV_TYPES.map((t) => ({ value: t, label: t }))}
+              <SelectInput label="KV Cache Type (K)" hint="Default (f16) omits the flag" value={config.cache_type_k}
+                options={[{ value: "", label: "Default" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]}
                 onChange={(v) => setConfig((c) => ({ ...c, cache_type_k: v }))} />
-              <SelectInput label="KV Cache Type (V)" value={config.cache_type_v}
-                options={KV_TYPES.map((t) => ({ value: t, label: t }))}
+              <SelectInput label="KV Cache Type (V)" hint="Default (f16) omits the flag" value={config.cache_type_v}
+                options={[{ value: "", label: "Default" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]}
                 onChange={(v) => setConfig((c) => ({ ...c, cache_type_v: v }))} />
             </div>
             <div className="space-y-3 mt-2">
@@ -1302,24 +1303,32 @@ export default function Server() {
 
           {/* ════════════════════════ SAMPLING ════════════════════════ */}
           <div data-tab="Sampling" className="space-y-4" style={{ display: activeTab === "Sampling" ? undefined : "none" }}>
-            <Section title="Basic" />
-            <Slider label="Temperature" hint="Higher = more creative" value={config.temperature} min={0} max={2} step={0.01}
-              onChange={(v) => setConfig((c) => ({ ...c, temperature: v }))} format={(v) => v.toFixed(2)} />
-            <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Seed" hint="Empty or -1 = random" value={config.seed !== null ? config.seed : -1}
-                onChange={(v) => setConfig((c) => ({ ...c, seed: v !== null && v >= 0 ? v : null }))} />
-              <TextInput label="Samplers" hint="Sampler chain, semicolon-separated" value={getEp("samplers")}
-                placeholder="penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature"
-                onChange={(v) => setEp("samplers", v)} />
+            <div className="space-y-3">
+              <Toggle label="Pass sampling parameters"
+                hint="Uncheck to omit them so the server or harness uses its own defaults."
+                checked={!config.disable_sampling}
+                onChange={(v) => setConfig((c) => ({ ...c, disable_sampling: !v }))} />
             </div>
+            <div className={config.disable_sampling ? "space-y-4 opacity-50 pointer-events-none" : "space-y-4"}>
+              <Section title="Basic" />
+              <Slider label="Temperature" hint="Higher = more creative" value={config.temperature} min={0} max={2} step={0.01}
+                onChange={(v) => setConfig((c) => ({ ...c, temperature: v }))} format={(v) => v.toFixed(2)} />
+              <div className="grid grid-cols-2 gap-3">
+                <NumberInput label="Seed" hint="Empty or -1 = random" value={config.seed !== null ? config.seed : -1}
+                  onChange={(v) => setConfig((c) => ({ ...c, seed: v !== null && v >= 0 ? v : null }))} />
+                <TextInput label="Samplers" hint="Sampler chain, semicolon-separated" value={getEp("samplers")}
+                  placeholder="penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature"
+                  onChange={(v) => setEp("samplers", v)} />
+              </div>
 
-            <Section title="Nucleus / Top-K / Min-P" />
-            <Slider label="Top-K" value={config.top_k} min={0} max={200} step={1}
-              onChange={(v) => setConfig((c) => ({ ...c, top_k: v }))} />
-            <Slider label="Top-P" value={config.top_p} min={0} max={1} step={0.01}
-              onChange={(v) => setConfig((c) => ({ ...c, top_p: v }))} format={(v) => v.toFixed(2)} />
-            <Slider label="Min-P" hint="Minimum probability relative to top token" value={config.min_p} min={0} max={1} step={0.001}
-              onChange={(v) => setConfig((c) => ({ ...c, min_p: v }))} format={(v) => v.toFixed(3)} />
+              <Section title="Nucleus / Top-K / Min-P" />
+              <Slider label="Top-K" value={config.top_k} min={0} max={200} step={1}
+                onChange={(v) => setConfig((c) => ({ ...c, top_k: v }))} />
+              <Slider label="Top-P" value={config.top_p} min={0} max={1} step={0.01}
+                onChange={(v) => setConfig((c) => ({ ...c, top_p: v }))} format={(v) => v.toFixed(2)} />
+              <Slider label="Min-P" hint="Minimum probability relative to top token" value={config.min_p} min={0} max={1} step={0.001}
+                onChange={(v) => setConfig((c) => ({ ...c, min_p: v }))} format={(v) => v.toFixed(3)} />
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <NumberInput label="Top-N-Sigma" hint="-1 = disabled" value={getEpNum("top-n-sigma")}
                 onChange={(v) => setEpNum("top-n-sigma", v)} />
