@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, Fragment } from "react";
+import type { ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import remarkBreaks from "remark-breaks";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import {
   ArrowUp,
   Brain,
@@ -81,13 +88,26 @@ type Item =
     };
 
 const REASONING_OPTIONS = [
-  { value: "", label: "Reasoning: default" },
+  { value: "", label: "Default" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "max", label: "Max" },
   { value: "xhigh", label: "X-High" },
 ] as const;
+
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
+const REHYPE_PLUGINS = [rehypeKatex];
+
+function Markdown({ content }: { content: string }) {
+  return (
+    <div className="md select-text">
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -243,18 +263,25 @@ function ResponseFooter({ model, tokps, elapsedMs, tokens, onCopy, onDelete }: {
   onDelete?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  // Metadata segments joined with a small dot separator.
+  const parts: { key: string; node: ReactNode }[] = [];
+  if (model) parts.push({ key: "model", node: <span className="font-mono truncate max-w-[200px]">{model}</span> });
+  if (tokps != null && tokps > 0) parts.push({ key: "tokps", node: <span className="tabular-nums">{tokps.toFixed(1)} t/s</span> });
+  if (tokens != null && tokens > 0) parts.push({ key: "tokens", node: <span className="tabular-nums">{tokens} tok</span> });
+  if (elapsedMs != null && elapsedMs > 0) {
+    parts.push({
+      key: "elapsed",
+      node: <span className="tabular-nums">{elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`}</span>,
+    });
+  }
   return (
-    <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-gray-600 select-text">
-      {model && <span className="font-mono truncate max-w-[200px]">{model}</span>}
-      {tokps != null && tokps > 0 && (
-        <span className="tabular-nums">{tokps.toFixed(1)} t/s</span>
-      )}
-      {tokens != null && tokens > 0 && <span className="tabular-nums">{tokens} tok</span>}
-      {elapsedMs != null && elapsedMs > 0 && (
-        <span className="tabular-nums">
-          {elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`}
-        </span>
-      )}
+    <div className="flex items-center gap-1.5 mt-1 px-1 text-[10px] text-gray-600">
+      {parts.map((p, i) => (
+        <Fragment key={p.key}>
+          {i > 0 && <span className="text-gray-700 select-none">·</span>}
+          {p.node}
+        </Fragment>
+      ))}
       <button
         className="ml-auto inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
         onClick={() => {
@@ -434,7 +461,6 @@ function HarnessChat() {
           break;
         case "tool_call":
           setStreamText(null);
-          setReasoningText(null);
           setReasoningOpen(false);
           setItems((prev) => [
             ...prev,
@@ -632,12 +658,13 @@ function HarnessChat() {
                     {it.reasoning && (
                       <ReasoningBlock text={it.reasoning} />
                     )}
+                    {it.reasoning && <ReasoningBlock text={it.reasoning} />}
                     <div
-                      className={`rounded px-3 py-2 text-sm whitespace-pre-wrap break-words select-text ${
-                        isUser ? "bg-primary/20 text-gray-100" : "bg-surface-2 text-gray-200"
+                      className={`rounded px-3 py-2 ${
+                        isUser ? "bg-primary/20 text-gray-100 text-sm whitespace-pre-wrap break-words" : "bg-surface-2 text-gray-200"
                       }`}
                     >
-                      {it.content}
+                      {isUser ? it.content : <Markdown content={it.content} />}
                     </div>
                     {!isUser ? (
                       <ResponseFooter
@@ -732,8 +759,8 @@ function HarnessChat() {
         )}
         {streamText !== null && (
           <div className="flex justify-start">
-            <div className="max-w-[80%] rounded px-3 py-2 text-sm bg-surface-2 text-gray-200 whitespace-pre-wrap break-words select-text">
-              {streamText}
+            <div className="max-w-[80%] rounded px-3 py-2 bg-surface-2 text-gray-200 select-text">
+              <Markdown content={streamText} />
               {streaming && <span className="ml-0.5 inline-block w-2 h-4 bg-gray-500 animate-pulse align-middle" />}
             </div>
           </div>
@@ -753,36 +780,6 @@ function HarnessChat() {
 
         {/* Input */}
         <div className="border-t border-border p-3 flex items-end gap-2">
-          {/* Capability badges + reasoning effort */}
-          <div className="flex flex-col gap-1 shrink-0 pb-0.5">
-            {(caps?.vision || caps?.reasoning) && (
-              <div className="flex items-center gap-1.5">
-                {caps?.vision && (
-                  <span title="Model supports vision (image input — attach support coming soon)">
-                    <Eye size={13} className="text-accent-blue" />
-                  </span>
-                )}
-                {caps?.reasoning && (
-                  <span title="Model supports reasoning (thinking)">
-                    <Brain size={13} className="text-primary-light" />
-                  </span>
-                )}
-              </div>
-            )}
-            <select
-              className="input py-1 px-1.5 text-[10px] w-24"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-              title="Reasoning effort (depends on model support; ignored by non-reasoning servers)"
-              disabled={streaming}
-            >
-              {REASONING_OPTIONS.map((o) => (
-                <option key={o.value || "default"} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </div>
           <textarea
             className="input flex-1 resize-none h-16 text-sm"
             placeholder="Send a message…"
@@ -796,6 +793,34 @@ function HarnessChat() {
               }
             }}
           />
+          {/* Capability badges + reasoning effort, stacked next to Send */}
+          <div className="flex flex-col items-center gap-1 shrink-0 pb-0.5">
+            <div className="flex items-center gap-1.5 h-4" title="Model capabilities">
+              {caps?.vision && (
+                <span title="Model supports vision (image input — attach support coming soon)">
+                  <Eye size={13} className="text-accent-blue" />
+                </span>
+              )}
+              {caps?.reasoning && (
+                <span title="Model supports reasoning (thinking)">
+                  <Brain size={13} className="text-primary-light" />
+                </span>
+              )}
+            </div>
+            <select
+              className="input py-1 px-1 text-[10px] w-20"
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value)}
+              title="Reasoning effort (depends on model support)"
+              disabled={streaming}
+            >
+              {REASONING_OPTIONS.map((o) => (
+                <option key={o.value || "default"} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
           {streaming ? (
             <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">
               <Square size={13} />
