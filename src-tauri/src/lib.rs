@@ -932,13 +932,18 @@ async fn save_mcp_servers(
 ) -> Result<(), String> {
     mcp::save(&servers).map_err(|e| e.to_string())?;
     // App-side enabled toggles live in AppConfig; mcp.json stays Cursor-compatible.
-    let mut config = state.config.lock().unwrap();
-    config.mcp_disabled = servers
-        .iter()
-        .filter(|s| !s.enabled)
-        .map(|s| s.name.clone())
-        .collect();
-    config.save().map_err(|e| e.to_string())
+    {
+        let mut config = state.config.lock().unwrap();
+        config.mcp_disabled = servers
+            .iter()
+            .filter(|s| !s.enabled)
+            .map(|s| s.name.clone())
+            .collect();
+        config.save().map_err(|e| e.to_string())?;
+    }
+    // Cached MCP sessions must reconnect with the new config.
+    harness_api::invalidate_mcp(&state);
+    Ok(())
 }
 
 // ── Server config presets ────────────────────────────────────────────────────

@@ -7,14 +7,15 @@
 //!
 //! Approval: read-only tools return `None` from `approval_key` (auto-approved);
 //! mutating tools return an [`ApprovalKey`] that the orchestrator checks
-//! against the [`PermissionEngine`].
+//! against the [`PermissionEngine`]. Tool names are dynamic (`String`) so
+//! MCP tools can be merged into the same registry.
 
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::permissions::{ApprovalKey, PermissionEngine};
+use crate::permissions::{ApprovalKey, Decision, PermissionEngine};
 use crate::sandbox::PathJail;
 
 /// Max characters returned by file-reading tools before truncation.
@@ -29,8 +30,9 @@ const EXEC_CAP: usize = 50_000;
 const EXEC_TIMEOUT_SECS: u64 = 120;
 
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
+    /// Tool name as seen by the model (dynamic for MCP tools).
+    fn name(&self) -> String;
+    fn description(&self) -> String;
     /// OpenAI function-calling JSON schema for the parameters.
     fn parameters(&self) -> Value;
     /// `None` = auto-approved (read-only). `Some(key)` = consult the
@@ -61,11 +63,11 @@ pub struct ReadFileTool {
 }
 
 impl Tool for ReadFileTool {
-    fn name(&self) -> &'static str {
-        "read_file"
+    fn name(&self) -> String {
+        "read_file".to_string()
     }
-    fn description(&self) -> &'static str {
-        "Read a text file inside the project. Large files are truncated."
+    fn description(&self) -> String {
+        "Read a text file inside the project. Large files are truncated.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -104,11 +106,11 @@ pub struct WriteFileTool {
 }
 
 impl Tool for WriteFileTool {
-    fn name(&self) -> &'static str {
-        "write_file"
+    fn name(&self) -> String {
+        "write_file".to_string()
     }
-    fn description(&self) -> &'static str {
-        "Create or overwrite a text file inside the project."
+    fn description(&self) -> String {
+        "Create or overwrite a text file inside the project.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -147,11 +149,11 @@ pub struct EditFileTool {
 }
 
 impl Tool for EditFileTool {
-    fn name(&self) -> &'static str {
-        "edit_file"
+    fn name(&self) -> String {
+        "edit_file".to_string()
     }
-    fn description(&self) -> &'static str {
-        "Exact-match search/replace in a project file. The search text must appear exactly once — include enough surrounding context to disambiguate. Fails loudly on zero or multiple matches."
+    fn description(&self) -> String {
+        "Exact-match search/replace in a project file. The search text must appear exactly once — include enough surrounding context to disambiguate. Fails loudly on zero or multiple matches.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -204,11 +206,11 @@ pub struct FindFilesTool {
 }
 
 impl Tool for FindFilesTool {
-    fn name(&self) -> &'static str {
-        "find_files"
+    fn name(&self) -> String {
+        "find_files".to_string()
     }
-    fn description(&self) -> &'static str {
-        "List project files matching a glob pattern (e.g. 'src/**/*.rs'). Respects standard ignores (.git, node_modules, target, …)."
+    fn description(&self) -> String {
+        "List project files matching a glob pattern (e.g. 'src/**/*.rs'). Respects standard ignores (.git, node_modules, target, …).".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -230,6 +232,11 @@ impl Tool for FindFilesTool {
         let mut found: Vec<String> = glob::glob(&pattern_str)
             .map_err(|e| anyhow::anyhow!("Invalid glob '{}': {e}", pattern_str))?
             .filter_map(|p| p.ok())
+            .filter(|p| {
+                // Hard ignores: nothing under an ignored directory component.
+                !p.components()
+                    .any(|c| c.as_os_str().to_str().map(ignored_dir).unwrap_or(false))
+            })
             .take(FIND_CAP)
             .map(|p| {
                 p.strip_prefix(root)
@@ -256,11 +263,11 @@ pub struct SearchContentTool {
 }
 
 impl Tool for SearchContentTool {
-    fn name(&self) -> &'static str {
-        "search_content"
+    fn name(&self) -> String {
+        "search_content".to_string()
     }
-    fn description(&self) -> &'static str {
-        "Regex search over project text files. Returns path:line: match, capped. Respects standard ignores."
+    fn description(&self) -> String {
+        "Regex search over project text files. Returns path:line: match, capped. Respects standard ignores.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -305,7 +312,7 @@ impl Tool for SearchContentTool {
             if !matcher.matches(&full_norm) {
                 continue;
             }
-            // Skip files over ~1MB — likely binaries or generated blobs.
+            // Skip files over ~2MB — likely binaries or generated blobs.
             if entry.metadata().map(|m| m.len() > 2_000_000).unwrap_or(true) {
                 continue;
             }
@@ -365,11 +372,11 @@ pub struct ExecTool {
 }
 
 impl Tool for ExecTool {
-    fn name(&self) -> &'static str {
-        "exec"
+    fn name(&self) -> String {
+        "exec".to_string()
     }
-    fn description(&self) -> &'static str {
-        "Run a shell command in the project directory. Read-only commands (dir, cat, git status, …) run automatically; anything else requires approval."
+    fn description(&self) -> String {
+        "Run a shell command in the project directory. Read-only commands (dir, cat, git status, …) run automatically; anything else requires approval.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -490,11 +497,11 @@ impl Tool for ExecTool {
 pub struct SpawnSubagentTool;
 
 impl Tool for SpawnSubagentTool {
-    fn name(&self) -> &'static str {
-        "spawn_subagent"
+    fn name(&self) -> String {
+        "spawn_subagent".to_string()
     }
-    fn description(&self) -> &'static str {
-        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small."
+    fn description(&self) -> String {
+        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -520,8 +527,9 @@ impl Tool for SpawnSubagentTool {
 // ── Registry ────────────────────────────────────────────────────────────────
 
 /// Registry of sandboxed tools rooted at one project jail.
+#[derive(Clone)]
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -531,15 +539,21 @@ impl ToolRegistry {
     pub fn project_tools(jail: Arc<PathJail>) -> Self {
         Self {
             tools: vec![
-                Box::new(ReadFileTool { jail: jail.clone() }),
-                Box::new(WriteFileTool { jail: jail.clone() }),
-                Box::new(EditFileTool { jail: jail.clone() }),
-                Box::new(FindFilesTool { jail: jail.clone() }),
-                Box::new(SearchContentTool { jail: jail.clone() }),
-                Box::new(ExecTool { jail }),
-                Box::new(SpawnSubagentTool),
+                Arc::new(ReadFileTool { jail: jail.clone() }),
+                Arc::new(WriteFileTool { jail: jail.clone() }),
+                Arc::new(EditFileTool { jail: jail.clone() }),
+                Arc::new(FindFilesTool { jail: jail.clone() }),
+                Arc::new(SearchContentTool { jail: jail.clone() }),
+                Arc::new(ExecTool { jail }),
+                Arc::new(crate::tools::SpawnSubagentTool),
             ],
         }
+    }
+
+    /// Merge extra tools (skill tool, MCP tools) into the registry.
+    pub fn add(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.tools.push(tool);
+        self
     }
 
     /// Drop tools by name (used to strip `spawn_subagent` from subagents later).
@@ -548,7 +562,7 @@ impl ToolRegistry {
             tools: self
                 .tools
                 .into_iter()
-                .filter(|t| !names.contains(&t.name()))
+                .filter(|t| !names.contains(&t.name().as_str()))
                 .collect(),
         }
     }
@@ -559,7 +573,7 @@ impl ToolRegistry {
             tools: self
                 .tools
                 .into_iter()
-                .filter(|t| names.contains(&t.name()))
+                .filter(|t| names.contains(&t.name().as_str()))
                 .collect(),
         }
     }
@@ -568,7 +582,7 @@ impl ToolRegistry {
         self.tools.iter().find(|t| t.name() == name).map(|t| &**t)
     }
 
-    pub fn names(&self) -> Vec<&'static str> {
+    pub fn names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.name()).collect()
     }
 
@@ -596,7 +610,7 @@ impl ToolRegistry {
             None => false, // unknown tool → refuse
             Some(tool) => match tool.approval_key(args) {
                 None => true,
-                Some(key) => engine.check(&key) == crate::permissions::Decision::Allowed,
+                Some(key) => engine.check(&key) == Decision::Allowed,
             },
         }
     }
@@ -682,7 +696,7 @@ mod tests {
         // Single match replaces.
         edit.execute(&json!({"path": "a.rs", "search": "println!(\"hi\");", "replace": "println!(\"bye\");"})).unwrap();
         let text = std::fs::read_to_string(root.join("a.rs")).unwrap();
-        assert!(text.contains("bye") || text.contains("hello") || !text.contains("hi"));
+        assert!(text.contains("bye"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -777,6 +791,17 @@ mod tests {
             assert!(s["function"]["name"].is_string());
             assert!(s["function"]["parameters"].is_object());
         }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_and_without_use_dynamic_names() {
+        let root = temp_dir("filters");
+        let registry = registry_for(&root);
+        let stripped = registry.clone().without(&["spawn_subagent"]);
+        assert!(!stripped.names().contains(&"spawn_subagent".to_string()));
+        let only = registry.only(&["read_file"]);
+        assert_eq!(only.names(), vec!["read_file".to_string()]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

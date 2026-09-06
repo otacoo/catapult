@@ -48,6 +48,11 @@ pub struct HarnessRuntime {
     /// on the first send so a fresh start resumes, but finished sessions
     /// don't resurrect mid-run).
     pub session_loaded: std::sync::atomic::AtomicBool,
+    /// One-shot notices (e.g. VRAM feasibility) are shown once per app run.
+    pub notice_shown: std::sync::atomic::AtomicBool,
+    /// MCP server sessions + their tool listings (built once per app run;
+    /// invalidated when the Tools page saves mcp.json).
+    pub mcp: Mutex<Option<Arc<Vec<McpConnection>>>>,
 }
 
 impl HarnessRuntime {
@@ -58,8 +63,101 @@ impl HarnessRuntime {
             running: std::sync::atomic::AtomicBool::new(false),
             pending: Mutex::new(None),
             session_loaded: std::sync::atomic::AtomicBool::new(false),
+            notice_shown: std::sync::atomic::AtomicBool::new(false),
+            mcp: Mutex::new(None),
         }
     }
+}
+
+/// Connect to every enabled MCP server (cached for the app run). Servers
+/// that fail to start or answer are skipped with a log line, not fatal.
+fn mcp_connections(state: &AppState) -> Arc<Vec<McpConnection>> {
+    let mut cached = state.harness.mcp.lock().unwrap();
+    if let Some(existing) = &*cached {
+        return existing.clone();
+    }
+    let mut out: Vec<McpConnection> = Vec::new();
+    let disabled = state.config.lock().unwrap().mcp_disabled.clone();
+    if let Ok(cfg) = crate::mcp::load() {
+        let cfg = crate::mcp::filter_disabled(&cfg, &disabled);
+        for (name, server) in cfg.servers {
+            let spawn = harness::mcp::McpSession::start(
+                &server.command,
+                &server.args,
+                &server.env,
+                server.cwd.as_deref(),
+                server.timeout_ms,
+            );
+            let session = match spawn {
+                Ok(s) => Arc::new(Mutex::new(s)),
+                Err(e) => {
+                    log::warn!("MCP server '{}' failed to start: {e:#}", name);
+                    continue;
+                }
+            };
+            let tools = match session.lock().unwrap().list_tools() {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("MCP server '{}' failed tools/list: {e:#}", name);
+                    continue;
+                }
+            };
+            log::info!("MCP server '{}' connected: {} tools", name, tools.len());
+            out.push(McpConnection { server: name, session, tools });
+        }
+    }
+    let arc = Arc::new(out);
+    *cached = Some(arc.clone());
+    arc
+}
+
+/// Invalidate cached MCP connections (called when mcp.json is saved).
+pub fn invalidate_mcp(state: &AppState) {
+    // Dropping the sessions kills the child processes.
+    *state.harness.mcp.lock().unwrap() = None;
+}
+
+/// Skill roots: global ({data_dir}/catapult/skills) + project (.catapult/skills).
+fn skill_roots(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(data) = dirs::data_dir() {
+        roots.push(data.join("catapult").join("skills"));
+    }
+    roots.push(root.join(".catapult").join("skills"));
+    roots
+}
+
+/// Build the tool registry for a run: native sandboxed tools + the skill tool
+/// (when skills are discovered) + namespaced MCP tools (when servers connect).
+fn build_registry(
+    jail: Arc<PathJail>,
+    state: &AppState,
+    project_root_dir: &std::path::Path,
+) -> (ToolRegistry, Vec<harness::skills::Skill>) {
+    let mut registry = ToolRegistry::project_tools(jail);
+    let skills = harness::skills::discover(&skill_roots(project_root_dir));
+    if !skills.is_empty() {
+        registry = registry.add(Arc::new(harness::skills::SkillTool::new(skills.clone())));
+    }
+    for conn in mcp_connections(state).iter() {
+        for info in &conn.tools {
+            registry = registry.add(Arc::new(harness::mcp::McpTool {
+                server: conn.server.clone(),
+                tool_name: info.name.clone(),
+                session: conn.session.clone(),
+                desc: info.description.clone(),
+                schema: info.schema.clone(),
+            }));
+        }
+    }
+    (registry, skills)
+}
+
+/// One connected MCP server and the tools it exposes.
+pub struct McpConnection {
+    pub server: String,
+    pub session: Arc<Mutex<harness::mcp::McpSession>>,
+    pub tools: Vec<harness::mcp::McpToolInfo>,
 }
 
 /// On-disk session transcript (resumed on the next app start).
@@ -280,14 +378,14 @@ pub struct ToolListing {
 pub async fn harness_agent_tools(state: State<'_, AppState>) -> Result<Vec<ToolListing>, String> {
     let root = project_root(&state)?;
     let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
-    let registry = ToolRegistry::project_tools(jail);
+    let (registry, _) = build_registry(jail, &state, &root);
     Ok(registry
         .names()
         .iter()
         .filter_map(|n| registry.get(n))
         .map(|t| ToolListing {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
+            name: t.name(),
+            description: t.description(),
             approval: match t.approval_key(&serde_json::json!({})) {
                 None => "auto".to_string(),
                 Some(_) => "approval required".to_string(),
@@ -348,6 +446,9 @@ pub async fn harness_agent_send(
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
 
+    // Tools: native sandboxed + skills + MCP (skills also extend the prompt).
+    let (registry, skills) = build_registry(jail.clone(), &state, &root);
+
     // ── Model roles (Phase 3) ──
     let (orchestrator_id, worker_id, notice) = resolve_roles(&state, &client).await?;
 
@@ -357,7 +458,11 @@ pub async fn harness_agent_send(
         // Byte-stable per project → good prefix-cache behavior.
         history.insert(
             0,
-            ChatMessage::system(format!("{SYSTEM_PROMPT}\n\nProject directory: {}", root.display())),
+            ChatMessage::system(format!(
+                "{SYSTEM_PROMPT}\n\nProject directory: {}{}",
+                root.display(),
+                harness::skills::system_prompt_listing(&skills)
+            )),
         );
     }
     history.push(ChatMessage::user(message));
@@ -380,12 +485,14 @@ pub async fn harness_agent_send(
     let mut sink = |ev: StreamEvent| send_event(&on_event, ev);
     let mut event_sink = |ev: AgentEvent| send_event(&on_event, ev);
     if let Some(text) = notice {
-        send_event(&on_event, AgentEvent::Notice { text });
+        if !state.harness.notice_shown.swap(true, Ordering::SeqCst) {
+            send_event(&on_event, AgentEvent::Notice { text });
+        }
     }
 
     let run = AgentRun {
         client: &client,
-        registry: Arc::new(ToolRegistry::project_tools(jail.clone())),
+        registry: Arc::new(registry),
         engine: state.harness.engine.clone(),
         model: orchestrator_id,
         max_turns: max_turns as usize,
