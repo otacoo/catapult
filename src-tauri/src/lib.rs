@@ -32,9 +32,12 @@ pub struct AppState {
     /// (keep partial file for resume). Set by `pause_download` / `cancel_download`
     /// and polled by the download loop between stream chunks.
     pub downloads: Mutex<HashMap<String, Arc<AtomicU8>>>,
-    /// Cooperative abort flag for the harness chat stream (Phase 0). Set by
-    /// `harness_chat_abort`, polled between SSE chunks.
+    /// Cooperative abort flag for the harness agent loop. Set by
+    /// `harness_agent_abort`, polled between stream chunks and tool calls.
     pub harness_abort: Arc<std::sync::atomic::AtomicBool>,
+    /// Agent harness runtime: session history, permission engine, approval
+    /// channel (see `harness_api`).
+    pub harness: Arc<harness_api::HarnessRuntime>,
 }
 
 // ── Hardware commands ─────────────────────────────────────────────────────────
@@ -1064,6 +1067,7 @@ pub fn run() {
             http_client,
             downloads: Mutex::new(HashMap::new()),
             harness_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            harness: Arc::new(harness_api::HarnessRuntime::new()),
         })
         .invoke_handler(tauri::generate_handler![
             // Hardware
@@ -1117,8 +1121,10 @@ pub fn run() {
             list_bench_results,
             clear_bench_results,
             // Harness
-            harness_api::harness_chat_send,
-            harness_api::harness_chat_abort,
+            harness_api::harness_agent_send,
+            harness_api::harness_agent_abort,
+            harness_api::harness_agent_decide,
+            harness_api::harness_agent_reset,
             suggest_server_config,
             estimate_model_memory,
             // Config

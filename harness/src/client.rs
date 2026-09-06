@@ -212,11 +212,13 @@ impl LlmClient {
 
     /// Stream a chat completion, invoking `on_event` per delta. Returns the
     /// finish reason. `should_stop` is polled between chunks for cooperative
-    /// abort (the caller owns the flag).
+    /// abort (the caller owns the flag). `tools` attaches OpenAI function
+    /// schemas for tool calling.
     pub async fn chat_stream(
         &self,
         model: Option<&str>,
         messages: &[ChatMessage],
+        tools: Option<&[Value]>,
         should_stop: impl Fn() -> bool,
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<String> {
@@ -226,6 +228,9 @@ impl LlmClient {
         });
         if let Some(m) = model {
             body["model"] = Value::from(m);
+        }
+        if let Some(t) = tools {
+            body["tools"] = Value::from(t.to_vec());
         }
         let mut req = self.http.post(format!("{}/v1/chat/completions", self.base_url)).json(&body);
         if let Some(key) = &self.api_key {

@@ -555,6 +555,23 @@ impl ToolRegistry {
             },
         }
     }
+
+    /// Run a tool on the blocking thread pool (file/process work must not
+    /// stall the async runtime). Caller holds `Arc<Self>` because tools are
+    /// not `Clone`.
+    pub fn spawn_execute(
+        self: &Arc<Self>,
+        name: String,
+        args: Value,
+    ) -> tokio::task::JoinHandle<Result<String>> {
+        let registry = self.clone();
+        tokio::task::spawn_blocking(move || {
+            match registry.get(&name) {
+                Some(t) => t.execute(&args),
+                None => Err(anyhow::anyhow!("Unknown tool '{name}'")),
+            }
+        })
+    }
 }
 
 #[cfg(test)]

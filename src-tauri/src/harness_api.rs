@@ -1,52 +1,241 @@
-// ── Harness commands ────────────────────────────────────────────────────────
+// ── Harness runtime + commands ──────────────────────────────────────────────
 //
-// Phase 0: native streaming chat against the running llama-server. Events are
-// pushed to the frontend via a Tauri `Channel` (typed callback, survives the
-// invoke promise). The agent loop / tools land in Phase 1.
+// Phase 1: the agent loop (orchestrator) with sandboxed tools, running against
+// the managed llama-server. State lives in `HarnessRuntime` (shared via
+// AppState): message history for the current session, the permission engine,
+// an in-flight marker, and the pending approval channel the loop parks on.
+//
+// Events to the UI flow through a typed `Channel` (stream + tool events) and
+// a global `harness_approval` event for approval prompts (they can arrive
+// while the invoke promise is still pending).
 
-use tauri::ipc::Channel;
-use tauri::State;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use tauri::{AppHandle, Emitter, ipc::Channel, State};
 
 use crate::AppState;
-use harness::client::{LlmClient, StreamEvent};
+use harness::agent::{AgentEvent, AgentRun, ApprovalGate, ApprovalRequest, Approved};
+use harness::client::{ChatMessage, LlmClient, StreamEvent};
+use harness::permissions::PermissionEngine;
+use harness::sandbox::PathJail;
+use harness::tools::ToolRegistry;
 
-#[tauri::command]
-pub async fn harness_chat_send(
-    messages: Vec<harness::client::ChatMessage>,
-    on_event: Channel<String>,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let port = {
+/// Byte-stable system prompt (KV-cache friendly). The project line is appended
+/// once and stays stable per project.
+const SYSTEM_PROMPT: &str = "You are Catapult's agent, working inside a sandboxed project directory. \
+File tools are rooted at that directory; relative paths resolve there. \
+Read-only operations run automatically; writes and shell commands may require user approval — \
+if denied, adapt instead of retrying the same call. \
+Work step by step: read before editing, make small exact edits, verify results, \
+and give a concise summary when done.";
+
+pub struct HarnessRuntime {
+    /// Current agent conversation (system prompt included once, byte-stable).
+    pub history: Mutex<Vec<ChatMessage>>,
+    pub engine: Arc<PermissionEngine>,
+    /// Set while the agent loop is in flight; blocks concurrent sends.
+    pub running: std::sync::atomic::AtomicBool,
+    /// The parked approval the loop is waiting on (oneshot per request).
+    pub pending: Mutex<Option<tokio::sync::oneshot::Sender<Approved>>>,
+}
+
+impl HarnessRuntime {
+    pub fn new() -> Self {
+        Self {
+            history: Mutex::new(Vec::new()),
+            engine: Arc::new(PermissionEngine::new()),
+            running: std::sync::atomic::AtomicBool::new(false),
+            pending: Mutex::new(None),
+        }
+    }
+}
+
+/// Approval gate implementation: emits `harness_approval` to the UI and parks
+/// on the pending oneshot until `harness_agent_decide` resolves it.
+struct UiGate {
+    app: AppHandle,
+    runtime: Arc<HarnessRuntime>,
+}
+
+impl ApprovalGate for UiGate {
+    fn decide(
+        &self,
+        req: ApprovalRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Approved> + Send>> {
+        let app = self.app.clone();
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            {
+                let mut pending = runtime.pending.lock().unwrap();
+                if let Some(old) = pending.take() {
+                    let _ = old.send(Approved::Denied); // superseded
+                }
+                *pending = Some(tx);
+            }
+            let payload = serde_json::json!({
+                "type": "approval_required",
+                "tool": req.key.tool,
+                "command": req.key.command,
+                "args": req.args_pretty,
+            });
+            let _ = app.emit("harness_approval", payload);
+            rx.await.unwrap_or(Approved::Denied)
+        })
+    }
+}
+
+/// Resolve (and create) the sandboxed project root: the current server
+/// working directory when set, else the shared Catapult workspace.
+fn project_root(state: &AppState) -> Result<PathBuf, String> {
+    let working = {
         let s = state.server.lock().unwrap();
-        match &s.status {
-            crate::server::ServerStatus::Running { port, .. } => *port,
-            _ => return Err("Server is not running".to_string()),
-        }
+        s.config
+            .as_ref()
+            .and_then(|c| c.working_dir.clone())
+            .filter(|d| !d.trim().is_empty())
     };
-
-    // Reset the cooperative abort flag for this run.
-    state
-        .harness_abort
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    let abort = state.harness_abort.clone();
-
-    let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
-    let should_stop = move || abort.load(std::sync::atomic::Ordering::SeqCst);
-    let sink = |ev: StreamEvent| {
-        if let Ok(json) = serde_json::to_string(&ev) {
-            let _ = on_event.send(json);
-        }
+    let dir = match working {
+        Some(d) => PathBuf::from(d),
+        None => dirs::data_dir()
+            .ok_or("Cannot find data directory")?
+            .join("catapult")
+            .join("workspace"),
     };
-    client
-        .chat_stream(None, &messages, should_stop, sink)
-        .await
-        .map_err(|e| e.to_string())
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn port_or_err(state: &AppState) -> Result<u16, String> {
+    let s = state.server.lock().unwrap();
+    match &s.status {
+        crate::server::ServerStatus::Running { port, .. } => Ok(*port),
+        _ => Err("Server is not running".to_string()),
+    }
+}
+
+fn send_event(on_event: &Channel<String>, ev: impl serde::Serialize) {
+    if let Ok(json) = serde_json::to_string(&ev) {
+        let _ = on_event.send(json);
+    }
 }
 
 #[tauri::command]
-pub async fn harness_chat_abort(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .harness_abort
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+pub async fn harness_agent_send(
+    message: String,
+    on_event: Channel<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    if state
+        .harness
+        .running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("An agent run is already in progress".to_string());
+    }
+    let _running_guard = RunningGuard(state.harness.clone());
+
+    let root = project_root(&state)?;
+    let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
+    let port = port_or_err(&state)?;
+    let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
+
+    // Take the history out (never hold the mutex across the async loop).
+    let mut history = std::mem::take(&mut *state.harness.history.lock().unwrap());
+    if !history.iter().any(|m| m.role == "system") {
+        // Byte-stable per project → good prefix-cache behavior.
+        history.insert(
+            0,
+            ChatMessage::system(format!("{SYSTEM_PROMPT}\n\nProject directory: {}", root.display())),
+        );
+    }
+    history.push(ChatMessage::user(message));
+
+    state.harness_abort.store(false, Ordering::SeqCst);
+    let abort = state.harness_abort.clone();
+    let should_stop = move || abort.load(Ordering::SeqCst);
+
+    let gate: Arc<dyn ApprovalGate> = Arc::new(UiGate {
+        app: app.clone(),
+        runtime: state.harness.clone(),
+    });
+
+    let mut sink = |ev: StreamEvent| send_event(&on_event, ev);
+    let mut event_sink = |ev: AgentEvent| send_event(&on_event, ev);
+
+    let run = AgentRun {
+        client: &client,
+        registry: Arc::new(ToolRegistry::project_tools(jail)),
+        engine: state.harness.engine.clone(),
+        model: None, // server's loaded model; role routing lands in Phase 3
+        max_turns: harness::agent::DEFAULT_MAX_TURNS,
+    };
+
+    let result = run
+        .run(
+            &mut history,
+            should_stop,
+            gate,
+            &mut sink,
+            &mut event_sink,
+        )
+        .await;
+
+    // Persist the transcript for the session (also on abort/error, so the
+    // conversation stays inspectable).
+    *state.harness.history.lock().unwrap() = history;
+    result.map_err(|e| e.to_string())
+}
+
+struct RunningGuard(Arc<HarnessRuntime>);
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::SeqCst);
+    }
+}
+
+#[tauri::command]
+pub async fn harness_agent_abort(state: State<'_, AppState>) -> Result<(), String> {
+    state.harness_abort.store(true, Ordering::SeqCst);
+    // If parked on an approval, unblock with a denial; the loop's next
+    // should_stop check ends the run.
+    if let Some(tx) = state.harness.pending.lock().unwrap().take() {
+        let _ = tx.send(Approved::Denied);
+    }
+    Ok(())
+}
+
+/// User decision for the pending approval prompt. `grant` = None denies;
+/// "once" allows a single call; "session" grants the tool (or command head)
+/// for 30 minutes.
+#[tauri::command]
+pub async fn harness_agent_decide(
+    grant: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let sender = state.harness.pending.lock().unwrap().take();
+    let scope = match grant.as_deref() {
+        Some("once") => Approved::Once,
+        Some("session") => Approved::Session,
+        _ => Approved::Denied,
+    };
+    if let Some(tx) = sender {
+        let _ = tx.send(scope);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn harness_agent_reset(state: State<'_, AppState>) -> Result<(), String> {
+    state.harness.history.lock().unwrap().clear();
+    let mut pending = state.harness.pending.lock().unwrap();
+    if let Some(tx) = pending.take() {
+        let _ = tx.send(Approved::Denied);
+    }
     Ok(())
 }
