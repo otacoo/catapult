@@ -294,6 +294,10 @@ export interface AppConfig {
   router_models: string[];
   /** Chat implementation: agent harness (default) or llama-server WebUI. */
   harness_chat: boolean;
+  /** Turn budget for the agent orchestrator loop. */
+  harness_max_turns: number;
+  /** Turn budget for each ephemeral subagent run. */
+  harness_subagent_max_turns: number;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

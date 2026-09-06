@@ -40,6 +40,10 @@ fn default_false() -> bool { false }
 
 fn default_true() -> bool { true }
 
+fn default_harness_max_turns() -> u32 { 40 }
+
+fn default_harness_subagent_max_turns() -> u32 { 25 }
+
 /// UI theme preference. `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -147,6 +151,12 @@ pub struct AppConfig {
     /// the classic llama-server WebUI. The WebUI stays fully supported.
     #[serde(default = "default_true")]
     pub harness_chat: bool,
+    /// Turn budget for the agent orchestrator loop.
+    #[serde(default = "default_harness_max_turns")]
+    pub harness_max_turns: u32,
+    /// Turn budget for each ephemeral subagent run.
+    #[serde(default = "default_harness_subagent_max_turns")]
+    pub harness_subagent_max_turns: u32,
 }
 
 impl AppConfig {

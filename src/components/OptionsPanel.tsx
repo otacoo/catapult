@@ -65,6 +65,26 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  const setMaxTurns = async (orchestrator: number | null, subagent: number | null) => {
+    const nextOrch = orchestrator ?? appConfig?.harness_max_turns ?? 40;
+    const nextSub = subagent ?? appConfig?.harness_subagent_max_turns ?? 25;
+    setAppConfig((c) =>
+      c
+        ? {
+            ...c,
+            harness_max_turns: Math.max(1, Math.min(500, nextOrch)),
+            harness_subagent_max_turns: Math.max(1, Math.min(200, nextSub)),
+          }
+        : c,
+    );
+    try {
+      await invoke("set_harness_max_turns", {
+        orchestrator: Math.max(1, Math.min(500, nextOrch)),
+        subagent: Math.max(1, Math.min(200, nextSub)),
+      });
+    } catch {}
+  };
+
   return (
     <div
       ref={panelRef}
@@ -94,6 +114,30 @@ export default function OptionsPanel({ open, onClose }: {
             checked={appConfig?.harness_chat ?? true}
             onChange={setHarnessChat}
           />
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex items-center justify-between gap-2 text-xs text-gray-400">
+              <span>Agent max turns</span>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                className="input w-20 py-1 px-2 text-xs"
+                value={appConfig?.harness_max_turns ?? 40}
+                onChange={(e) => setMaxTurns(parseInt(e.target.value || "40", 10), null)}
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2 text-xs text-gray-400">
+              <span>Subagent turns</span>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                className="input w-20 py-1 px-2 text-xs"
+                value={appConfig?.harness_subagent_max_turns ?? 25}
+                onChange={(e) => setMaxTurns(null, parseInt(e.target.value || "25", 10))}
+              />
+            </label>
+          </div>
         </div>
       </div>
       <div className="card">

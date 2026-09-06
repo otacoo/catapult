@@ -53,9 +53,16 @@ type Item =
       resolved?: "denied" | "once" | "session";
     };
 
+interface ToolListing {
+  name: string;
+  description: string;
+  approval: string;
+}
+
 function HarnessChat() {
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
   const [items, setItems] = useState<Item[]>([]);
+  const [tools, setTools] = useState<ToolListing[] | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState<string | null>(null);
@@ -69,6 +76,7 @@ function HarnessChat() {
         setStatus(await invoke<ServerStatus>("get_server_status"));
       } catch {}
     };
+    invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
     poll();
     const id = setInterval(poll, 2000);
     return () => clearInterval(id);
@@ -242,12 +250,29 @@ function HarnessChat() {
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
         {items.length === 0 && streamText === null && (
-          <div className="h-full flex flex-col items-center justify-center gap-2 text-center">
+          <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
             <p className="text-base font-semibold text-gray-200">Catapult Chat</p>
             <p className="text-sm text-gray-500 max-w-md">
-              The agent can read, search, create and edit files inside the sandboxed project
-              directory, and run commands with your approval.
+              The agent can use these sandboxed tools in the project directory:
             </p>
+            {tools && tools.length > 0 && (
+              <div className="flex flex-col gap-1.5 max-w-lg text-left">
+                {tools.map((t) => (
+                  <div key={t.name} className="flex items-start gap-2 rounded border border-border bg-surface-2 px-2.5 py-1.5">
+                    <Wrench size={11} className="text-gray-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-xs">
+                        <span className="text-gray-300 font-medium font-mono">{t.name}</span>
+                        <span className={`ml-2 text-[10px] ${t.approval === "auto" ? "text-accent-green" : "text-accent-yellow"}`}>
+                          {t.approval}
+                        </span>
+                      </p>
+                      <p className="text-[11px] text-gray-500 leading-snug">{t.description}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
         {items.map((it, i) => {

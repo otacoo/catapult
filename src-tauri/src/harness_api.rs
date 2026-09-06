@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, ipc::Channel, State};
 
 use crate::AppState;
@@ -158,6 +159,48 @@ fn send_event(on_event: &Channel<String>, ev: impl serde::Serialize) {
     }
 }
 
+/// What the Chat empty state shows: every tool the agent may use, with its
+/// approval mode (read-only tools run automatically; mutating ones are gated
+/// by the permission engine).
+#[derive(Debug, Serialize)]
+pub struct ToolListing {
+    pub name: String,
+    pub description: String,
+    pub approval: String,
+}
+
+#[tauri::command]
+pub async fn harness_agent_tools(state: State<'_, AppState>) -> Result<Vec<ToolListing>, String> {
+    let root = project_root(&state)?;
+    let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
+    let registry = ToolRegistry::project_tools(jail);
+    Ok(registry
+        .names()
+        .iter()
+        .filter_map(|n| registry.get(n))
+        .map(|t| ToolListing {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            approval: match t.approval_key(&serde_json::json!({})) {
+                None => "auto".to_string(),
+                Some(_) => "approval required".to_string(),
+            },
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn set_harness_max_turns(
+    orchestrator: u32,
+    subagent: u32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.harness_max_turns = orchestrator.clamp(1, 500);
+    config.harness_subagent_max_turns = subagent.clamp(1, 200);
+    config.save().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn harness_agent_send(
     message: String,
@@ -192,6 +235,12 @@ pub async fn harness_agent_send(
     }
     history.push(ChatMessage::user(message));
 
+    // Configurable turn budgets (clamped by the setter, clamped again here).
+    let (max_turns, subagent_max_turns) = {
+        let c = state.config.lock().unwrap();
+        (c.harness_max_turns.clamp(1, 500), c.harness_subagent_max_turns.clamp(1, 200))
+    };
+
     state.harness_abort.store(false, Ordering::SeqCst);
     let abort = state.harness_abort.clone();
     let should_stop = Arc::new(move || abort.load(Ordering::SeqCst)) as std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
@@ -209,10 +258,10 @@ pub async fn harness_agent_send(
         registry: Arc::new(ToolRegistry::project_tools(jail.clone())),
         engine: state.harness.engine.clone(),
         model: None, // server's loaded model; role routing lands in Phase 3
-        max_turns: harness::agent::DEFAULT_MAX_TURNS,
+        max_turns: max_turns as usize,
         subagents: Some(harness::agent::Subagents {
             jail,
-            max_turns: harness::agent::DEFAULT_SUBAGENT_MAX_TURNS,
+            max_turns: subagent_max_turns as usize,
         }),
     };
 
