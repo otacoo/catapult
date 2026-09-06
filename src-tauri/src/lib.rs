@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+pub mod harness_api;
 pub mod tray;
 
 // ── App State ────────────────────────────────────────────────────────────────
@@ -31,6 +32,9 @@ pub struct AppState {
     /// (keep partial file for resume). Set by `pause_download` / `cancel_download`
     /// and polled by the download loop between stream chunks.
     pub downloads: Mutex<HashMap<String, Arc<AtomicU8>>>,
+    /// Cooperative abort flag for the harness chat stream (Phase 0). Set by
+    /// `harness_chat_abort`, polled between SSE chunks.
+    pub harness_abort: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // ── Hardware commands ─────────────────────────────────────────────────────────
@@ -1059,6 +1063,7 @@ pub fn run() {
             server: server::new_server_state(),
             http_client,
             downloads: Mutex::new(HashMap::new()),
+            harness_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             // Hardware
@@ -1111,6 +1116,9 @@ pub fn run() {
             run_quick_benchmark,
             list_bench_results,
             clear_bench_results,
+            // Harness
+            harness_api::harness_chat_send,
+            harness_api::harness_chat_abort,
             suggest_server_config,
             estimate_model_memory,
             // Config
