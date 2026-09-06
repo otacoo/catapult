@@ -144,6 +144,27 @@ function HarnessChat() {
             ),
           );
           break;
+        case "subagent_spawned":
+          setStreamText(null);
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: "tool",
+              callId: ev.call_id ?? "",
+              tool: `⟳ ${ev.kind} subagent`,
+              args: ev.goal ?? "",
+            } as Item,
+          ]);
+          break;
+        case "subagent_finished":
+          setItems((prev) =>
+            prev.map((it): Item =>
+              it.kind === "tool" && it.callId === ev.call_id && it.output === undefined
+                ? { ...it, output: { ok: !!ev.ok, text: String(ev.summary ?? "") } }
+                : it,
+            ),
+          );
+          break;
         default:
           break;
       }

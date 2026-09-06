@@ -485,6 +485,38 @@ impl Tool for ExecTool {
     }
 }
 
+// ── spawn_subagent (schema-only; intercepted by the orchestrator loop) ──────
+
+pub struct SpawnSubagentTool;
+
+impl Tool for SpawnSubagentTool {
+    fn name(&self) -> &'static str {
+        "spawn_subagent"
+    }
+    fn description(&self) -> &'static str {
+        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "goal": { "type": "string", "description": "The specific, self-contained task for the subagent" },
+                "agent_type": { "type": "string", "enum": ["coder", "researcher"], "description": "coder implements code changes; researcher investigates and reports" },
+                "ctx_files": { "type": "array", "items": { "type": "string" }, "description": "Optional file paths (relative to the project) to hand to the subagent as context" }
+            },
+            "required": ["goal", "agent_type"]
+        })
+    }
+    fn approval_key(&self, _args: &Value) -> Option<ApprovalKey> {
+        None // delegation itself is safe; the subagent's own calls are gated
+    }
+    fn execute(&self, _args: &Value) -> Result<String> {
+        // Never reached: the orchestrator loop intercepts spawn_subagent
+        // before the generic execution path.
+        bail!("spawn_subagent must be run by the orchestrator loop")
+    }
+}
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 /// Registry of sandboxed tools rooted at one project jail.
@@ -493,8 +525,9 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Standard project toolset. Shell (`exec`) is included; approvals are
-    /// decided per-call via the permission engine.
+    /// Standard project toolset rooted at one project jail, including the
+    /// orchestrator-only `spawn_subagent` (strip it with `.without()` for
+    /// subagent registries — that is what prevents recursion).
     pub fn project_tools(jail: Arc<PathJail>) -> Self {
         Self {
             tools: vec![
@@ -504,6 +537,7 @@ impl ToolRegistry {
                 Box::new(FindFilesTool { jail: jail.clone() }),
                 Box::new(SearchContentTool { jail: jail.clone() }),
                 Box::new(ExecTool { jail }),
+                Box::new(SpawnSubagentTool),
             ],
         }
     }
@@ -515,6 +549,17 @@ impl ToolRegistry {
                 .tools
                 .into_iter()
                 .filter(|t| !names.contains(&t.name()))
+                .collect(),
+        }
+    }
+
+    /// Keep only the named tools (subagent allowlists).
+    pub fn only(self, names: &[&str]) -> Self {
+        Self {
+            tools: self
+                .tools
+                .into_iter()
+                .filter(|t| names.contains(&t.name()))
                 .collect(),
         }
     }

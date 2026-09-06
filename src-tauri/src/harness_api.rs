@@ -39,6 +39,10 @@ pub struct HarnessRuntime {
     pub running: std::sync::atomic::AtomicBool,
     /// The parked approval the loop is waiting on (oneshot per request).
     pub pending: Mutex<Option<tokio::sync::oneshot::Sender<Approved>>>,
+    /// Whether the persisted session was loaded this app run (loaded lazily
+    /// on the first send so a fresh start resumes, but finished sessions
+    /// don't resurrect mid-run).
+    pub session_loaded: std::sync::atomic::AtomicBool,
 }
 
 impl HarnessRuntime {
@@ -48,6 +52,38 @@ impl HarnessRuntime {
             engine: Arc::new(PermissionEngine::new()),
             running: std::sync::atomic::AtomicBool::new(false),
             pending: Mutex::new(None),
+            session_loaded: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+/// On-disk session transcript (resumed on the next app start).
+fn session_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("catapult").join("sessions").join("current.json"))
+}
+
+fn load_session(state: &AppState) {
+    let rt = &state.harness;
+    if rt.session_loaded.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(path) = session_path() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(history) = serde_json::from_str::<Vec<ChatMessage>>(&content) {
+                *rt.history.lock().unwrap() = history;
+            }
+        }
+    }
+}
+
+fn save_session(state: &AppState) {
+    if let Some(path) = session_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let history = state.harness.history.lock().unwrap().clone();
+        if let Ok(json) = serde_json::to_string(&history) {
+            let _ = std::fs::write(&path, json);
         }
     }
 }
@@ -139,6 +175,7 @@ pub async fn harness_agent_send(
     }
     let _running_guard = RunningGuard(state.harness.clone());
 
+    load_session(&state);
     let root = project_root(&state)?;
     let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
     let port = port_or_err(&state)?;
@@ -157,7 +194,7 @@ pub async fn harness_agent_send(
 
     state.harness_abort.store(false, Ordering::SeqCst);
     let abort = state.harness_abort.clone();
-    let should_stop = move || abort.load(Ordering::SeqCst);
+    let should_stop = Arc::new(move || abort.load(Ordering::SeqCst)) as std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
     let gate: Arc<dyn ApprovalGate> = Arc::new(UiGate {
         app: app.clone(),
@@ -169,10 +206,14 @@ pub async fn harness_agent_send(
 
     let run = AgentRun {
         client: &client,
-        registry: Arc::new(ToolRegistry::project_tools(jail)),
+        registry: Arc::new(ToolRegistry::project_tools(jail.clone())),
         engine: state.harness.engine.clone(),
         model: None, // server's loaded model; role routing lands in Phase 3
         max_turns: harness::agent::DEFAULT_MAX_TURNS,
+        subagents: Some(harness::agent::Subagents {
+            jail,
+            max_turns: harness::agent::DEFAULT_SUBAGENT_MAX_TURNS,
+        }),
     };
 
     let result = run
@@ -186,8 +227,9 @@ pub async fn harness_agent_send(
         .await;
 
     // Persist the transcript for the session (also on abort/error, so the
-    // conversation stays inspectable).
+    // conversation stays inspectable and resumes after a restart).
     *state.harness.history.lock().unwrap() = history;
+    save_session(&state);
     result.map_err(|e| e.to_string())
 }
 
@@ -233,6 +275,9 @@ pub async fn harness_agent_decide(
 #[tauri::command]
 pub async fn harness_agent_reset(state: State<'_, AppState>) -> Result<(), String> {
     state.harness.history.lock().unwrap().clear();
+    if let Some(path) = session_path() {
+        let _ = std::fs::remove_file(path);
+    }
     let mut pending = state.harness.pending.lock().unwrap();
     if let Some(tx) = pending.take() {
         let _ = tx.send(Approved::Denied);

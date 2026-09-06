@@ -20,10 +20,73 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::client::{ChatMessage, LlmClient, StreamCollector, StreamEvent};
-use crate::permissions::{Decision, Grant, PermissionEngine, Scope};
+use crate::permissions::{ApprovalKey, Decision, Grant, PermissionEngine, Scope};
 use crate::tools::ToolRegistry;
 
+use serde_json::Value;
+
 pub const DEFAULT_MAX_TURNS: usize = 40;
+pub const DEFAULT_SUBAGENT_MAX_TURNS: usize = 25;
+
+// ── Subagent kinds ──────────────────────────────────────────────────────────
+
+/// The two built-in ephemeral specialists. Prompts are deliberately brief —
+/// the orchestrator owns planning; specialists execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentKind {
+    Coder,
+    Researcher,
+}
+
+impl SubagentKind {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "coder" => Ok(Self::Coder),
+            "researcher" => Ok(Self::Researcher),
+            other => anyhow::bail!("Unknown agent type '{other}' (expected 'coder' or 'researcher')"),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Coder => "coder",
+            Self::Researcher => "researcher",
+        }
+    }
+
+    fn prompt(&self) -> &'static str {
+        match self {
+            Self::Coder => {
+                "You are a focused implementation subagent. You execute exactly one coding task inside a sandboxed project directory, then report back. \
+You cannot spawn further subagents. \
+Read relevant files before editing; make small, exact edits with edit_file (the search text must match exactly once); create files with write_file; \
+verify with search_content or find_files. Allowlisted read-only commands run automatically, anything else needs user approval — if denied, adapt instead of retrying. \
+Do not expand the task scope. If the goal is ambiguous, make the most reasonable assumption and note it. \
+Your final message is the only thing the orchestrator sees: report what changed (files and a one-line summary each), what you verified, and anything left undone."
+            }
+            Self::Researcher => {
+                "You are an investigation subagent. You answer exactly one question about a sandboxed project directory, then report back. \
+You cannot create or modify anything. \
+Use find_files and search_content with specific patterns; read only what is needed; verify claims by reading the actual code. \
+Your final message is the only thing the orchestrator sees: state the answer directly, with concrete file:line references as evidence, then stop."
+            }
+        }
+    }
+
+    fn allowed_tools(&self) -> &'static [&'static str] {
+        match self {
+            Self::Coder => &[
+                "read_file",
+                "write_file",
+                "edit_file",
+                "find_files",
+                "search_content",
+                "exec",
+            ],
+            Self::Researcher => &["read_file", "find_files", "search_content", "exec"],
+        }
+    }
+}
 
 /// Args summary shown in tool-call cards (kept short; full args live in the
 /// call itself).
@@ -45,6 +108,16 @@ pub enum AgentEvent {
     ToolResult { call_id: String, ok: bool, output: String },
     /// A grant is required; the UI must show the approval prompt.
     ApprovalRequired { tool: String, command: Option<String>, args: String },
+    /// A subagent started working (UI shows an inline activity card).
+    SubagentSpawned { call_id: String, kind: String, goal: String },
+    /// A subagent finished; `summary` is what the orchestrator received.
+    SubagentFinished { call_id: String, kind: String, summary: String },
+}
+
+/// Configuration for ephemeral subagents (enabled = orchestrator may delegate).
+pub struct Subagents {
+    pub jail: Arc<crate::sandbox::PathJail>,
+    pub max_turns: usize,
 }
 
 /// What the UI answers when asked about a suspicious call.
@@ -75,6 +148,10 @@ pub struct AgentRun<'a> {
     pub engine: Arc<PermissionEngine>,
     pub model: Option<String>,
     pub max_turns: usize,
+    /// When set, the orchestrator may delegate via `spawn_subagent`. The
+    /// subagent runs with a registry stripped of `spawn_subagent` and filtered
+    /// to the kind's allowlist — recursion is impossible by construction.
+    pub subagents: Option<Subagents>,
 }
 
 impl AgentRun<'_> {
@@ -84,13 +161,13 @@ impl AgentRun<'_> {
     pub async fn run(
         &self,
         history: &mut Vec<ChatMessage>,
-        should_stop: impl Fn() -> bool,
+        should_stop: Arc<dyn Fn() -> bool + Send + Sync>,
         gate: Arc<dyn ApprovalGate>,
         mut on_stream: impl FnMut(StreamEvent) + Send,
         mut on_event: impl FnMut(AgentEvent) + Send,
     ) -> Result<String> {
-        let _tools = self.registry.tool_schemas();
         let mut turns_used = 0usize;
+        let mut sub_seq = 0usize;
         loop {
             if should_stop() {
                 bail!("aborted");
@@ -101,12 +178,13 @@ impl AgentRun<'_> {
             }
 
             // 1. Stream one completion, accumulating content + tool deltas.
-            let collector = StreamCollector::default();
+            let mut collector = StreamCollector::default();
             let mut text_acc = String::new();
             let mut on_delta = |ev: StreamEvent| {
                 if let StreamEvent::Content { text } = &ev {
                     text_acc.push_str(text);
                 }
+                collector.push(&ev);
                 on_stream(ev);
             };
             let finish = self
@@ -115,7 +193,7 @@ impl AgentRun<'_> {
                     self.model.as_deref(),
                     history,
                     Some(&self.registry.tool_schemas()),
-                    &should_stop,
+                    &*should_stop,
                     &mut on_delta,
                 )
                 .await?;
@@ -160,72 +238,26 @@ impl AgentRun<'_> {
                     args: short_args(&args_pretty),
                 });
 
-                let output = match self.registry.get(&tool_name) {
-                    None => format!("error: unknown tool '{tool_name}'"),
-                    Some(tool) => {
-                        // Permission check (read-only tools auto-allow).
-                        let allowed = match tool.approval_key(&args_value) {
-                            None => true,
-                            Some(key) => match self.engine.check(&key) {
-                                Decision::Allowed => true,
-                                Decision::NeedsApproval => match gate
-                                    .decide(ApprovalRequest {
-                                        args_pretty: args_pretty.clone(),
-                                        key,
-                                    })
-                                    .await
-                                {
-                                    Approved::Denied => false,
-                                    scope => {
-                                        self.engine.grant(Grant {
-                                            tool: tool_name.clone(),
-                                            command: None,
-                                            scope: match scope {
-                                                Approved::Once => Scope::Once,
-                                                Approved::Session => Scope::Session,
-                                                Approved::Denied => unreachable!(),
-                                            },
-                                            expires: None,
-                                        });
-                                        // Once-grants are consumed by check.
-                                        self.engine.check(&crate::permissions::ApprovalKey {
-                                            tool: tool_name.clone(),
-                                            command: None,
-                                        }) == Decision::Allowed
-                                    }
-                                },
-                            },
-                        };
-                        if !allowed {
-                            "denied by user".to_string()
-                        } else {
-                            let res = self
-                                .registry
-                                .spawn_execute(tool_name.clone(), args_value.clone())
+                // spawn_subagent is intercepted: the subagent loop runs inline
+                // and only its report enters this transcript.
+                let output = if tool_name == "spawn_subagent" {
+                    match &self.subagents {
+                        None => "error: subagents are not available".to_string(),
+                        Some(sub) => {
+                            let seq = sub_seq;
+                            sub_seq += 1;
+                            match self
+                                .run_subagent(sub, seq, &args_value, gate.clone(), should_stop.clone(), &mut on_event)
                                 .await
-                                .unwrap_or_else(|e| Err(anyhow::Error::new(e)));
-                            match res {
-                                Ok(out) => {
-                                    let truncated = short_args(&out);
-                                    on_event(AgentEvent::ToolResult {
-                                        call_id: call_id.clone(),
-                                        ok: true,
-                                        output: truncated,
-                                    });
-                                    out
-                                }
-                                Err(e) => {
-                                    let msg = format!("error: {e:#}");
-                                    on_event(AgentEvent::ToolResult {
-                                        call_id: call_id.clone(),
-                                        ok: false,
-                                        output: short_args(&msg),
-                                    });
-                                    msg
-                                }
+                            {
+                                Ok(report) => report,
+                                Err(e) => format!("error: {e:#}"),
                             }
                         }
                     }
+                } else {
+                    self.execute_tool_call(&tool_name, &args_value, args_pretty, &call_id, &gate, &mut on_event)
+                        .await
                 };
 
                 history.push(ChatMessage {
@@ -236,6 +268,197 @@ impl AgentRun<'_> {
                 });
             }
         }
+    }
+
+    /// Permission-gated execution of one non-spawn tool call. Returns the
+    /// text that goes back to the model as the tool result.
+    async fn execute_tool_call(
+        &self,
+        tool_name: &str,
+        args_value: &Value,
+        args_pretty: String,
+        call_id: &str,
+        gate: &Arc<dyn ApprovalGate>,
+        on_event: &mut (dyn FnMut(AgentEvent) + Send),
+    ) -> String {
+        let Some(tool) = self.registry.get(tool_name) else {
+            return format!("error: unknown tool '{tool_name}'");
+        };
+        // Permission check (read-only tools auto-allow).
+        let allowed = match tool.approval_key(args_value) {
+            None => true,
+            Some(key) => match self.engine.check(&key) {
+                Decision::Allowed => true,
+                Decision::NeedsApproval => match gate
+                    .decide(ApprovalRequest {
+                        args_pretty: args_pretty.clone(),
+                        key,
+                    })
+                    .await
+                {
+                    Approved::Denied => false,
+                    scope => {
+                        self.engine.grant(Grant {
+                            tool: tool_name.to_string(),
+                            command: None,
+                            scope: match scope {
+                                Approved::Once => Scope::Once,
+                                Approved::Session => Scope::Session,
+                                Approved::Denied => unreachable!(),
+                            },
+                            expires: None,
+                        });
+                        // Once-grants are consumed by check.
+                        self.engine.check(&ApprovalKey {
+                            tool: tool_name.to_string(),
+                            command: None,
+                        }) == Decision::Allowed
+                    }
+                },
+            },
+        };
+        if !allowed {
+            on_event(AgentEvent::ToolResult {
+                call_id: call_id.to_string(),
+                ok: false,
+                output: "denied by user".into(),
+            });
+            return "denied by user".to_string();
+        }
+        let res = self
+            .registry
+            .spawn_execute(tool_name.to_string(), args_value.clone())
+            .await
+            .unwrap_or_else(|e| Err(anyhow::Error::new(e)));
+        match res {
+            Ok(out) => {
+                on_event(AgentEvent::ToolResult {
+                    call_id: call_id.to_string(),
+                    ok: true,
+                    output: short_args(&out),
+                });
+                out
+            }
+            Err(e) => {
+                let msg = format!("error: {e:#}");
+                on_event(AgentEvent::ToolResult {
+                    call_id: call_id.to_string(),
+                    ok: false,
+                    output: short_args(&msg),
+                });
+                msg
+            }
+        }
+    }
+
+    /// Run an ephemeral subagent to completion and return its final report
+    /// (truncated for the orchestrator transcript). Nested tool events are
+    /// forwarded with a `sub:` call-id prefix so the UI can group them.
+    fn run_subagent<'a>(
+        &'a self,
+        sub: &'a Subagents,
+        seq: usize,
+        args: &'a Value,
+        gate: Arc<dyn ApprovalGate>,
+        should_stop: Arc<dyn Fn() -> bool + Send + Sync>,
+        on_event: &'a mut (dyn FnMut(AgentEvent) + Send),
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        let goal = args
+            .get("goal")
+            .and_then(|g| g.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let kind = SubagentKind::parse(args.get("agent_type").and_then(|a| a.as_str()).unwrap_or(""));
+        let gate = gate.clone();
+        Box::pin(async move {
+            let kind = kind?;
+            if goal.is_empty() {
+                bail!("spawn_subagent requires a non-empty 'goal'");
+            }
+            let call_ref = format!("subagent-{seq}");
+            on_event(AgentEvent::SubagentSpawned {
+                call_id: call_ref.clone(),
+                kind: kind.name().into(),
+                goal: goal.clone(),
+            });
+
+            // Fresh, isolated transcript: system prompt + goal (+ ctx files).
+            let mut history = vec![ChatMessage::system(kind.prompt().to_string())];
+            let mut initial = format!("Goal: {goal}\n");
+            if let Some(files) = args.get("ctx_files").and_then(|f| f.as_array()) {
+                for f in files {
+                    if let Some(path) = f.as_str() {
+                        let cap = 20_000usize;
+                        match sub.jail.check_read(std::path::Path::new(path)) {
+                            Ok(resolved) => match std::fs::read_to_string(&resolved) {
+                                Ok(content) => {
+                                    let mut shown: String =
+                                        content.chars().take(cap).collect();
+                                    if content.chars().count() > cap {
+                                        shown.push_str("\n[truncated]");
+                                    }
+                                    initial.push_str(&format!("\nContext file {path}:\n```\n{shown}\n```\n"));
+                                }
+                                Err(_) => initial.push_str(&format!("\nContext file {path}: could not be read.\n")),
+                            },
+                            Err(_) => initial.push_str(&format!("\nContext file {path}: outside the sandbox.\n")),
+                        }
+                    }
+                }
+            }
+            history.push(ChatMessage::user(initial));
+
+            let registry = Arc::new(
+                ToolRegistry::project_tools(sub.jail.clone())
+                    .without(&["spawn_subagent"])
+                    .only(kind.allowed_tools()),
+            );
+            let run = AgentRun {
+                client: self.client,
+                registry,
+                engine: self.engine.clone(),
+                model: self.model.clone(),
+                max_turns: sub.max_turns,
+                subagents: None, // no recursion: the strip above is belt-and-braces
+            };
+            let mut nested = |ev: AgentEvent| {
+                let ev = match ev {
+                    AgentEvent::ToolCall { call_id, tool, args } => AgentEvent::ToolCall {
+                        call_id: format!("sub:{call_id}"),
+                        tool,
+                        args,
+                    },
+                    AgentEvent::ToolResult { call_id, ok, output } => AgentEvent::ToolResult {
+                        call_id: format!("sub:{call_id}"),
+                        ok,
+                        output,
+                    },
+                    other => other,
+                };
+                on_event(ev);
+            };
+            let mut noop = |_ev: StreamEvent| {};
+            let report = run
+                .run(&mut history, should_stop.clone(), gate, &mut noop, &mut nested)
+                .await?;
+
+            // Cap the report entering the orchestrator transcript.
+            const REPORT_CAP: usize = 16_000;
+            let report = if report.chars().count() > REPORT_CAP {
+                let mut t: String = report.chars().take(REPORT_CAP).collect();
+                t.push_str("\n[report truncated]");
+                t
+            } else {
+                report
+            };
+            on_event(AgentEvent::SubagentFinished {
+                call_id: call_ref,
+                kind: kind.name().into(),
+                summary: short_args(&report),
+            });
+            Ok(report)
+        })
     }
 }
 
@@ -298,5 +521,41 @@ mod tests {
             args: "{}".into(),
         };
         assert_eq!(serde_json::to_value(&ev).unwrap()["type"], "approval_required");
+        let ev = AgentEvent::SubagentSpawned {
+            call_id: "subagent-0".into(),
+            kind: "coder".into(),
+            goal: "add tests".into(),
+        };
+        assert_eq!(serde_json::to_value(&ev).unwrap()["type"], "subagent_spawned");
+    }
+
+    #[test]
+    fn subagent_kind_parsing() {
+        assert!(matches!(SubagentKind::parse("coder"), Ok(SubagentKind::Coder)));
+        assert!(matches!(SubagentKind::parse("Researcher"), Ok(SubagentKind::Researcher)));
+        assert!(SubagentKind::parse("").is_err());
+        assert!(SubagentKind::parse("orchestrator").is_err());
+        assert!(!SubagentKind::Coder.prompt().is_empty());
+        assert!(!SubagentKind::Researcher.prompt().is_empty());
+    }
+
+    #[test]
+    fn subagent_registries_strip_recursion() {
+        let dir = std::env::temp_dir().join(format!("harness-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jail = Arc::new(crate::sandbox::PathJail::new(&dir, &[], &[]).unwrap());
+        let coder = ToolRegistry::project_tools(jail.clone())
+            .without(&["spawn_subagent"])
+            .only(SubagentKind::Coder.allowed_tools());
+        assert!(coder.get("spawn_subagent").is_none(), "recursion must be impossible");
+        assert!(coder.get("write_file").is_some());
+        assert!(coder.get("exec").is_some());
+
+        let researcher = ToolRegistry::project_tools(jail).without(&["spawn_subagent"]).only(SubagentKind::Researcher.allowed_tools());
+        assert!(researcher.get("read_file").is_some());
+        assert!(researcher.get("write_file").is_none(), "researcher must be read-only");
+        assert!(researcher.get("edit_file").is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
