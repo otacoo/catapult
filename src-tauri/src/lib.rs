@@ -1127,6 +1127,7 @@ pub fn run() {
             harness_api::harness_agent_reset,
             harness_api::harness_agent_tools,
             harness_api::set_harness_max_turns,
+            harness_api::set_harness_roles,
             suggest_server_config,
             estimate_model_memory,
             // Config

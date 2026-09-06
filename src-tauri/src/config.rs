@@ -44,6 +44,17 @@ fn default_harness_max_turns() -> u32 { 40 }
 
 fn default_harness_subagent_max_turns() -> u32 { 25 }
 
+/// Model-role assignment for the agent harness. Both default to `None` (use
+/// the server's loaded model). Role models are only effective when
+/// llama-server runs in router mode (no single model on the Run page).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HarnessRoles {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+}
+
 /// UI theme preference. `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -157,6 +168,10 @@ pub struct AppConfig {
     /// Turn budget for each ephemeral subagent run.
     #[serde(default = "default_harness_subagent_max_turns")]
     pub harness_subagent_max_turns: u32,
+    /// Model roles: which model plans (orchestrator) and which executes
+    /// (worker subagents). Requires router mode.
+    #[serde(default)]
+    pub harness_roles: HarnessRoles,
 }
 
 impl AppConfig {

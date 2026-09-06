@@ -152,6 +152,14 @@ function HarnessChat() {
             ),
           );
           break;
+        case "notice":
+          if (typeof ev.text === "string" && ev.text) {
+            setItems((prev) => [
+              ...prev,
+              { kind: "tool", callId: `notice-${Date.now()}`, tool: "note", args: ev.text as string },
+            ]);
+          }
+          break;
         case "subagent_spawned":
           setStreamText(null);
           setItems((prev) => [

@@ -298,6 +298,8 @@ export interface AppConfig {
   harness_max_turns: number;
   /** Turn budget for each ephemeral subagent run. */
   harness_subagent_max_turns: number;
+  /** Model roles (requires router mode): which model plans vs. executes. */
+  harness_roles: { orchestrator: string | null; worker: string | null };
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

@@ -138,6 +138,103 @@ impl StreamCollector {
     }
 }
 
+// ── Router API (llama.cpp router mode) ──────────────────────────────────────
+
+/// One entry of the router's `GET /models` list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouterModel {
+    pub id: String,
+    /// `loading` | `loaded` | `unloaded` | `failed`
+    pub status: String,
+}
+
+/// Parse the OAI-compatible `/models` payload (router mode). Status is nested:
+/// `data[i].status.value`.
+pub fn parse_router_models(json_text: &str) -> Vec<RouterModel> {
+    let Ok(v) = serde_json::from_str::<Value>(json_text) else {
+        return Vec::new();
+    };
+    let Some(entries) = v.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|e| {
+            let id = e.get("id")?.as_str()?.to_string();
+            let status = e
+                .get("status")
+                .and_then(|s| s.get("value"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Some(RouterModel { id, status })
+        })
+        .collect()
+}
+
+impl LlmClient {
+    /// List models registered with the router (`GET /models`).
+    pub async fn router_models(&self) -> Result<Vec<RouterModel>> {
+        let resp = self
+            .http
+            .get(format!("{}/models", self.base_url))
+            .send()
+            .await
+            .context("Router models request failed")?;
+        let resp = resp.error_for_status()?;
+        let text = resp.text().await?;
+        Ok(parse_router_models(&text))
+    }
+
+    /// Force the router to re-read its models preset (`GET /models?reload=1`).
+    pub async fn router_reload(&self) -> Result<()> {
+        let resp = self
+            .http
+            .get(format!("{}/models", self.base_url))
+            .query(&[("reload", "1")])
+            .send()
+            .await
+            .context("Router reload request failed")?;
+        resp.error_for_status()?;
+        Ok(())
+    }
+
+    /// Load a registered model on demand (`POST /models/load`).
+    pub async fn router_load(&self, name: &str) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/models/load", self.base_url))
+            .json(&serde_json::json!({ "model": name }))
+            .send()
+            .await
+            .context("Router load request failed")?;
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            bail!("Loading model '{}' failed: {}", name, text);
+        }
+        // Note: the load request returns immediately; the model loads in the
+        // background (child process spawn + GGUF load).
+        Ok(())
+    }
+
+    /// Unload a model (frees its VRAM; LRU eviction also happens server-side).
+    #[allow(dead_code)]
+    pub async fn router_unload(&self, name: &str) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/models/unload", self.base_url))
+            .json(&serde_json::json!({ "model": name }))
+            .send()
+            .await
+            .context("Router unload request failed")?;
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            bail!("Unloading model '{}' failed: {}", name, text);
+        }
+        Ok(())
+    }
+}
+
 // ── Client ──────────────────────────────────────────────────────────────────
 
 pub struct LlmClient {
@@ -278,6 +375,27 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_router_models_payload() {
+        let payload = r#"{"object":"list","data":[
+            {"id":"KAT-Coder","aliases":[],"object":"model","owned_by":"llamacpp","created":1,
+             "status":{"value":"loaded","args":[]},"source":"preset","can_remove":true},
+            {"id":"gemma-4-4b","status":{"value":"unloaded"},"source":"preset"}
+        ]}"#;
+        let models = parse_router_models(payload);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "KAT-Coder");
+        assert_eq!(models[0].status, "loaded");
+        assert_eq!(models[1].id, "gemma-4-4b");
+        assert_eq!(models[1].status, "unloaded");
+    }
+
+    #[test]
+    fn router_models_invalid_payload_is_empty() {
+        assert!(parse_router_models("not json").is_empty());
+        assert!(parse_router_models(r#"{"data":null}"#).is_empty());
+    }
 
     #[test]
     fn parses_content_delta() {

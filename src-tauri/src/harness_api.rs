@@ -5,6 +5,10 @@
 // AppState): message history for the current session, the permission engine,
 // an in-flight marker, and the pending approval channel the loop parks on.
 //
+// Phase 3: model roles — in router mode, the orchestrator and worker models
+// are resolved against the router's registry, the models-preset is regenerated
+// when needed, and role models are loaded on demand before the loop starts.
+//
 // Events to the UI flow through a typed `Channel` (stream + tool events) and
 // a global `harness_approval` event for approval prompts (they can arrive
 // while the invoke promise is still pending).
@@ -63,32 +67,6 @@ fn session_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("catapult").join("sessions").join("current.json"))
 }
 
-fn load_session(state: &AppState) {
-    let rt = &state.harness;
-    if rt.session_loaded.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    if let Some(path) = session_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(history) = serde_json::from_str::<Vec<ChatMessage>>(&content) {
-                *rt.history.lock().unwrap() = history;
-            }
-        }
-    }
-}
-
-fn save_session(state: &AppState) {
-    if let Some(path) = session_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let history = state.harness.history.lock().unwrap().clone();
-        if let Ok(json) = serde_json::to_string(&history) {
-            let _ = std::fs::write(&path, json);
-        }
-    }
-}
-
 /// Approval gate implementation: emits `harness_approval` to the UI and parks
 /// on the pending oneshot until `harness_agent_decide` resolves it.
 struct UiGate {
@@ -121,6 +99,32 @@ impl ApprovalGate for UiGate {
             let _ = app.emit("harness_approval", payload);
             rx.await.unwrap_or(Approved::Denied)
         })
+    }
+}
+
+fn load_session(state: &AppState) {
+    let rt = &state.harness;
+    if rt.session_loaded.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(path) = session_path() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(history) = serde_json::from_str::<Vec<ChatMessage>>(&content) {
+                *rt.history.lock().unwrap() = history;
+            }
+        }
+    }
+}
+
+fn save_session(state: &AppState) {
+    if let Some(path) = session_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let history = state.harness.history.lock().unwrap().clone();
+        if let Ok(json) = serde_json::to_string(&history) {
+            let _ = std::fs::write(&path, json);
+        }
     }
 }
 
@@ -157,6 +161,109 @@ fn send_event(on_event: &Channel<String>, ev: impl serde::Serialize) {
     if let Ok(json) = serde_json::to_string(&ev) {
         let _ = on_event.send(json);
     }
+}
+
+/// Is the managed server running in router mode? (Run page: no single model.)
+fn is_router_mode(state: &AppState) -> bool {
+    let s = state.server.lock().unwrap();
+    s.config
+        .as_ref()
+        .map(|c| c.model_path.is_empty())
+        .unwrap_or(false)
+}
+
+/// Model-role resolution. Only effective in router mode: regenerate the
+/// models-preset when roles are set, force the router to reload it, map role
+/// paths to registered model ids, and load them on demand. Returns
+/// (orchestrator id, worker id, VRAM notice).
+async fn resolve_roles(
+    state: &AppState,
+    client: &LlmClient,
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+    let roles = state.config.lock().unwrap().harness_roles.clone();
+    let (Some(orch_path), _) = (roles.orchestrator.as_ref(), roles.worker.as_ref()) else {
+        return Ok((None, None, None));
+    };
+    if !is_router_mode(state) {
+        return Err(
+            "Model roles require router mode: launch with no single model selected (pin models on the Run page) and start again."
+                .to_string(),
+        );
+    }
+
+    // Regenerate the preset so role models are registered, then reload.
+    let dir = dirs::data_dir()
+        .ok_or("Cannot find data directory")?
+        .join("catapult");
+    let worker_path = roles.worker.clone();
+    let mut paths: Vec<String> = state.config.lock().unwrap().router_models.clone();
+    paths.push(orch_path.clone());
+    paths.extend(worker_path.clone());
+    let _preset = crate::server::write_router_preset_paths(&dir, &paths).map_err(|e| e.to_string())?;
+    client.router_reload().await.map_err(|e| e.to_string())?;
+
+    // Map role paths → registered ids (section name = file stem).
+    let models = client.router_models().await.map_err(|e| e.to_string())?;
+    let stem = |p: &str| {
+        std::path::Path::new(p)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let orch_stem = stem(&orch_path);
+    let find_id = |wanted: Option<&str>| -> Option<String> {
+        let s = stem(wanted?);
+        models.iter().find(|m| m.id == s).map(|m| m.id.clone())
+    };
+    let orchestrator_id = find_id(Some(&orch_stem));
+    let worker_id = worker_path.as_ref().map(|w| stem(w)).and_then(|s| {
+        models
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&s))
+            .map(|m| m.id.clone())
+    });
+
+    if orchestrator_id.is_none() {
+        return Err(format!(
+            "Orchestrator model '{}' could not be registered with the router",
+            orch_stem
+        ));
+    }
+
+    // Load on demand (already-running models return an error we tolerate).
+    for id in [&orchestrator_id, &worker_id].into_iter().flatten() {
+        if let Some(m) = models.iter().find(|m| &m.id == id) {
+            if m.status != "loaded" {
+                let _ = client.router_load(id).await;
+            }
+        }
+    }
+
+    // ── VRAM feasibility notice (heuristic: file size ≈ fully-offloaded VRAM) ──
+    let mut notice: Option<String> = None;
+    if let Some(sys) = crate::hardware::get_system_info().ok() {
+        let vram_mb: u64 = sys.gpus.iter().map(|g| g.vram_mb).sum();
+        let mut bytes: u64 = 0;
+        let mut measure: Vec<&str> = vec![orch_path.as_str()];
+        if let Some(w) = worker_path.as_deref() {
+            measure.push(w);
+        }
+        for path in measure {
+            if let Ok(meta) = std::fs::metadata(path) {
+                bytes += meta.len();
+            }
+        }
+        let need_gb = bytes / (1024 * 1024 * 1024);
+        if vram_mb > 0 && (need_gb * 1024) > vram_mb {
+            notice = Some(format!(
+                "Selected role models (~{need_gb} GB) exceed VRAM ({:.1} GB) — the router may unload a model while switching roles.",
+                vram_mb as f64 / 1024.0
+            ));
+        }
+    }
+
+    Ok((orchestrator_id, worker_id, notice))
 }
 
 /// What the Chat empty state shows: every tool the agent may use, with its
@@ -201,6 +308,23 @@ pub async fn set_harness_max_turns(
     config.save().map_err(|e| e.to_string())
 }
 
+/// Assign harness model roles (paths of installed models, or None for the
+/// server default). Takes effect when a run starts in router mode.
+#[tauri::command]
+pub async fn set_harness_roles(
+    orchestrator: Option<String>,
+    worker: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        config.harness_roles.orchestrator = orchestrator.filter(|p| !p.trim().is_empty());
+        config.harness_roles.worker = worker.filter(|p| !p.trim().is_empty());
+        config.save().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn harness_agent_send(
     message: String,
@@ -223,6 +347,9 @@ pub async fn harness_agent_send(
     let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
+
+    // ── Model roles (Phase 3) ──
+    let (orchestrator_id, worker_id, notice) = resolve_roles(&state, &client).await?;
 
     // Take the history out (never hold the mutex across the async loop).
     let mut history = std::mem::take(&mut *state.harness.history.lock().unwrap());
@@ -252,16 +379,20 @@ pub async fn harness_agent_send(
 
     let mut sink = |ev: StreamEvent| send_event(&on_event, ev);
     let mut event_sink = |ev: AgentEvent| send_event(&on_event, ev);
+    if let Some(text) = notice {
+        send_event(&on_event, AgentEvent::Notice { text });
+    }
 
     let run = AgentRun {
         client: &client,
         registry: Arc::new(ToolRegistry::project_tools(jail.clone())),
         engine: state.harness.engine.clone(),
-        model: None, // server's loaded model; role routing lands in Phase 3
+        model: orchestrator_id,
         max_turns: max_turns as usize,
         subagents: Some(harness::agent::Subagents {
             jail,
             max_turns: subagent_max_turns as usize,
+            model: worker_id,
         }),
     };
 

@@ -960,23 +960,13 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
 }
 
 /// Generate a llama-server router-mode `--models-preset` INI registering the
-/// app-pinned router models. Only used when starting with no single model
-/// selected; each section name is the model's file stem (`model = <path>` is
-/// the llama.cpp preset key form).
-pub fn write_router_preset(
-    config: &ServerConfig,
-    app_config: &AppConfig,
-) -> Result<Option<PathBuf>> {
-    if !config.model_path.is_empty() || app_config.router_models.is_empty() {
-        return Ok(None);
-    }
-    let dir = dirs::data_dir()
-        .context("Cannot find data directory")?
-        .join("catapult");
-    std::fs::create_dir_all(&dir)?;
+/// given model paths. Each section name is the model's file stem
+/// (`model = <path>` is the llama.cpp preset key form). Missing files are
+/// skipped; an empty result means no preset is needed.
+pub fn write_router_preset_paths(dir: &std::path::Path, paths: &[String]) -> Result<Option<PathBuf>> {
     let mut ini = String::new();
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for raw in &app_config.router_models {
+    for raw in paths {
         let path = raw.trim();
         if path.is_empty() || !std::path::Path::new(path).is_file() {
             continue;
@@ -997,9 +987,29 @@ pub fn write_router_preset(
     if ini.is_empty() {
         return Ok(None);
     }
+    std::fs::create_dir_all(dir)?;
     let path = dir.join("router_models.ini");
     std::fs::write(&path, ini)?;
     Ok(Some(path))
+}
+
+/// Project preset for router mode: the Run-page pinned models plus any
+/// harness role models, written into the app data directory.
+pub fn write_router_preset(
+    config: &ServerConfig,
+    app_config: &AppConfig,
+) -> Result<Option<PathBuf>> {
+    if !config.model_path.is_empty() {
+        return Ok(None);
+    }
+    let dir = dirs::data_dir()
+        .context("Cannot find data directory")?
+        .join("catapult");
+    std::fs::create_dir_all(&dir)?;
+    let mut paths: Vec<String> = app_config.router_models.clone();
+    paths.extend(app_config.harness_roles.orchestrator.clone());
+    paths.extend(app_config.harness_roles.worker.clone());
+    write_router_preset_paths(&dir, &paths)
 }
 
 /// Build a suggested config based on system info and model size
@@ -1418,6 +1428,38 @@ mod tests {
             sanitize_tools("read_file,write_file"),
             Some("read_file,write_file".to_string())
         );
+    }
+
+    #[test]
+    fn router_preset_ini_shape_and_dedup() {
+        let dir = std::env::temp_dir().join(format!("catapult-router-preset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("alpha.gguf");
+        let b = dir.join("beta").join("alpha.gguf");
+        std::fs::create_dir_all(b.parent().unwrap()).unwrap();
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+
+        let out = crate::server::write_router_preset_paths(
+            &dir,
+            &[
+                "/nonexistent/model.gguf".to_string(),
+                a.to_string_lossy().to_string(),
+                b.to_string_lossy().to_string(),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(out.file_name().unwrap(), "router_models.ini");
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("[alpha]"));
+        assert!(content.contains("[alpha-2]"));
+        assert!(content.contains("model = "));
+        // Same path repeated yields one section only (dedup by name is per
+        // section name; the same file twice → still one entry each name).
+        assert!(!content.contains("[alpha-3]"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

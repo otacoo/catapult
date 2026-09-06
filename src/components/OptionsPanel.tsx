@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { AppConfig } from "../types";
+import type { AppConfig, ModelInfo } from "../types";
 import Toggle from "./Toggle";
 import AppUpdatesCard from "./AppUpdatesCard";
 import AppearanceCard from "./AppearanceCard";
@@ -24,6 +24,58 @@ const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "about", label: "About", icon: Info },
 ];
+
+function RolePickers({ appConfig, onSet }: {
+  appConfig: AppConfig | null;
+  onSet: (orchestrator: string | null, worker: string | null) => void;
+}) {
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
+
+  useEffect(() => {
+    invoke<ModelInfo[]>("list_installed_models").then(setModels).catch(() => {});
+  }, []);
+
+  const options = [
+    { value: "", label: "Server default" },
+    ...(models ?? []).map((m) => ({ value: m.path, label: m.name })),
+  ];
+
+  return (
+    <div className="space-y-2 mt-4">
+      <div className="grid grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1 text-xs text-gray-400">
+          <span>Orchestrator model (planning)</span>
+          <select
+            className="input py-1 px-2 text-xs"
+            value={appConfig?.harness_roles?.orchestrator ?? ""}
+            onChange={(e) => onSet(e.target.value || null, appConfig?.harness_roles?.worker ?? null)}
+          >
+            {options.map((o) => (
+              <option key={o.value || "default"} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-gray-400">
+          <span>Worker model (subagents)</span>
+          <select
+            className="input py-1 px-2 text-xs"
+            value={appConfig?.harness_roles?.worker ?? ""}
+            onChange={(e) => onSet(appConfig?.harness_roles?.orchestrator ?? null, e.target.value || null)}
+          >
+            {options.map((o) => (
+              <option key={o.value || "default"} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="text-[11px] text-gray-600 leading-snug">
+        Role models require router mode: launch on the Run page with no single model selected
+        (pin models with the layers icon). The orchestrator model loads at run start; a small
+        worker model alongside a big planner speeds up execution.
+      </p>
+    </div>
+  );
+}
 
 export default function OptionsPanel({ open, onClose }: {
   open: boolean;
@@ -96,6 +148,15 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  const setRoles = async (orchestrator: string | null, worker: string | null) => {
+    setAppConfig((c) =>
+      c ? { ...c, harness_roles: { orchestrator, worker } } : c,
+    );
+    try {
+      await invoke("set_harness_roles", { orchestrator, worker });
+    } catch {}
+  };
+
   const generalCard = (
     <div className="card">
       <h2 className="section-title mb-1">General</h2>
@@ -126,7 +187,9 @@ export default function OptionsPanel({ open, onClose }: {
   const agentCard = (
     <div className="card">
       <h2 className="section-title mb-1">Agent</h2>
-      <p className="section-desc">Turn budgets for the Catapult agent harness.</p>
+      <p className="section-desc">
+        Turn budgets and model roles for the Catapult agent harness.
+      </p>
       <div className="grid grid-cols-2 gap-3 mt-3">
         <label className="flex items-center justify-between gap-2 text-xs text-gray-400">
           <span>Orchestrator max turns</span>
@@ -151,6 +214,7 @@ export default function OptionsPanel({ open, onClose }: {
           />
         </label>
       </div>
+      <RolePickers appConfig={appConfig} onSet={setRoles} />
     </div>
   );
 

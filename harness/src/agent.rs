@@ -112,12 +112,17 @@ pub enum AgentEvent {
     SubagentSpawned { call_id: String, kind: String, goal: String },
     /// A subagent finished; `summary` is what the orchestrator received.
     SubagentFinished { call_id: String, kind: String, summary: String },
+    /// Non-fatal notice for the user (e.g. VRAM feasibility warning).
+    Notice { text: String },
 }
 
 /// Configuration for ephemeral subagents (enabled = orchestrator may delegate).
 pub struct Subagents {
     pub jail: Arc<crate::sandbox::PathJail>,
     pub max_turns: usize,
+    /// Model override for subagent workers (hybrid routing); `None` inherits
+    /// the orchestrator's model.
+    pub model: Option<String>,
 }
 
 /// What the UI answers when asked about a suspicious call.
@@ -418,7 +423,7 @@ impl AgentRun<'_> {
                 client: self.client,
                 registry,
                 engine: self.engine.clone(),
-                model: self.model.clone(),
+                model: sub.model.clone().or_else(|| self.model.clone()),
                 max_turns: sub.max_turns,
                 subagents: None, // no recursion: the strip above is belt-and-braces
             };
