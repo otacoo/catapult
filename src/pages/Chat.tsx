@@ -517,7 +517,9 @@ function ContextRing({ used, total, avgTokps, model, genTokens }: {
   genTokens?: number;
 }) {
   const [hover, setHover] = useState(false);
+  const [pinned, setPinned] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const open = hover || pinned;
   const pct =
     used != null && total != null && total > 0 ? Math.min(1, used / total) : 0;
   const known = used != null && total != null && total > 0;
@@ -525,6 +527,8 @@ function ContextRing({ used, total, avgTokps, model, genTokens }: {
   const c = 2 * Math.PI * r;
   const color =
     pct >= 0.9 ? "stroke-accent-red" : pct >= 0.7 ? "stroke-accent-yellow" : "stroke-primary";
+  const dot =
+    pct >= 0.9 ? "bg-accent-red" : pct >= 0.7 ? "bg-accent-yellow" : "bg-accent-green";
   const remaining = known ? Math.max(0, (total as number) - (used as number)) : null;
   return (
     <div
@@ -532,42 +536,42 @@ function ContextRing({ used, total, avgTokps, model, genTokens }: {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => {
         setHover(false);
-        setDetailsOpen(false);
+        if (!pinned) setDetailsOpen(false);
       }}
     >
-      <svg viewBox="0 0 32 32" className="w-9 h-9 -rotate-90">
-        <circle cx="16" cy="16" r={r} fill="none" className="stroke-surface-4" strokeWidth="3" />
-        <circle
-          cx="16"
-          cy="16"
-          r={r}
-          fill="none"
-          className={color}
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeDasharray={`${(c * pct).toFixed(1)} ${c.toFixed(1)}`}
-        />
-      </svg>
-      <span className="absolute inset-0 flex items-center justify-center text-[8px] tabular-nums text-gray-400">
-        {known ? `${Math.round(pct * 100)}%` : "–"}
-      </span>
-      {hover && (
-        <div className="absolute bottom-full left-0 mb-2 w-64 rounded-lg border border-border bg-surface-2 shadow-xl p-3 z-50">
+      <button
+        className="block w-9 h-9 cursor-default"
+        onClick={() => setPinned((v) => !v)}
+        title={pinned ? "Unpin context details" : "Pin context details"}
+      >
+        <svg viewBox="0 0 32 32" className="w-9 h-9 -rotate-90">
+          <circle cx="16" cy="16" r={r} fill="none" className="stroke-surface-4" strokeWidth="3" />
+          <circle
+            cx="16"
+            cy="16"
+            r={r}
+            fill="none"
+            className={color}
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeDasharray={`${(c * pct).toFixed(1)} ${c.toFixed(1)}`}
+          />
+        </svg>
+        <span className="absolute inset-0 flex items-center justify-center text-[8px] tabular-nums text-gray-400 pointer-events-none">
+          {known ? `${Math.round(pct * 100)}%` : "–"}
+        </span>
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-2 w-64 border border-border bg-surface-2 p-3 z-50 select-text">
           <div className="flex items-center gap-2 text-xs font-semibold text-gray-200">
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                pct >= 0.9 ? "bg-accent-red" : pct >= 0.7 ? "bg-accent-yellow" : "bg-accent-green"
-              }`}
-            />
+            <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
             <span>
               Context · {known ? `${fmtTok(used as number)} / ${fmtTok(total as number)}` : "unknown"}
             </span>
           </div>
-          <div className="h-1 rounded bg-surface-4 overflow-hidden mt-2">
+          <div className="h-1 bg-surface-4 overflow-hidden mt-2">
             <div
-              className={`h-full rounded ${
-                pct >= 0.9 ? "bg-accent-red" : pct >= 0.7 ? "bg-accent-yellow" : "bg-accent-green"
-              }`}
+              className={`h-full ${dot}`}
               style={{ width: `${Math.round(pct * 100)}%` }}
             />
           </div>
@@ -634,6 +638,9 @@ function HarnessChat() {
   const [caps, setCaps] = useState<HarnessCapabilities | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [contextUsed, setContextUsed] = useState<number | null>(null);
+  // Live slot context (refreshed with the status poll); falls back to the
+  // last run's usage + GGUF length when the server can't report it.
+  const [slotCtx, setSlotCtx] = useState<{ used?: number | null; total?: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeProject, setActiveProject] = useState<string | null>(null);
@@ -669,6 +676,13 @@ function HarnessChat() {
         }
         wasRunning = running;
         setStatus(s);
+        if (running) {
+          invoke<{ used?: number | null; total?: number | null }>("harness_context_stats")
+            .then(setSlotCtx)
+            .catch(() => {});
+        } else {
+          setSlotCtx(null);
+        }
       } catch {}
     };
     invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
@@ -1201,7 +1215,7 @@ function HarnessChat() {
               {runStatus === "loading" ? (
                 <>
                   <RefreshCw size={11} className="animate-spin" />
-                  <span>Loading model… your message is queued and will be answered.</span>
+                  <span>Loading model…</span>
                 </>
               ) : (
                 <>
@@ -1241,8 +1255,8 @@ function HarnessChat() {
           )}
           <div className="flex items-end gap-2">
             <ContextRing
-              used={contextUsed}
-              total={caps?.context_length ?? null}
+              used={slotCtx?.used ?? contextUsed}
+              total={slotCtx?.total ?? caps?.context_length ?? null}
               avgTokps={avgTokps}
               model={lastAssistant?.model}
               genTokens={lastAssistant?.tokens}

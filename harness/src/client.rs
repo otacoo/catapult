@@ -259,6 +259,33 @@ impl LlmClient {
         }
         Ok(())
     }
+
+    /// Live slot context sizes (`GET /slots`, enabled by default). Returns the
+    /// largest `n_ctx` across slots — the effective context ceiling right now.
+    /// `None` when the endpoint is disabled, unreachable, or has no slots
+    /// (e.g. router frontends that don't proxy it).
+    pub async fn slot_context(&self) -> Result<Option<u64>> {
+        let resp = self
+            .http
+            .get(format!("{}/slots", self.base_url))
+            .send()
+            .await
+            .context("Slots request failed")?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let text = resp.text().await?;
+        Ok(max_slot_n_ctx(&text))
+    }
+}
+
+/// Largest `n_ctx` in a `GET /slots` payload, if any slot reports one.
+pub fn max_slot_n_ctx(json_text: &str) -> Option<u64> {
+    let v: Value = serde_json::from_str(json_text).ok()?;
+    let arr = v.as_array()?;
+    arr.iter()
+        .filter_map(|s| s.get("n_ctx")?.as_u64())
+        .max()
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -476,6 +503,19 @@ mod tests {
     fn router_models_invalid_payload_is_empty() {
         assert!(parse_router_models("not json").is_empty());
         assert!(parse_router_models(r#"{"data":null}"#).is_empty());
+    }
+
+    #[test]
+    fn max_slot_n_ctx_takes_largest() {
+        let payload = r#"[
+            {"id":0,"id_task":135,"n_ctx":65536,"is_processing":true},
+            {"id":1,"id_task":0,"n_ctx":32768,"is_processing":false},
+            {"id":2,"no_ctx_here":true}
+        ]"#;
+        assert_eq!(max_slot_n_ctx(payload), Some(65536));
+        assert_eq!(max_slot_n_ctx("[]"), None);
+        assert_eq!(max_slot_n_ctx("not json"), None);
+        assert_eq!(max_slot_n_ctx(r#"{"not":"an array"}"#), None);
     }
 
     #[test]

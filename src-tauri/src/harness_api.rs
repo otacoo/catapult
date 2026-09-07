@@ -55,6 +55,9 @@ pub struct HarnessRuntime {
     pub mcp: Mutex<Option<Arc<Vec<McpConnection>>>>,
     /// Id of the session file currently open (None = new one on next send).
     pub session_id: Mutex<Option<String>>,
+    /// Prompt tokens of the last completed run — the freshest measure of
+    /// context fill until the next run finishes.
+    pub last_prompt_tokens: Mutex<Option<u64>>,
 }
 
 /// Shape of a persisted session file.
@@ -205,8 +208,37 @@ impl HarnessRuntime {
             notice_shown: std::sync::atomic::AtomicBool::new(false),
             mcp: Mutex::new(None),
             session_id: Mutex::new(None),
+            last_prompt_tokens: Mutex::new(None),
         }
     }
+}
+
+/// Live context stats for the ring: fill from the last completed run, ceiling
+/// from the live slot size (`GET /slots`, which reflects the server's actual
+/// per-slot context), falling back to the GGUF metadata length.
+#[derive(Debug, Serialize)]
+pub struct ContextStats {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<ContextStats, String> {
+    let used = *state.harness.last_prompt_tokens.lock().unwrap();
+    let port = port_or_err(&state)?;
+    let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
+    // Live ceiling first; the GGUF length is only a fallback (it can exceed
+    // what --fit actually chose, and says nothing in router mode).
+    let mut total = client.slot_context().await.unwrap_or(None);
+    if total.is_none() {
+        if let Some(path) = active_model_path(&state) {
+            total = crate::models::read_model_metadata(std::path::Path::new(&path))
+                .and_then(|m| m.context_length);
+        }
+    }
+    Ok(ContextStats { used, total })
 }
 
 /// Connect to every enabled MCP server (cached for the app run). Servers
@@ -733,14 +765,17 @@ pub async fn harness_agent_send(
         None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
     };
     match result {
-        Ok(outcome) => Ok(RunResult {
-            text: outcome.text,
-            model,
-            tokens_per_sec: outcome.tokens_per_sec,
-            gen_tokens: outcome.gen_tokens,
-            prompt_tokens: outcome.prompt_tokens,
-            elapsed_ms: outcome.elapsed_ms,
-        }),
+        Ok(outcome) => {
+            *state.harness.last_prompt_tokens.lock().unwrap() = outcome.prompt_tokens;
+            Ok(RunResult {
+                text: outcome.text,
+                model,
+                tokens_per_sec: outcome.tokens_per_sec,
+                gen_tokens: outcome.gen_tokens,
+                prompt_tokens: outcome.prompt_tokens,
+                elapsed_ms: outcome.elapsed_ms,
+            })
+        }
         Err(e) => Err(e.to_string()),
     }
 }

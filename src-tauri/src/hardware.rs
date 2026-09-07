@@ -874,7 +874,7 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
             }
         }
     }
-    let (cache_type_k, cache_type_v, n_ctx, full_gpu) = match pick {
+    let (cache_type_k, cache_type_v, n_ctx, _full_gpu) = match pick {
         Some((k, v, ctx, _, full)) => (k, v, ctx, full),
         None => ("q8_0".to_string(), "q8_0".to_string(), 4096, false),
     };

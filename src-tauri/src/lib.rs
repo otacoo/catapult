@@ -1134,6 +1134,7 @@ pub fn run() {
             harness_api::harness_agent_rewind,
             harness_api::harness_agent_history,
             harness_api::harness_agent_tools,
+            harness_api::harness_context_stats,
             harness_api::set_harness_max_turns,
             harness_api::set_harness_roles,
             harness_api::harness_agent_capabilities,
