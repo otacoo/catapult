@@ -382,6 +382,17 @@ fn send_event(on_event: &Channel<String>, ev: impl serde::Serialize) {
     }
 }
 
+/// Append a line to the Server Logs panel (same cap policy as the server
+/// reader: 500 lines, drain 100). Harness notices live here now — they no
+/// longer render as transcript cards in chat.
+fn push_server_log(state: &AppState, line: &str) {
+    let mut s = state.server.lock().unwrap();
+    s.log_lines.push(format!("[catapult] {}", line));
+    if s.log_lines.len() > 500 {
+        s.log_lines.drain(0..100);
+    }
+}
+
 /// Is the managed server running in router mode? (Run page: no single model.)
 fn is_router_mode(state: &AppState) -> bool {
     let s = state.server.lock().unwrap();
@@ -394,14 +405,16 @@ fn is_router_mode(state: &AppState) -> bool {
 /// Model-role resolution. Only effective in router mode: regenerate the
 /// models-preset when roles are set, force the router to reload it, map role
 /// paths to registered model ids, and load them on demand. Returns
-/// (orchestrator id, worker id, VRAM notice).
+/// (orchestrator id, worker id, VRAM notice, loading notice). The loading
+/// notice is returned (not emitted here) so the caller can show it every run;
+/// the VRAM notice is one-shot per app run.
 async fn resolve_roles(
     state: &AppState,
     client: &LlmClient,
-) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+) -> Result<(Option<String>, Option<String>, Option<String>, Option<String>), String> {
     let roles = state.config.lock().unwrap().harness_roles.clone();
     if roles.orchestrator.is_none() && roles.worker.is_none() {
-        return Ok((None, None, None));
+        return Ok((None, None, None, None));
     }
     if !is_router_mode(state) {
         return Err(
@@ -480,12 +493,14 @@ async fn resolve_roles(
     // Load the orchestrator eagerly. The worker loads lazily when the first
     // subagent actually needs it — loading both up front on a VRAM-tight
     // machine makes every request crawl (or thrash the router's LRU).
+    let mut loading_notice: Option<String> = None;
     if let Some(id) = &orchestrator_id {
         let status = models.iter().find(|m| &m.id == id).map(|m| m.status.as_str());
         log::info!("harness roles: orchestrator='{id}' (router status: {})", status.unwrap_or("unknown"));
         if status != Some("loaded") {
             log::info!("harness roles: requesting load of '{id}'");
             let _ = client.router_load(id).await;
+            loading_notice = Some(format!("Loading model '{id}'…"));
         }
     }
     if let Some(id) = &worker_id {
@@ -515,7 +530,7 @@ async fn resolve_roles(
         }
     }
 
-    Ok((orchestrator_id, worker_id, notice))
+    Ok((orchestrator_id, worker_id, notice, loading_notice))
 }
 
 /// What the Chat empty state shows: every tool the agent may use, with its
@@ -608,7 +623,8 @@ pub async fn harness_agent_send(
     // ── Model roles (Phase 3) ──
     // In router mode the chat request REQUIRES a model name ("Server default"
     // means: the router's running/registered model, not an omitted field).
-    let (mut orchestrator_id, worker_id, notice) = resolve_roles(&state, &client).await?;
+    let (mut orchestrator_id, worker_id, vram_notice, loading_notice) =
+        resolve_roles(&state, &client).await?;
     // Take the history out (never hold the mutex across the async loop).
     let mut history = std::mem::take(&mut *state.harness.history.lock().unwrap());
     if !history.iter().any(|m| m.role == "system") {
@@ -639,10 +655,27 @@ pub async fn harness_agent_send(
         runtime: state.harness.clone(),
     });
 
-    let mut sink = |ev: StreamEvent| send_event(&on_event, ev);
-    let mut event_sink = |ev: AgentEvent| send_event(&on_event, ev);
-    if let Some(text) = notice {
+    let mut sink = |ev: StreamEvent| {
+        if let StreamEvent::Notice { text } = &ev {
+            push_server_log(&state, text);
+        }
+        send_event(&on_event, ev);
+    };
+    let mut event_sink = |ev: AgentEvent| {
+        if let AgentEvent::Notice { text } = &ev {
+            push_server_log(&state, text);
+        }
+        send_event(&on_event, ev);
+    };
+    // Loading state shows on every run that needs it; the VRAM warning is
+    // one-shot per app run.
+    if let Some(text) = loading_notice {
+        push_server_log(&state, &text);
+        send_event(&on_event, AgentEvent::Notice { text });
+    }
+    if let Some(text) = vram_notice {
         if !state.harness.notice_shown.swap(true, Ordering::SeqCst) {
+            push_server_log(&state, &text);
             send_event(&on_event, AgentEvent::Notice { text });
         }
     }

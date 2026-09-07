@@ -504,25 +504,36 @@ function ReasoningBlock({ text, streaming, open, onToggle }: {
 
 // ── Context ring (usage vs. model context + session avg tok/s) ──────────────
 
-function ContextRing({ used, total, avgTokps }: {
+function fmtTok(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(2)}K`;
+  return `${n}`;
+}
+
+function ContextRing({ used, total, avgTokps, model, genTokens }: {
   used: number | null;
   total: number | null;
   avgTokps: number | null;
+  model?: string;
+  genTokens?: number;
 }) {
+  const [hover, setHover] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const pct =
     used != null && total != null && total > 0 ? Math.min(1, used / total) : 0;
+  const known = used != null && total != null && total > 0;
   const r = 13;
   const c = 2 * Math.PI * r;
   const color =
     pct >= 0.9 ? "stroke-accent-red" : pct >= 0.7 ? "stroke-accent-yellow" : "stroke-primary";
-  const usedStr = used != null ? used.toLocaleString() : "–";
-  const totalStr = total != null ? total.toLocaleString() : "–";
-  const avgStr =
-    avgTokps != null && avgTokps > 0 ? ` · avg ${avgTokps.toFixed(1)} t/s` : "";
+  const remaining = known ? Math.max(0, (total as number) - (used as number)) : null;
   return (
     <div
       className="relative shrink-0 w-9 h-9"
-      title={`Context: ${usedStr} / ${totalStr} tokens${avgStr}`}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => {
+        setHover(false);
+        setDetailsOpen(false);
+      }}
     >
       <svg viewBox="0 0 32 32" className="w-9 h-9 -rotate-90">
         <circle cx="16" cy="16" r={r} fill="none" className="stroke-surface-4" strokeWidth="3" />
@@ -538,8 +549,66 @@ function ContextRing({ used, total, avgTokps }: {
         />
       </svg>
       <span className="absolute inset-0 flex items-center justify-center text-[8px] tabular-nums text-gray-400">
-        {Math.round(pct * 100)}%
+        {known ? `${Math.round(pct * 100)}%` : "–"}
       </span>
+      {hover && (
+        <div className="absolute bottom-full left-0 mb-2 w-64 rounded-lg border border-border bg-surface-2 shadow-xl p-3 z-50">
+          <div className="flex items-center gap-2 text-xs font-semibold text-gray-200">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                pct >= 0.9 ? "bg-accent-red" : pct >= 0.7 ? "bg-accent-yellow" : "bg-accent-green"
+              }`}
+            />
+            <span>
+              Context · {known ? `${fmtTok(used as number)} / ${fmtTok(total as number)}` : "unknown"}
+            </span>
+          </div>
+          <div className="h-1 rounded bg-surface-4 overflow-hidden mt-2">
+            <div
+              className={`h-full rounded ${
+                pct >= 0.9 ? "bg-accent-red" : pct >= 0.7 ? "bg-accent-yellow" : "bg-accent-green"
+              }`}
+              style={{ width: `${Math.round(pct * 100)}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between mt-1.5 text-[11px] text-gray-500">
+            <span>{known ? `${Math.round(pct * 100)}% used` : "usage unknown"}</span>
+            <span className="tabular-nums">
+              {remaining != null ? `${fmtTok(remaining)} remaining` : ""}
+              {avgTokps != null && avgTokps > 0 ? ` · avg ${avgTokps.toFixed(1)} t/s` : ""}
+            </span>
+          </div>
+          <div className="border-t border-border mt-2 pt-1.5">
+            <button
+              className="w-full flex items-center justify-between text-[11px] text-gray-400 hover:text-gray-200 transition-colors"
+              onClick={() => setDetailsOpen((v) => !v)}
+            >
+              <span>Token usage details</span>
+              <ChevronDown size={12} className={`transition-transform ${detailsOpen ? "rotate-180" : ""}`} />
+            </button>
+            {detailsOpen && (
+              <div className="mt-1.5 space-y-1 text-[11px] text-gray-500">
+                <div className="flex justify-between gap-2">
+                  <span>Model</span>
+                  <span className="font-mono text-gray-300 truncate max-w-[150px]">{model ?? "–"}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>Last response</span>
+                  <span className="tabular-nums text-gray-300">
+                    {genTokens != null ? `${fmtTok(genTokens)} tok` : "–"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>Prompt tokens</span>
+                  <span className="tabular-nums text-gray-300">
+                    {used != null ? fmtTok(used) : "–"}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -582,16 +651,28 @@ function HarnessChat() {
   };
 
   useEffect(() => {
+    const refreshCaps = () => {
+      invoke<HarnessCapabilities>("harness_agent_capabilities").then(setCaps).catch(() => {});
+      invoke<{ supported: boolean; levels: string[] }>("harness_reasoning_options")
+        .then(setReasoningOpts)
+        .catch(() => {});
+    };
+    // Model-dependent info goes stale when the server (re)starts with a
+    // different model — refresh on the transition into running.
+    let wasRunning = false;
     const poll = async () => {
       try {
-        setStatus(await invoke<ServerStatus>("get_server_status"));
+        const s = await invoke<ServerStatus>("get_server_status");
+        const running = s.type === "running";
+        if (running && !wasRunning) {
+          refreshCaps();
+        }
+        wasRunning = running;
+        setStatus(s);
       } catch {}
     };
     invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
-    invoke<HarnessCapabilities>("harness_agent_capabilities").then(setCaps).catch(() => {});
-    invoke<{ supported: boolean; levels: string[] }>("harness_reasoning_options")
-      .then(setReasoningOpts)
-      .catch(() => {});
+    refreshCaps();
     refreshActiveProject();
     // The transcript lives in the backend — restore it so chats are
     // consultable even when the server is stopped.
@@ -629,6 +710,15 @@ function HarnessChat() {
       it.kind === "msg" && it.role === "assistant" && it.tokps != null && it.tokps > 0 ? [it.tokps as number] : [],
     );
     return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  })();
+
+  // Latest assistant turn, for the context-ring details.
+  const lastAssistant = (() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "msg" && it.role === "assistant") return it;
+    }
+    return null;
   })();
 
   // Approval prompts arrive via a global event while the send invoke is still
@@ -751,16 +841,10 @@ function HarnessChat() {
           );
           break;
         case "notice":
-          if (typeof ev.text === "string" && ev.text) {
-            // Model loading/switching: promote the run status line so the
-            // user sees "Loading…" instead of just a transcript card.
-            if (/loading/i.test(ev.text)) {
-              setRunStatus("loading");
-            }
-            setItems((prev) => [
-              ...prev,
-              { kind: "tool", callId: `notice-${Date.now()}`, tool: "note", args: ev.text as string },
-            ]);
+          // Notices (model loading, VRAM warnings) live in Server Logs now —
+          // here they only promote the run-status line, never a card.
+          if (typeof ev.text === "string" && /loading/i.test(ev.text)) {
+            setRunStatus("loading");
           }
           break;
         default:
@@ -811,6 +895,9 @@ function HarnessChat() {
       setStreamText(null);
       setAttachments([]);
       setRunStatus(null);
+      // The active model may have changed (roles, router switches) — keep the
+      // context size and capability badges fresh.
+      invoke<HarnessCapabilities>("harness_agent_capabilities").then(setCaps).catch(() => {});
     }
   };
 
@@ -1153,7 +1240,13 @@ function HarnessChat() {
             </div>
           )}
           <div className="flex items-end gap-2">
-            <ContextRing used={contextUsed} total={caps?.context_length ?? null} avgTokps={avgTokps} />
+            <ContextRing
+              used={contextUsed}
+              total={caps?.context_length ?? null}
+              avgTokps={avgTokps}
+              model={lastAssistant?.model}
+              genTokens={lastAssistant?.tokens}
+            />
             <button
               className="btn-secondary shrink-0 py-2 px-2.5 mb-0.5"
               onClick={attachFiles}
