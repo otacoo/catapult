@@ -38,8 +38,10 @@ fn default_call_type() -> String {
 pub struct ChatMessage {
     /// "system" | "user" | "assistant" | "tool"
     pub role: String,
+    /// String content or a multimodal parts array (text + image_url) for
+    /// vision models. JSON so both shapes serialize transparently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,13 +50,28 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None }
+        Self {
+            role: "user".into(),
+            content: Some(Value::String(content.into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None }
+        Self {
+            role: "assistant".into(),
+            content: Some(Value::String(content.into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: Some(content.into()), tool_calls: None, tool_call_id: None }
+        Self {
+            role: "system".into(),
+            content: Some(Value::String(content.into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
 }
 
@@ -82,6 +99,9 @@ pub enum StreamEvent {
     /// Usage stats (arrives in the final chunk when the server supports
     /// `stream_options.include_usage`).
     Usage { prompt_tokens: u64, completion_tokens: u64 },
+    /// Non-fatal status for the user (e.g. "model is loading, first response
+    /// may be slow").
+    Notice { text: String },
 }
 
 /// Accumulates deltas into complete tool calls; argument fragments are repaired
@@ -353,16 +373,42 @@ impl LlmClient {
         if let Some(t) = tools {
             body["tools"] = Value::from(t.to_vec());
         }
-        let mut req = self.http.post(format!("{}/v1/chat/completions", self.base_url)).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req.send().await.context("Chat request failed")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            bail!("Chat request failed ({}): {}", status, text);
-        }
+        // A router-mode server answers 503 ("Loading model!") while the role
+        // model is still loading — wait for it instead of failing the turn.
+        // The notice is emitted once; polling continues silently.
+        let mut noticed_loading = false;
+        let load_deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+        let resp = loop {
+            let r = self
+                .http
+                .post(format!("{}/v1/chat/completions", self.base_url))
+                .json(&body);
+            let mut r = r;
+            if let Some(key) = &self.api_key {
+                r = r.bearer_auth(key);
+            }
+            let resp = r.send().await.context("Chat request failed")?;
+            if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                if std::time::Instant::now() >= load_deadline {
+                    let text = resp.text().await.unwrap_or_default();
+                    bail!("Chat request failed (503): {}", text);
+                }
+                if !noticed_loading {
+                    noticed_loading = true;
+                    on_event(StreamEvent::Notice {
+                        text: "Model is loading — this may take a while; your message will be answered as soon as it is ready.".to_string(),
+                    });
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                bail!("Chat request failed ({}): {}", status, text);
+            }
+            break resp;
+        };
         use futures::StreamExt;
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();

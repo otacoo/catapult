@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+pub mod attachments;
 pub mod harness_api;
 pub mod tray;
 
@@ -1136,6 +1137,7 @@ pub fn run() {
             harness_api::set_harness_max_turns,
             harness_api::set_harness_roles,
             harness_api::harness_agent_capabilities,
+            attachments::harness_read_attachment,
             harness_api::harness_sessions_list,
             harness_api::harness_session_load,
             harness_api::harness_session_delete,

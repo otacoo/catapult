@@ -18,6 +18,7 @@ import {
   Eye,
   FileWarning,
   FolderOpen,
+  Paperclip,
   Play,
   Plus,
   RefreshCw,
@@ -27,7 +28,13 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import type { ServerStatus, HarnessRunResult, SessionInfo, HarnessCapabilities } from "../types";
+import type {
+  ServerStatus,
+  HarnessRunResult,
+  SessionInfo,
+  HarnessCapabilities,
+  ChatAttachment,
+} from "../types";
 
 // ── Shared server-gate states ───────────────────────────────────────────────
 
@@ -76,6 +83,7 @@ type Item =
       elapsedMs?: number;
       tokens?: number;
       reasoning?: string;
+      attachments?: string[];
     }
   | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string } }
   | {
@@ -339,6 +347,48 @@ function ReasoningBlock({ text, streaming, open, onToggle }: {
   );
 }
 
+// ── Context ring (usage vs. model context + session avg tok/s) ──────────────
+
+function ContextRing({ used, total, avgTokps }: {
+  used: number | null;
+  total: number | null;
+  avgTokps: number | null;
+}) {
+  const pct =
+    used != null && total != null && total > 0 ? Math.min(1, used / total) : 0;
+  const r = 13;
+  const c = 2 * Math.PI * r;
+  const color =
+    pct >= 0.9 ? "stroke-accent-red" : pct >= 0.7 ? "stroke-accent-yellow" : "stroke-primary";
+  const usedStr = used != null ? used.toLocaleString() : "–";
+  const totalStr = total != null ? total.toLocaleString() : "–";
+  const avgStr =
+    avgTokps != null && avgTokps > 0 ? ` · avg ${avgTokps.toFixed(1)} t/s` : "";
+  return (
+    <div
+      className="relative shrink-0 w-9 h-9"
+      title={`Context: ${usedStr} / ${totalStr} tokens${avgStr}`}
+    >
+      <svg viewBox="0 0 32 32" className="w-9 h-9 -rotate-90">
+        <circle cx="16" cy="16" r={r} fill="none" className="stroke-surface-4" strokeWidth="3" />
+        <circle
+          cx="16"
+          cy="16"
+          r={r}
+          fill="none"
+          className={color}
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={`${(c * pct).toFixed(1)} ${c.toFixed(1)}`}
+        />
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center text-[8px] tabular-nums text-gray-400">
+        {Math.round(pct * 100)}%
+      </span>
+    </div>
+  );
+}
+
 // ── Harness chat (agent loop with sandboxed tools) ──────────────────────────
 
 function HarnessChat() {
@@ -353,6 +403,8 @@ function HarnessChat() {
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [caps, setCaps] = useState<HarnessCapabilities | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [contextUsed, setContextUsed] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const approvalSeq = useRef(0);
@@ -392,6 +444,14 @@ function HarnessChat() {
     } catch {}
   };
 
+  // Average generation speed across the current session's assistant turns.
+  const avgTokps = (() => {
+    const vals = items.flatMap((it) =>
+      it.kind === "msg" && it.role === "assistant" && it.tokps != null && it.tokps > 0 ? [it.tokps as number] : [],
+    );
+    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  })();
+
   // Approval prompts arrive via a global event while the send invoke is still
   // pending (the loop parks until the user decides).
   useEffect(() => {
@@ -420,10 +480,16 @@ function HarnessChat() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if ((!text && attachments.length === 0) || streaming) return;
     setItems((prev) => [
       ...prev,
-      { kind: "msg", role: "user", content: text, time: Date.now() } as Item,
+      {
+        kind: "msg",
+        role: "user",
+        content: text || "(attachments only)",
+        time: Date.now(),
+        attachments: attachments.map((a) => a.name),
+      } as Item,
     ]);
     setInput("");
     setStreaming(true);
@@ -519,8 +585,16 @@ function HarnessChat() {
       const res = await invoke<HarnessRunResult>("harness_agent_send", {
         message: text,
         reasoningEffort: reasoningEffort || null,
+        attachments: attachments.map((a) => ({
+          name: a.name,
+          kind: a.kind,
+          data_base64:
+            a.kind === "image" && a.preview ? a.preview.split(",", 2)[1] ?? null : null,
+          text: a.kind === "text" ? (a.text ?? "") : null,
+        })),
         onEvent: channel,
       });
+      setContextUsed(res.prompt_tokens ?? null);
       setItems((prev) => [
         ...prev,
         {
@@ -534,6 +608,7 @@ function HarnessChat() {
           reasoning: reasoningAcc || undefined,
         } as Item,
       ]);
+      setAttachments([]);
     } catch (e) {
       const msg = String(e);
       const aborted = msg.includes("aborted");
@@ -547,7 +622,51 @@ function HarnessChat() {
     } finally {
       setStreaming(false);
       setStreamText(null);
+      setAttachments([]);
     }
+  };
+
+  // ── Attachments (+ button): images for vision models, text inline ──────────
+
+  const attachFiles = async () => {
+    let picked: string | string[] | null = null;
+    try {
+      picked = await openDialog({ multiple: true, directory: false });
+    } catch {
+      return;
+    }
+    const paths: string[] = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    for (const path of paths) {
+      try {
+        const read = await invoke<{
+          kind: string;
+          name: string;
+          data_base64?: string;
+          text?: string;
+        }>("harness_read_attachment", { path });
+        if (read.kind === "image" && read.data_base64) {
+          const ext = (read.name.split(".").pop() ?? "png").toLowerCase();
+          const mime =
+            ext === "jpg" || ext === "jpeg"
+              ? "image/jpeg"
+              : ext === "webp"
+                ? "image/webp"
+                : "image/png";
+          setAttachments((prev) => [
+            ...prev,
+            { name: read.name, kind: "image", path, preview: `data:${mime};base64,${read.data_base64}` },
+          ]);
+        } else if (read.text != null) {
+          setAttachments((prev) => [...prev, { name: read.name, kind: "text", path, text: read.text }]);
+        }
+      } catch (e) {
+        setError(String(e));
+      }
+    }
+  };
+
+  const removeAttachment = (idx: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const decide = async (seq: number, grant: "once" | "session" | null) => {
@@ -655,9 +774,6 @@ function HarnessChat() {
                         {it.time ? formatTime(it.time) : ""}
                       </div>
                     )}
-                    {it.reasoning && (
-                      <ReasoningBlock text={it.reasoning} />
-                    )}
                     {it.reasoning && <ReasoningBlock text={it.reasoning} />}
                     <div
                       className={`rounded px-3 py-2 ${
@@ -666,6 +782,13 @@ function HarnessChat() {
                     >
                       {isUser ? it.content : <Markdown content={it.content} />}
                     </div>
+                    {isUser && it.attachments && it.attachments.length > 0 && (
+                      <div className="flex flex-wrap justify-end gap-1 mt-1">
+                        {it.attachments.map((name) => (
+                          <span key={name} className="text-[10px] text-gray-500 font-mono">📎 {name}</span>
+                        ))}
+                      </div>
+                    )}
                     {!isUser ? (
                       <ResponseFooter
                         model={it.model}
@@ -779,58 +902,94 @@ function HarnessChat() {
         )}
 
         {/* Input */}
-        <div className="border-t border-border p-3 flex items-end gap-2">
-          <textarea
-            className="input flex-1 resize-none h-16 text-sm"
-            placeholder="Send a message…"
-            value={input}
-            disabled={streaming}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-          {/* Capability badges + reasoning effort, stacked next to Send */}
-          <div className="flex flex-col items-center gap-1 shrink-0 pb-0.5">
-            <div className="flex items-center gap-1.5 h-4" title="Model capabilities">
-              {caps?.vision && (
-                <span title="Model supports vision (image input — attach support coming soon)">
-                  <Eye size={13} className="text-accent-blue" />
-                </span>
-              )}
-              {caps?.reasoning && (
-                <span title="Model supports reasoning (thinking)">
-                  <Brain size={13} className="text-primary-light" />
-                </span>
-              )}
-            </div>
-            <select
-              className="input py-1 px-1 text-[10px] w-20"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-              title="Reasoning effort (depends on model support)"
-              disabled={streaming}
-            >
-              {REASONING_OPTIONS.map((o) => (
-                <option key={o.value || "default"} value={o.value}>
-                  {o.label}
-                </option>
+        <div className="border-t border-border p-3">
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {attachments.map((a, i) => (
+                <div
+                  key={`${a.name}-${i}`}
+                  className="flex items-center gap-1.5 rounded border border-border bg-surface-2 pl-1 pr-1.5 py-0.5 text-[11px] text-gray-300"
+                  title={a.path}
+                >
+                  {a.kind === "image" && a.preview ? (
+                    <img src={a.preview} alt={a.name} className="w-6 h-6 rounded object-cover" />
+                  ) : (
+                    <span className="text-gray-500 font-mono">📄</span>
+                  )}
+                  <span className="max-w-[160px] truncate font-mono">{a.name}</span>
+                  <button
+                    className="text-gray-600 hover:text-accent-red"
+                    onClick={() => removeAttachment(i)}
+                    title="Remove attachment"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
               ))}
-            </select>
-          </div>
-          {streaming ? (
-            <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">
-              <Square size={13} />
-              Stop
-            </button>
-          ) : (
-            <button className="btn-primary shrink-0" onClick={send} disabled={!input.trim()} title="Send">
-              <ArrowUp size={14} />
-            </button>
+            </div>
           )}
+          <div className="flex items-end gap-2">
+            <ContextRing used={contextUsed} total={caps?.context_length ?? null} avgTokps={avgTokps} />
+            <button
+              className="btn-secondary shrink-0 py-2 px-2.5 mb-0.5"
+              onClick={attachFiles}
+              disabled={streaming}
+              title="Attach files or images"
+            >
+              <Paperclip size={14} />
+            </button>
+            <textarea
+              className="input flex-1 resize-none h-16 text-sm"
+              placeholder="Send a message…"
+              value={input}
+              disabled={streaming}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+            />
+            {/* Capability badges + reasoning effort, stacked next to Send */}
+            <div className="flex flex-col items-center gap-1 shrink-0 pb-0.5">
+              <div className="flex items-center gap-1.5 h-4" title="Model capabilities">
+                {caps?.vision && (
+                  <span title="Model supports vision (image input — attach support coming soon)">
+                    <Eye size={13} className="text-accent-blue" />
+                  </span>
+                )}
+                {caps?.reasoning && (
+                  <span title="Model supports reasoning (thinking)">
+                    <Brain size={13} className="text-primary-light" />
+                  </span>
+                )}
+              </div>
+              <select
+                className="input py-1 px-1 text-[10px] w-20"
+                value={reasoningEffort}
+                onChange={(e) => setReasoningEffort(e.target.value)}
+                title="Reasoning effort (depends on model support)"
+                disabled={streaming}
+              >
+                {REASONING_OPTIONS.map((o) => (
+                  <option key={o.value || "default"} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {streaming ? (
+              <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">
+                <Square size={13} />
+                Stop
+              </button>
+            ) : (
+              <button className="btn-primary shrink-0" onClick={send} disabled={!input.trim() && attachments.length === 0} title="Send">
+                <ArrowUp size={14} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

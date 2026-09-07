@@ -320,6 +320,19 @@ export interface HarnessRunResult {
 export interface HarnessCapabilities {
   vision: boolean;
   reasoning: boolean;
+  context_length?: number | null;
+}
+
+/** A file/image attachment chip in the chat input. */
+export interface ChatAttachment {
+  name: string;
+  kind: "image" | "text";
+  /** Full original path (re-read when sending). */
+  path: string;
+  /** For images: data URL for the chip preview. */
+  preview?: string;
+  /** For text attachments: file content (read at add time). */
+  text?: string;
 }
 
 /** Sidebar session entry. */

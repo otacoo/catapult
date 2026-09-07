@@ -982,7 +982,22 @@ pub fn write_router_preset_paths(dir: &std::path::Path, paths: &[String]) -> Res
             i += 1;
             name = format!("{}-{}", base, i);
         }
-        ini.push_str(&format!("[{}]\nmodel = {}\n\n", name, path));
+        ini.push_str(&format!("[{}]\nmodel = {}\n", name, path));
+        // Attach a vision projector when one sits next to the model so
+        // vision-capable roles work out of the box in router mode.
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let f = entry.path();
+                    let fname = f.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+                    if fname.ends_with(".gguf") && fname.contains("mmproj") {
+                        ini.push_str(&format!("mmproj = {}\n", f.display()));
+                        break;
+                    }
+                }
+            }
+        }
+        ini.push('\n');
     }
     if ini.is_empty() {
         return Ok(None);

@@ -100,7 +100,8 @@ fn session_title(history: &[ChatMessage]) -> String {
     let first_user = history
         .iter()
         .find(|m| m.role == "user")
-        .and_then(|m| m.content.clone())
+        .and_then(|m| m.content.as_ref())
+        .and_then(|c| c.as_str())
         .unwrap_or_default();
     let mut t: String = first_user.lines().next().unwrap_or("New chat").to_string();
     if t.chars().count() > 60 {
@@ -554,6 +555,7 @@ pub async fn set_harness_roles(
 pub async fn harness_agent_send(
     message: String,
     reasoning_effort: Option<String>,
+    attachments: Option<Vec<crate::attachments::Attachment>>,
     on_event: Channel<String>,
     state: State<'_, AppState>,
     app: AppHandle,
@@ -593,7 +595,7 @@ pub async fn harness_agent_send(
             )),
         );
     }
-    history.push(ChatMessage::user(message));
+    history.push(crate::attachments::build_user_message(message, attachments));
 
     // Configurable turn budgets (clamped by the setter, clamped again here).
     let (max_turns, subagent_max_turns) = {
@@ -685,6 +687,8 @@ pub struct RunResult {
 pub struct HarnessCapabilities {
     pub vision: bool,
     pub reasoning: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
 }
 
 #[tauri::command]
@@ -703,7 +707,7 @@ pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<Ha
         role.or(single)
     };
     let Some(path) = path else {
-        return Ok(HarnessCapabilities { vision: false, reasoning: false });
+        return Ok(HarnessCapabilities { vision: false, reasoning: false, context_length: None });
     };
     let meta = crate::models::read_model_metadata(std::path::Path::new(&path));
     let has_cap = |want: &str| {
@@ -714,6 +718,7 @@ pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<Ha
     Ok(HarnessCapabilities {
         vision: has_cap("vision"),
         reasoning: has_cap("reasoning"),
+        context_length: meta.as_ref().and_then(|m| m.context_length),
     })
 }
 

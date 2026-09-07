@@ -246,7 +246,7 @@ impl AgentRun<'_> {
             if calls.is_empty() {
                 history.push(ChatMessage {
                     role: "assistant".into(),
-                    content: Some(text_acc.clone()),
+                    content: Some(Value::String(text_acc.clone())),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -272,7 +272,7 @@ impl AgentRun<'_> {
             // 2. Assistant message with tool calls must precede tool results.
             history.push(ChatMessage {
                 role: "assistant".into(),
-                content: if text_acc.is_empty() { None } else { Some(text_acc) },
+                content: if text_acc.is_empty() { None } else { Some(Value::String(text_acc)) },
                 tool_calls: Some(calls.clone()),
                 tool_call_id: None,
             });
@@ -318,7 +318,7 @@ impl AgentRun<'_> {
 
                 history.push(ChatMessage {
                     role: "tool".into(),
-                    content: Some(output),
+                    content: Some(Value::String(output)),
                     tool_calls: None,
                     tool_call_id: Some(call_id),
                 });
