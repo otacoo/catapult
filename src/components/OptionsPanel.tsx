@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ExternalLink,
   Info,
+  MessageSquare,
   Palette,
   RefreshCw,
   SlidersHorizontal,
@@ -16,10 +17,11 @@ import AppUpdatesCard from "./AppUpdatesCard";
 import AppearanceCard from "./AppearanceCard";
 import { setQuickBenchEnabled } from "../utils/appSettings";
 
-type Section = "general" | "updates" | "appearance" | "about";
+type Section = "general" | "chat" | "updates" | "appearance" | "about";
 
 const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "updates", label: "App Updates", icon: RefreshCw },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "about", label: "About", icon: Info },
@@ -176,6 +178,15 @@ export default function OptionsPanel({ open, onClose }: {
           checked={appConfig?.enable_quick_bench ?? true}
           onChange={setQuickBench}
         />
+      </div>
+    </div>
+  );
+
+  const chatEngineCard = (
+    <div className="card">
+      <h2 className="section-title mb-1">Catapult Chat</h2>
+      <p className="section-desc">Agent harness chat for the Chat tab.</p>
+      <div className="space-y-3 mt-3">
         <Toggle
           label="Use Catapult Chat"
           hint="Agent harness chat; off uses the llama-server WebUI."
@@ -294,10 +305,14 @@ export default function OptionsPanel({ open, onClose }: {
       {/* Content pane */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl space-y-4">
-          {section === "general" && (
+          {section === "general" && generalCard}
+          {section === "chat" && (
             <>
-              {generalCard}
-              {agentCard}
+              {chatEngineCard}
+              {/* Harness-specific options are inert while the harness is off. */}
+              <div className={appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}>
+                {agentCard}
+              </div>
             </>
           )}
           {section === "updates" && <AppUpdatesCard />}

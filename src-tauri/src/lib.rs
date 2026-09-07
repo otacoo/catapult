@@ -1144,6 +1144,10 @@ pub fn run() {
             harness_api::harness_project_add,
             harness_api::harness_project_remove,
             harness_api::harness_project_active,
+            harness_api::harness_git_is_repo,
+            harness_api::harness_worktree_list,
+            harness_api::harness_worktree_add,
+            harness_api::harness_worktree_remove,
             suggest_server_config,
             estimate_model_memory,
             // Config

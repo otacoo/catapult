@@ -849,6 +849,80 @@ pub async fn harness_agent_rewind(state: State<'_, AppState>) -> Result<(), Stri
     Ok(())
 }
 
+// ── Git worktrees (parallel agent branches) ─────────────────────────────────
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub bare: bool,
+    pub main: bool,
+}
+
+fn valid_branch_name(branch: &str) -> bool {
+    !branch.trim().is_empty()
+        && branch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_/+.".contains(c))
+}
+
+#[tauri::command]
+pub async fn harness_git_is_repo(root: String) -> Result<bool, String> {
+    Ok(harness::git::is_repo(std::path::Path::new(&root)))
+}
+
+#[tauri::command]
+pub async fn harness_worktree_list(root: String) -> Result<Vec<WorktreeInfo>, String> {
+    let entries = harness::git::list(std::path::Path::new(&root)).map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .map(|w| WorktreeInfo {
+            path: w.path,
+            branch: w.branch,
+            head: w.head,
+            bare: w.bare,
+            main: w.main,
+        })
+        .collect())
+}
+
+/// Create a worktree for `branch` as a *sibling* of the repo root
+/// (`<repo-parent>/<repo-name>-<branch>`). Returns the worktree path.
+#[tauri::command]
+pub async fn harness_worktree_add(root: String, branch: String) -> Result<String, String> {
+    let branch = branch.trim();
+    if !valid_branch_name(branch) {
+        return Err("Branch name may only contain letters, numbers, - _ / + .".to_string());
+    }
+    let repo = std::path::Path::new(&root);
+    let parent = repo.parent().ok_or("Cannot determine repo parent")?;
+    let repo_name = repo
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Cannot determine repo name")?;
+    let safe_branch = branch.replace(['/', '\\'], "-");
+    let path = parent.join(format!("{}-{}", repo_name, safe_branch));
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    harness::git::add(repo, &path, Some(branch)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn harness_worktree_remove(
+    root: String,
+    path: String,
+    force: bool,
+) -> Result<(), String> {
+    harness::git::remove(
+        std::path::Path::new(&root),
+        &path,
+        force,
+    )
+    .map_err(|e| e.to_string())
+}
+
 // ── Projects (contained working directories) ────────────────────────────────
 
 #[tauri::command]

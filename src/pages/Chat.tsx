@@ -132,6 +132,10 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   const [projects, setProjects] = useState<{ id: string; name: string; path: string }[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [worktrees, setWorktrees] = useState<{ path: string; branch: string | null; head: string | null; bare: boolean; main: boolean }[]>([]);
+  const [isGitRepo, setIsGitRepo] = useState(false);
+  const [newBranch, setNewBranch] = useState("");
+  const [wtError, setWtError] = useState<string | null>(null);
 
   const refreshProjects = async () => {
     try {
@@ -147,13 +151,46 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
     } catch {}
   };
 
+  const activePath = projects.find((p) => p.id === active)?.path ?? null;
+
+  const refreshWorktrees = async (root: string | null) => {
+    if (!root) {
+      setWorktrees([]);
+      setIsGitRepo(false);
+      setWtError(null);
+      return;
+    }
+    try {
+      const isRepo = await invoke<boolean>("harness_git_is_repo", { root });
+      setIsGitRepo(isRepo);
+      if (!isRepo) {
+        setWorktrees([]);
+        setWtError(null);
+        return;
+      }
+      setWorktrees(await invoke<typeof worktrees>("harness_worktree_list", { root }));
+      setWtError(null);
+    } catch {
+      setWorktrees([]);
+      setIsGitRepo(false);
+      setWtError(null); // repo check failed — hide quietly
+    }
+  };
+
   useEffect(() => {
-    refreshProjects();
+    refreshProjects().then(() => {
+      // Worktrees follow the active project once it is known.
+    });
     refreshSessions();
     const id = setInterval(refreshSessions, 5000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    refreshWorktrees(activePath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   const addProject = async () => {
     const picked = await openDialog({ directory: true, multiple: false });
@@ -173,6 +210,8 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   const activateProject = async (id: string | null) => {
     await invoke("harness_project_active", { id }).catch(() => {});
     setActive(id);
+    const root = projects.find((p) => p.id === id)?.path ?? null;
+    refreshWorktrees(root);
     onProjectChanged();
   };
 
@@ -185,6 +224,42 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   const loadSession = async (id: string) => {
     await invoke("harness_session_load", { id }).catch(() => {});
     onSessionPicked();
+  };
+
+  const addWorktree = async () => {
+    const branch = newBranch.trim();
+    if (!branch || !activePath) return;
+    try {
+      await invoke("harness_worktree_add", { root: activePath, branch });
+      setNewBranch("");
+      refreshWorktrees(activePath);
+    } catch (e) {
+      setWtError(String(e));
+    }
+  };
+
+  const removeWorktree = async (path: string) => {
+    if (!activePath) return;
+    try {
+      await invoke("harness_worktree_remove", { root: activePath, path, force: false });
+    } catch (e) {
+      const msg = String(e);
+      if (/clean|uncommitted|locked|dirty/i.test(msg)) {
+        if (!window.confirm(`Remove worktree ${path}?\n\n${msg}\n\nForce removal drops uncommitted changes.`)) {
+          return;
+        }
+        try {
+          await invoke("harness_worktree_remove", { root: activePath, path, force: true });
+        } catch (e2) {
+          setWtError(String(e2));
+          return;
+        }
+      } else {
+        setWtError(msg);
+        return;
+      }
+    }
+    refreshWorktrees(activePath);
   };
 
   return (
@@ -229,6 +304,65 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
           )}
         </div>
       </div>
+
+      {/* Worktrees — shown when the active project is a git repo */}
+      {isGitRepo && (
+        <div className="p-3 border-b border-border">
+          <div className="px-1 mb-1.5">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Worktrees</span>
+          </div>
+          <div className="space-y-0.5">
+            {worktrees.map((w) => (
+              <div
+                key={w.path}
+                className="group flex items-center gap-2 px-2 py-1.5 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-primary/10 transition-colors"
+                title={w.path}
+              >
+                <span className="flex-1 truncate">
+                  {w.branch ?? "(detached)"}
+                  {w.main && <span className="ml-1.5 text-[9px] text-gray-600 uppercase">main</span>}
+                </span>
+                {!w.main && (
+                  <button
+                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-accent-red"
+                    onClick={() => removeWorktree(w.path)}
+                    title={`Remove worktree ${w.branch ?? w.path}`}
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5 mt-1.5 px-1">
+            <input
+              className="input flex-1 py-1 px-2 text-xs min-w-0"
+              placeholder="new-branch"
+              value={newBranch}
+              onChange={(e) => setNewBranch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addWorktree();
+                }
+              }}
+            />
+            <button
+              className="text-gray-500 hover:text-gray-200 transition-colors shrink-0"
+              onClick={addWorktree}
+              title="Create a worktree on a new branch (sibling folder)"
+            >
+              <Plus size={13} />
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-600 px-1 mt-1 leading-snug">
+            Parallel agents on separate branches — a new worktree lands in a sibling folder; add it as a project.
+          </p>
+          {wtError && (
+            <p className="text-[10px] text-accent-red px-1 mt-1 break-words">{wtError}</p>
+          )}
+        </div>
+      )}
 
       {/* Sessions */}
       <div className="flex-1 overflow-y-auto p-3">
