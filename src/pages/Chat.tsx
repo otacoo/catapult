@@ -699,6 +699,7 @@ function HarnessChat() {
             contentStarted = true;
             setReasoningOpen(false);
           }
+          setRunStatus("thinking");
           break;
         case "reasoning":
           reasoningAcc += ev.text ?? "";
@@ -708,6 +709,7 @@ function HarnessChat() {
         case "tool_call":
           setStreamText(null);
           setReasoningOpen(false);
+          setRunStatus("thinking");
           setItems((prev) => [
             ...prev,
             {
@@ -1103,13 +1105,6 @@ function HarnessChat() {
           {error && (
             <div className="px-6 pb-2 flex items-start gap-2">
               <p className="flex-1 text-xs text-accent-red break-words select-text">{error}</p>
-              <button
-                className="shrink-0 inline-flex items-center gap-1 text-[10px] text-gray-600 hover:text-gray-300 transition-colors"
-                onClick={() => navigator.clipboard.writeText(error).catch(() => {})}
-                title="Copy error"
-              >
-                <Copy size={10} /> Copy
-              </button>
             </div>
           )}
 

@@ -710,6 +710,299 @@ fn pick_best_backend(backends: &[BackendInfo], gpus: &[GpuInfo]) -> String {
     "cpu".to_string()
 }
 
+/// Model dimensions the estimator actually studies (from the GGUF header).
+/// Anything unknown falls back to common dense-model defaults.
+#[derive(Debug, Clone)]
+pub struct ModelSpec {
+    pub size_mb: u64,
+    pub layers: u64,
+    pub embedding_length: u64,
+    pub attention_head_count: u64,
+    pub attention_head_count_kv: u64,
+    pub context_length: Option<u64>,
+    pub expert_count: Option<u64>,
+}
+
+impl ModelSpec {
+    /// Minimal spec when only the file size is known.
+    pub fn size_only(size_mb: u64, layers: Option<u32>) -> Self {
+        Self {
+            size_mb,
+            layers: layers.map(|l| l as u64).unwrap_or(32),
+            embedding_length: 4096,
+            attention_head_count: 32,
+            attention_head_count_kv: 32,
+            context_length: None,
+            expert_count: None,
+        }
+    }
+
+    pub fn is_moe(&self) -> bool {
+        self.expert_count.unwrap_or(0) > 0
+    }
+
+    /// Effective per-layer KV dimension (GQA-aware).
+    pub fn kv_embd(&self) -> u64 {
+        if self.attention_head_count == 0 {
+            return self.embedding_length.max(1);
+        }
+        let factor = self.attention_head_count_kv as f64 / self.attention_head_count as f64;
+        ((self.embedding_length as f64) * factor).max(1.0) as u64
+    }
+
+    /// Approximate weight bytes per layer (includes output layer — close enough).
+    pub fn bytes_per_layer(&self) -> u64 {
+        if self.layers == 0 {
+            return 0;
+        }
+        self.size_mb.saturating_mul(1024 * 1024) / self.layers
+    }
+
+    /// Model's native context, or a sane default when unknown.
+    pub fn native_ctx(&self) -> u64 {
+        self.context_length.unwrap_or(32768).clamp(4096, 131072)
+    }
+}
+
+/// Full suggestion produced by studying model + system together.
+#[derive(Debug, Clone)]
+pub struct FullSuggestion {
+    /// -1 = all layers on GPU, else explicit count.
+    pub n_gpu_layers: i32,
+    pub n_ctx: u32,
+    pub cache_type_k: String,
+    pub cache_type_v: String,
+    pub n_threads: i32,
+    pub n_batch: u32,
+    pub n_ubatch: u32,
+    pub can_fit_fully_in_vram: bool,
+    pub total_usable_mb: u64,
+    pub notes: Vec<String>,
+}
+
+/// Study the model and the machine, then choose GPU offload, context, cache
+/// precision, threads and batch sizes as one coherent fit:
+///
+/// - Tier 1 (speed): biggest context ≥ 8k that still runs fully on GPU.
+/// - Tier 2 (balanced): biggest context with ≥ half the layers on GPU.
+/// - Tier 3 (capacity): biggest context that fits anywhere, leftover offload.
+/// Precision is tried f16-first inside every tier; q8_0 KV is nearly
+/// lossless and roughly halves KV pressure.
+pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
+    let total_vram_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
+    let ram_mb = system.available_ram_mb;
+    let mut notes = Vec::new();
+
+    // Headroom: 10% of VRAM (min 1 GiB) stays free for the OS, CUDA context
+    // and fragmentation. A flat 512 MB is not enough on 12 GB+ cards.
+    let usable_vram = total_vram_mb.saturating_sub((total_vram_mb / 10).max(1024));
+    let total_usable_mb = if total_vram_mb > 0 {
+        total_vram_mb + ram_mb
+    } else {
+        ram_mb
+    };
+
+    let layers = spec.layers.max(1);
+    let kv_embd = spec.kv_embd();
+    let native_ctx = spec.native_ctx();
+    let bytes_per_layer = spec.bytes_per_layer().max(1);
+
+    let kv_mb = |ctx: u64, k: &str, v: &str| kv_cache_mb(layers, kv_embd, ctx, k, v);
+    // GPU layers that fit the VRAM left after a KV cache of `kv` MB.
+    let ngl_for = |kv: u64| -> u64 {
+        if total_vram_mb == 0 {
+            return 0;
+        }
+        let left = usable_vram.saturating_sub(kv.min(usable_vram));
+        (left.saturating_mul(1024 * 1024) / bytes_per_layer).min(layers)
+    };
+    // Context candidates: native, halving down to `floor`.
+    let candidates = |floor: u64| -> Vec<u64> {
+        let mut out = Vec::new();
+        let mut ctx = native_ctx;
+        loop {
+            out.push(ctx);
+            if ctx <= floor {
+                break;
+            }
+            ctx /= 2;
+        }
+        out
+    };
+
+    // (cache_k, cache_v, ctx, ngl or -1, full_gpu)
+    let mut pick: Option<(String, String, u64, i32, bool)> = None;
+
+    // Tier 1: biggest ctx ≥ 8k that fits fully on GPU (f16 first, then q8_0).
+    'tier1: for (k, v) in [("f16", "f16"), ("q8_0", "q8_0")] {
+        for ctx in candidates(native_ctx.min(8192)) {
+            if spec.size_mb.saturating_add(kv_mb(ctx, k, v)) <= usable_vram {
+                pick = Some((k.to_string(), v.to_string(), ctx, -1, true));
+                break 'tier1;
+            }
+        }
+    }
+
+    // Tier 2 (balanced): biggest ctx with ≥ half the layers on GPU.
+    // Tier 3 (capacity): biggest ctx that fits anywhere, leftover offload.
+    // Both try f16 first, then q8_0, and require weights + KV within
+    // VRAM + RAM (minus margin).
+    let margin_mb = 2048u64;
+    let budget_mb = usable_vram.saturating_add(ram_mb).saturating_sub(margin_mb);
+    if pick.is_none() {
+        'tier2: for (k, v) in [("f16", "f16"), ("q8_0", "q8_0")] {
+            for ctx in candidates(4096) {
+                let total = spec.size_mb.saturating_add(kv_mb(ctx, k, v));
+                if total > budget_mb {
+                    continue;
+                }
+                if ngl_for(kv_mb(ctx, k, v)) * 2 >= layers {
+                    pick = Some((k.to_string(), v.to_string(), ctx, 0, false));
+                    break 'tier2;
+                }
+            }
+        }
+    }
+    if pick.is_none() {
+        'tier3: for (k, v) in [("f16", "f16"), ("q8_0", "q8_0")] {
+            for ctx in candidates(4096) {
+                let total = spec.size_mb.saturating_add(kv_mb(ctx, k, v));
+                if total <= budget_mb {
+                    pick = Some((k.to_string(), v.to_string(), ctx, 0, false));
+                    break 'tier3;
+                }
+            }
+        }
+    }
+    let (cache_type_k, cache_type_v, n_ctx, full_gpu) = match pick {
+        Some((k, v, ctx, _, full)) => (k, v, ctx, full),
+        None => ("q8_0".to_string(), "q8_0".to_string(), 4096, false),
+    };
+    // Partial tiers store a placeholder ngl; the real count follows from the
+    // VRAM left after the chosen KV cache.
+    let kv_chosen_mb = kv_mb(n_ctx, &cache_type_k, &cache_type_v);
+    if cache_type_k == "q8_0" {
+        notes.push(format!(
+            "f16 KV cache does not fit — using q8_0 ({:.1} GB at {} ctx), negligible quality loss.",
+            kv_chosen_mb as f64 / 1024.0,
+            n_ctx
+        ));
+    } else {
+        notes.push(format!(
+            "KV cache {:.1} GB at {} ctx fits in VRAM headroom — full-precision f16 cache.",
+            kv_chosen_mb as f64 / 1024.0,
+            n_ctx
+        ));
+    }
+    if n_ctx < native_ctx {
+        notes.push(format!(
+            "Context {} does not fit (weights + KV need ~{} MB) — using {} instead.",
+            native_ctx,
+            spec.size_mb.saturating_add(kv_chosen_mb),
+            n_ctx
+        ));
+    } else {
+        notes.push(format!(
+            "Context {} fits (weights + KV ≈ {} MB of {} MB usable).",
+            n_ctx,
+            spec.size_mb.saturating_add(kv_chosen_mb),
+            total_usable_mb
+        ));
+    }
+
+    // ── GPU layers: weights that fit the VRAM left after the KV cache.
+    // Offloading is pointless when the whole footprint exceeds VRAM + RAM —
+    // the model can't run either way, so stay CPU-only instead of suggesting
+    // a token few layers on GPU.
+    let fits_anywhere = spec.size_mb.saturating_add(kv_chosen_mb)
+        <= usable_vram.saturating_add(ram_mb).saturating_sub(margin_mb);
+    let layers_fit = if fits_anywhere { ngl_for(kv_chosen_mb) } else { 0 };
+    if kv_chosen_mb > usable_vram && total_vram_mb > 0 {
+        notes.push(format!(
+            "KV cache ({:.1} GB) alone exceeds VRAM headroom — it will spill to RAM, expect slower prefill.",
+            kv_chosen_mb as f64 / 1024.0
+        ));
+    }
+    let (n_gpu_layers, can_fit_fully_in_vram) = if total_vram_mb == 0 {
+        if spec.size_mb > ram_mb.saturating_sub(1024) {
+            notes.push("Warning: model may not fit in available RAM.".to_string());
+        }
+        (0i32, false)
+    } else if layers_fit >= layers {
+        notes.push(format!(
+            "Model + KV fit in VRAM headroom — all {} layers on GPU.",
+            layers
+        ));
+        (-1i32, true)
+    } else {
+        notes.push(format!(
+            "Partial offload: ~{} of {} layers on GPU ({:.0}% of weights), rest on CPU.",
+            layers_fit,
+            layers,
+            100.0 * layers_fit as f64 / layers as f64
+        ));
+        (layers_fit as i32, false)
+    };
+
+    // ── MoE guidance ──
+    if spec.is_moe() {
+        let experts = spec.expert_count.unwrap_or(0);
+        if can_fit_fully_in_vram {
+            notes.push(format!(
+                "MoE model ({} experts) fits fully — all experts on GPU.",
+                experts
+            ));
+        } else {
+            notes.push(format!(
+                "MoE model ({} experts): if VRAM is tight, keep some experts on CPU via N CPU MoE Layers.",
+                experts
+            ));
+        }
+    }
+
+    // ── 4. threads / batch ──
+    // CPU-bound inference (no offload) wants every logical thread; with GPU
+    // offload the physical cores are plenty and leave room for the OS.
+    let n_threads = if n_gpu_layers == 0 {
+        system.cpu_threads.max(1).min(64)
+    } else {
+        system.cpu_cores.max(1).min(64)
+    } as i32;
+    notes.push(format!(
+        "Threads: {} ({})",
+        n_threads,
+        if n_gpu_layers == 0 { "all logical threads for CPU inference" } else { "physical cores" }
+    ));
+    // Larger VRAM → larger micro-batch for prefill throughput; keep b = 4·ub
+    // and never exceed the chosen context.
+    let mut n_ubatch = if total_vram_mb >= 16384 { 1024 } else { 512 };
+    if n_ubatch as u64 > n_ctx {
+        let mut halved = 32u32;
+        while halved * 2 <= n_ctx as u32 && halved < 1024 {
+            halved *= 2;
+        }
+        n_ubatch = halved;
+    }
+    let n_batch = n_ubatch * 4;
+    notes.push(format!(
+        "Batch: {} / Micro-batch: {} (b=4·ub, power-of-two)",
+        n_batch, n_ubatch
+    ));
+
+    FullSuggestion {
+        n_gpu_layers,
+        n_ctx: n_ctx as u32,
+        cache_type_k,
+        cache_type_v,
+        n_threads,
+        n_batch,
+        n_ubatch,
+        can_fit_fully_in_vram,
+        total_usable_mb,
+        notes,
+    }
+}
+
 pub fn suggest_config(model_size_mb: u64, system: &SystemInfo) -> SuggestedConfig {
     suggest_config_with_layers(model_size_mb, None, system)
 }
@@ -719,70 +1012,17 @@ pub fn suggest_config_with_layers(
     layers: Option<u32>,
     system: &SystemInfo,
 ) -> SuggestedConfig {
-    let total_vram_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
-    let total_ram_mb = system.available_ram_mb;
-    let mut notes = Vec::new();
-
-    let (n_gpu_layers, can_fit_fully_in_vram) = if total_vram_mb > 0 {
-        let usable_vram = total_vram_mb.saturating_sub(512); // reserve 512MB for overhead
-        if model_size_mb <= usable_vram {
-            notes.push("Model fits entirely in VRAM - full GPU acceleration.".to_string());
-            (-1i32, true) // -1 = all layers
-        } else if model_size_mb <= usable_vram + total_ram_mb {
-            // Partial offload: estimate layers
-            let total_layers = layers.unwrap_or(32) as f64;
-            let ratio = usable_vram as f64 / model_size_mb as f64;
-            let estimated_layers = (ratio * total_layers).floor() as i32;
-            notes.push(format!(
-                "Model partially fits in VRAM ({:.0}%). Offloading ~{} of {} layers to GPU.",
-                ratio * 100.0,
-                estimated_layers,
-                total_layers
-            ));
-            (estimated_layers, false)
-        } else {
-            notes.push("Model too large for GPU+RAM. CPU only.".to_string());
-            (0i32, false)
-        }
-    } else {
-        if model_size_mb > total_ram_mb.saturating_sub(1024) {
-            notes.push("Warning: Model may not fit in available RAM.".to_string());
-        }
-        (0i32, false)
-    };
-
-    // Context size: 0 means "loaded from model" (llama-server default)
-    let n_ctx = 0u32;
-
-    let total_usable_mb = if total_vram_mb > 0 {
-        total_vram_mb + total_ram_mb
-    } else {
-        total_ram_mb
-    };
-
-    // Heuristic threads: peak around physical cores (like llama-optimize brackets
-    // around phys cores). Clamp to 1..64.
-    let n_threads = Some((system.cpu_cores.max(1).min(64)) as i32);
-    // Micro-batch / batch: keep b >= ub, power-of-two. Larger VRAM → larger ub
-    // for better prefill throughput (llama-optimize sweeps 128..2048).
-    let n_ubatch = Some(if total_vram_mb >= 16000 { 1024 } else { 512 });
-    let n_batch = Some(n_ubatch.unwrap() * 4); // 2048 or 4096, always ≥ ubatch
-    notes.push(format!("Threads: {} (physical cores)", n_threads.unwrap()));
-    notes.push(format!(
-        "Batch: {} / Micro-batch: {} (b=4·ub, power-of-two)",
-        n_batch.unwrap(),
-        n_ubatch.unwrap()
-    ));
-
+    let spec = ModelSpec::size_only(model_size_mb, layers);
+    let full = suggest_full(&spec, system);
     SuggestedConfig {
-        n_gpu_layers,
-        n_ctx,
-        can_fit_fully_in_vram,
-        total_usable_mb,
-        notes,
-        n_threads,
-        n_batch,
-        n_ubatch,
+        n_gpu_layers: full.n_gpu_layers,
+        n_ctx: full.n_ctx,
+        can_fit_fully_in_vram: full.can_fit_fully_in_vram,
+        total_usable_mb: full.total_usable_mb,
+        notes: full.notes,
+        n_threads: Some(full.n_threads),
+        n_batch: Some(full.n_batch),
+        n_ubatch: Some(full.n_ubatch),
     }
 }
 
@@ -844,10 +1084,132 @@ mod tests {
     }
 
     #[test]
-    fn suggest_config_context_is_zero() {
+    fn suggest_config_context_is_explicit() {
         let system = make_system(8192, 16384);
         let config = suggest_config(4000, &system);
-        assert_eq!(config.n_ctx, 0, "should default to 0 (model default)");
+        // The estimator always picks an explicit context now (never 0).
+        assert!(config.n_ctx >= 4096, "ctx should be explicit, got {}", config.n_ctx);
+    }
+
+    #[test]
+    fn suggest_full_accounts_for_kv_cache() {
+        // 4 GB model on 8 GB VRAM: weights alone would claim full offload,
+        // but the 32k f16 KV cache (~17 GB) does not fit — estimator must
+        // account for it (smaller ctx and/or q8 cache, not blind -1).
+        let system = make_system(8192, 16384);
+        let spec = ModelSpec {
+            size_mb: 4000,
+            layers: 32,
+            embedding_length: 4096,
+            attention_head_count: 32,
+            attention_head_count_kv: 32,
+            context_length: Some(32768),
+            expert_count: None,
+        };
+        let full = suggest_full(&spec, &system);
+        let kv = kv_cache_mb(32, 4096, full.n_ctx as u64, &full.cache_type_k, &full.cache_type_v);
+        assert!(
+            4000 + kv <= 8192 - 1024,
+            "weights + KV ({} MB) must fit VRAM headroom",
+            4000 + kv
+        );
+    }
+
+    #[test]
+    fn suggest_full_quantizes_kv_when_tight() {
+        // Same 4 GB model on a 4 GB card: f16 KV can never fit, q8_0 is chosen.
+        let system = make_system(4096, 32768);
+        let spec = ModelSpec {
+            size_mb: 4000,
+            layers: 32,
+            embedding_length: 4096,
+            attention_head_count: 32,
+            attention_head_count_kv: 32,
+            context_length: Some(32768),
+            expert_count: None,
+        };
+        let full = suggest_full(&spec, &system);
+        assert_eq!(full.cache_type_k, "q8_0");
+        assert_eq!(full.cache_type_v, "q8_0");
+    }
+
+    #[test]
+    fn suggest_full_moe_note() {
+        let system = make_system(8192, 32768);
+        let spec = ModelSpec {
+            size_mb: 20000,
+            layers: 48,
+            embedding_length: 4096,
+            attention_head_count: 32,
+            attention_head_count_kv: 8,
+            context_length: Some(32768),
+            expert_count: Some(128),
+        };
+        assert!(spec.is_moe());
+        let full = suggest_full(&spec, &system);
+        assert!(
+            full.notes.iter().any(|n| n.contains("MoE")),
+            "MoE guidance missing: {:?}",
+            full.notes
+        );
+    }
+
+    #[test]
+    fn suggest_full_cpu_uses_logical_threads() {
+        let system = make_system(0, 32768); // no GPU
+        let spec = ModelSpec::size_only(4000, None);
+        let full = suggest_full(&spec, &system);
+        assert_eq!(full.n_gpu_layers, 0);
+        assert_eq!(full.n_threads, 16, "CPU inference should use all logical threads");
+    }
+
+    #[test]
+    fn suggest_full_user_case_27b_on_12gb() {
+        // User scenario: ~11 GB 27B-class model (64 layers, GQA 4/32) on a
+        // 12 GB card with 32 GB RAM. Weights alone nearly fill VRAM, so the
+        // estimator must NOT claim full offload — it should pick a healthy
+        // context with substantial (not token) GPU layers.
+        let system = make_system(12288, 32768);
+        let spec = ModelSpec {
+            size_mb: 11264,
+            layers: 64,
+            embedding_length: 5120,
+            attention_head_count: 32,
+            attention_head_count_kv: 4,
+            context_length: Some(131072),
+            expert_count: None,
+        };
+        let full = suggest_full(&spec, &system);
+        assert!(!full.can_fit_fully_in_vram);
+        assert!(full.n_gpu_layers > 0, "should offload a good share, got {}", full.n_gpu_layers);
+        assert!(full.n_ctx >= 8192, "context should stay healthy, got {}", full.n_ctx);
+        // The chosen plan's weights + KV must fit the machine.
+        let kv = kv_cache_mb(64, 640, full.n_ctx as u64, &full.cache_type_k, &full.cache_type_v);
+        assert!(
+            11264 + kv <= 12288 + 32768,
+            "plan must fit VRAM+RAM: weights + {} MB KV",
+            kv
+        );
+        assert!(
+            full.notes.len() >= 3,
+            "should explain cache/ctx/layers choices: {:?}",
+            full.notes
+        );
+    }
+
+    #[test]
+    fn model_spec_kv_embd_gqa() {
+        let spec = ModelSpec {
+            size_mb: 1000,
+            layers: 32,
+            embedding_length: 4096,
+            attention_head_count: 32,
+            attention_head_count_kv: 8,
+            context_length: None,
+            expert_count: None,
+        };
+        assert_eq!(spec.kv_embd(), 1024);
+        assert!(!spec.is_moe());
     }
 
     // ── is_virtual_gpu ──────────────────────────────────────────────────────

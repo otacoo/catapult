@@ -43,6 +43,8 @@ pub struct GgufMeta {
     pub embedding_length: Option<u64>,
     pub attention_head_count: Option<u64>,
     pub attention_head_count_kv: Option<u64>,
+    /// `<arch>.expert_count` when present — model is MoE if > 0.
+    pub expert_count: Option<u64>,
     pub tags: Vec<String>,
     /// `general.capabilities` array when present (vision, reasoning, …)
     pub capabilities: Vec<String>,
@@ -195,6 +197,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val as u64);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val as u64);
+                } else if key.ends_with(".expert_count") {
+                    meta.expert_count = Some(val as u64);
                 } else if key.ends_with(".attention.slide_window")
                     || key.ends_with(".attention.swa_length")
                 {
@@ -215,6 +219,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val);
+                } else if key.ends_with(".expert_count") {
+                    meta.expert_count = Some(val);
                 } else if key.ends_with(".attention.slide_window")
                     || key.ends_with(".attention.swa_length")
                 {
@@ -1414,6 +1420,70 @@ mod tests {
     fn gguf_parser_handles_missing_file() {
         let result = read_gguf_metadata(std::path::Path::new("/nonexistent/file.gguf"));
         assert!(result.is_none());
+    }
+
+    /// Minimal synthetic GGUF writer for parser unit tests: magic, version,
+    /// tensor count, KV count, then (key, type, value) entries.
+    fn write_test_gguf(path: &std::path::Path, kvs: &[(&str, u32, Vec<u8>)]) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+        for (key, vtype, val) in kvs {
+            buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key.as_bytes());
+            buf.extend_from_slice(&vtype.to_le_bytes());
+            buf.extend_from_slice(val);
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    fn gguf_str(s: &str) -> Vec<u8> {
+        let mut v = (s.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(s.as_bytes());
+        v
+    }
+
+    #[test]
+    fn gguf_parser_reads_expert_count() {
+        let dir = std::env::temp_dir().join("catapult_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("moe_test.gguf");
+        write_test_gguf(
+            &path,
+            &[
+                ("general.architecture", 8, gguf_str("qwen3moe")),
+                ("qwen3moe.block_count", 4, 48u32.to_le_bytes().to_vec()),
+                ("qwen3moe.expert_count", 4, 128u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        let meta = read_gguf_metadata(&path).expect("should parse synthetic GGUF");
+        assert_eq!(meta.architecture.as_deref(), Some("qwen3moe"));
+        assert_eq!(meta.block_count, Some(48));
+        assert_eq!(meta.expert_count, Some(128));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn gguf_parser_no_expert_count_defaults_none() {
+        let dir = std::env::temp_dir().join("catapult_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dense_test.gguf");
+        write_test_gguf(
+            &path,
+            &[
+                ("general.architecture", 8, gguf_str("llama")),
+                ("llama.block_count", 4, 32u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        let meta = read_gguf_metadata(&path).expect("should parse synthetic GGUF");
+        assert_eq!(meta.expert_count, None);
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::config::AppConfig;
-use crate::hardware::{suggest_config_with_layers, SystemInfo};
+use crate::hardware::SystemInfo;
 
 /// File tools offered across llama.cpp builds. Some builds add extra tools
 /// (apply_diff, get_datetime) which we don't offer — enabling an unknown tool
@@ -1042,59 +1042,34 @@ pub fn suggest_server_config(
     model_size_mb: u64,
     system: &SystemInfo,
 ) -> ServerConfig {
-    // Read model architecture from the GGUF header when available
+    // Study the actual model header — layer count, KV dims, native context
+    // and MoE-ness all drive the fit — then run one coherent estimation.
     let meta = crate::models::read_model_metadata(std::path::Path::new(model_path));
-    let layers = meta.as_ref().and_then(|m| m.block_count).map(|l| l as u32);
-    let suggestion = suggest_config_with_layers(model_size_mb, layers, system);
-
-    let cache_type_k = if suggestion.can_fit_fully_in_vram || suggestion.total_usable_mb > 8192 {
-        "f16".to_string()
-    } else {
-        "q8_0".to_string() // Save memory
+    let spec = crate::hardware::ModelSpec {
+        size_mb: model_size_mb,
+        layers: meta.as_ref().and_then(|m| m.block_count).unwrap_or(32),
+        embedding_length: meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096),
+        attention_head_count: meta.as_ref().and_then(|m| m.attention_head_count).unwrap_or(32),
+        attention_head_count_kv: meta
+            .as_ref()
+            .and_then(|m| m.attention_head_count_kv)
+            .or_else(|| meta.as_ref().and_then(|m| m.attention_head_count))
+            .unwrap_or(32),
+        context_length: meta.as_ref().and_then(|m| m.context_length),
+        expert_count: meta.as_ref().and_then(|m| m.expert_count),
     };
-
-    // When the model doesn't fully fit in VRAM, pick the largest context that
-    // fits in the VRAM left over after the offloaded weights (KV cache lives
-    // on the GPU when offloading). Clamped to [4096, model context].
-    let n_ctx = if suggestion.can_fit_fully_in_vram || suggestion.n_gpu_layers <= 0 {
-        suggestion.n_ctx
-    } else {
-        let embd = meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096);
-        let model_ctx = meta.as_ref().and_then(|m| m.context_length).unwrap_or(131072);
-        let gqa_factor = match (meta.as_ref().and_then(|m| m.attention_head_count),
-                                meta.as_ref().and_then(|m| m.attention_head_count_kv)) {
-            (Some(heads), Some(kv_heads)) if heads > 0 => kv_heads as f64 / heads as f64,
-            _ => 1.0,
-        };
-        let kv_embd = (embd as f64 * gqa_factor).max(1.0) as u64;
-        let layers_u64 = layers.map(|l| l as u64).unwrap_or(32);
-        let kv_bytes_per_tok = crate::hardware::kv_bytes_per_token(layers_u64, kv_embd, &cache_type_k, "f16");
-
-        let vram_total_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
-        // VRAM taken by offloaded weights (proportional to offload layers) + 512 MiB overhead + 1024 MiB margin
-        let offload_ratio = suggestion.n_gpu_layers as f64 / layers_u64.max(1) as f64;
-        let model_in_vram_mb = (model_size_mb as f64 * offload_ratio) as u64;
-        let free_vram_mb = vram_total_mb.saturating_sub(model_in_vram_mb + 512 + 1024);
-
-        let fitted = if kv_bytes_per_tok > 0 {
-            let max_ctx = free_vram_mb * 1024 * 1024 / kv_bytes_per_tok;
-            (max_ctx.clamp(4096, model_ctx) & !511) as u32
-        } else {
-            0
-        };
-        fitted
-    };
+    let full = crate::hardware::suggest_full(&spec, system);
 
     ServerConfig {
         model_path: model_path.to_string(),
-        n_ctx,
-        n_gpu_layers: suggestion.n_gpu_layers,
-        n_threads: suggestion.n_threads,
-        n_batch: suggestion.n_batch.unwrap_or(512),
-        n_ubatch: suggestion.n_ubatch.unwrap_or(512),
+        n_ctx: full.n_ctx,
+        n_gpu_layers: full.n_gpu_layers,
+        n_threads: Some(full.n_threads),
+        n_batch: full.n_batch,
+        n_ubatch: full.n_ubatch,
         flash_attn: "auto".to_string(),
-        cache_type_k,
-        cache_type_v: "f16".to_string(),
+        cache_type_k: full.cache_type_k,
+        cache_type_v: full.cache_type_v,
         ..ServerConfig::default()
     }
 }
