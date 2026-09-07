@@ -1021,7 +1021,12 @@ pub fn write_router_preset(
         .context("Cannot find data directory")?
         .join("catapult");
     std::fs::create_dir_all(&dir)?;
+    // Register every installed model so the router (and the harness roles)
+    // can load any of them on demand — an unloaded entry is cheap.
     let mut paths: Vec<String> = app_config.router_models.clone();
+    if let Ok(installed) = crate::models::list_installed_models(app_config) {
+        paths.extend(installed.iter().map(|m| m.path.to_string_lossy().to_string()));
+    }
     paths.extend(app_config.harness_roles.orchestrator.clone());
     paths.extend(app_config.harness_roles.worker.clone());
     write_router_preset_paths(&dir, &paths)

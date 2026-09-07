@@ -407,9 +407,9 @@ async fn resolve_roles(
     client: &LlmClient,
 ) -> Result<(Option<String>, Option<String>, Option<String>), String> {
     let roles = state.config.lock().unwrap().harness_roles.clone();
-    let (Some(orch_path), _) = (roles.orchestrator.as_ref(), roles.worker.as_ref()) else {
+    if roles.orchestrator.is_none() && roles.worker.is_none() {
         return Ok((None, None, None));
-    };
+    }
     if !is_router_mode(state) {
         return Err(
             "Model roles require router mode: launch with no single model selected (pin models on the Run page) and start again."
@@ -423,7 +423,7 @@ async fn resolve_roles(
         .join("catapult");
     let worker_path = roles.worker.clone();
     let mut paths: Vec<String> = state.config.lock().unwrap().router_models.clone();
-    paths.push(orch_path.clone());
+    paths.extend(roles.orchestrator.clone());
     paths.extend(worker_path.clone());
     let _preset = crate::server::write_router_preset_paths(&dir, &paths).map_err(|e| e.to_string())?;
     client.router_reload().await.map_err(|e| e.to_string())?;
@@ -437,23 +437,16 @@ async fn resolve_roles(
             .unwrap_or("")
             .to_string()
     };
-    let orch_stem = stem(&orch_path);
     let find_id = |wanted: Option<&str>| -> Option<String> {
         let s = stem(wanted?);
         models.iter().find(|m| m.id == s).map(|m| m.id.clone())
     };
-    let orchestrator_id = find_id(Some(&orch_stem));
-    let worker_id = worker_path.as_ref().map(|w| stem(w)).and_then(|s| {
-        models
-            .iter()
-            .find(|m| m.id.eq_ignore_ascii_case(&s))
-            .map(|m| m.id.clone())
-    });
+    let orchestrator_id = find_id(roles.orchestrator.as_deref());
+    let worker_id = worker_path.as_deref().and_then(|w| find_id(Some(w)));
 
-    if orchestrator_id.is_none() {
+    if roles.orchestrator.is_some() && orchestrator_id.is_none() {
         return Err(format!(
-            "Orchestrator model '{}' could not be registered with the router",
-            orch_stem
+            "Orchestrator model could not be registered with the router — restart the server so the models-preset regenerates"
         ));
     }
 
@@ -471,10 +464,10 @@ async fn resolve_roles(
     if let Some(sys) = crate::hardware::get_system_info().ok() {
         let vram_mb: u64 = sys.gpus.iter().map(|g| g.vram_mb).sum();
         let mut bytes: u64 = 0;
-        let mut measure: Vec<&str> = vec![orch_path.as_str()];
-        if let Some(w) = worker_path.as_deref() {
-            measure.push(w);
-        }
+        let measure: Vec<&String> = [&roles.orchestrator, &roles.worker]
+            .into_iter()
+            .flatten()
+            .collect();
         for path in measure {
             if let Ok(meta) = std::fs::metadata(path) {
                 bytes += meta.len();
@@ -580,8 +573,9 @@ pub async fn harness_agent_send(
     let (registry, skills) = build_registry(jail.clone(), &state, &root);
 
     // ── Model roles (Phase 3) ──
-    let (orchestrator_id, worker_id, notice) = resolve_roles(&state, &client).await?;
-
+    // In router mode the chat request REQUIRES a model name ("Server default"
+    // means: the router's running/registered model, not an omitted field).
+    let (mut orchestrator_id, worker_id, notice) = resolve_roles(&state, &client).await?;
     // Take the history out (never hold the mutex across the async loop).
     let mut history = std::mem::take(&mut *state.harness.history.lock().unwrap());
     if !history.iter().any(|m| m.role == "system") {
@@ -617,6 +611,24 @@ pub async fn harness_agent_send(
     if let Some(text) = notice {
         if !state.harness.notice_shown.swap(true, Ordering::SeqCst) {
             send_event(&on_event, AgentEvent::Notice { text });
+        }
+    }
+
+    // In router mode the chat request REQUIRES a model name ("Server default"
+    // means: the router's running/registered model, not an omitted field).
+    if orchestrator_id.is_none() && is_router_mode(&state) {
+        if let Ok(models) = client.router_models().await {
+            orchestrator_id = models
+                .iter()
+                .find(|m| m.status == "loaded")
+                .or_else(|| models.first())
+                .map(|m| m.id.clone());
+            if orchestrator_id.is_none() {
+                return Err(
+                    "No models are registered with the router — pin models on the Run page and restart the server."
+                        .to_string(),
+                );
+            }
         }
     }
 
