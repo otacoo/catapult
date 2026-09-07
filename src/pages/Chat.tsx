@@ -392,6 +392,7 @@ function ContextRing({ used, total, avgTokps }: {
 // ── Harness chat (agent loop with sandboxed tools) ──────────────────────────
 
 function HarnessChat() {
+  const navigate = useNavigate();
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
   const [items, setItems] = useState<Item[]>([]);
   const [tools, setTools] = useState<ToolListing[] | null>(null);
@@ -407,8 +408,19 @@ function HarnessChat() {
   const [contextUsed, setContextUsed] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeProject, setActiveProject] = useState<string | null>(null);
+  // Run status shown under the input: the model is warming up/loading vs. the
+  // agent is actively reasoning over the request.
+  const [runStatus, setRunStatus] = useState<"thinking" | "loading" | null>(null);
   const approvalSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const refreshActiveProject = async () => {
+    try {
+      const c = await invoke<{ harness_active_project: string | null }>("get_config");
+      setActiveProject(c.harness_active_project);
+    } catch {}
+  };
 
   useEffect(() => {
     const poll = async () => {
@@ -418,9 +430,14 @@ function HarnessChat() {
     };
     invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
     invoke<HarnessCapabilities>("harness_agent_capabilities").then(setCaps).catch(() => {});
+    refreshActiveProject();
+    // The transcript lives in the backend — restore it so chats are
+    // consultable even when the server is stopped.
+    restoreFromBackend();
     poll();
     const id = setInterval(poll, 2000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Rebuild the visible transcript from the backend (after a session load,
@@ -496,6 +513,7 @@ function HarnessChat() {
     setStreamText("");
     setReasoningText(null);
     setReasoningOpen(false);
+    setRunStatus("thinking");
     setError(null);
 
     let acc = "";
@@ -570,6 +588,11 @@ function HarnessChat() {
           break;
         case "notice":
           if (typeof ev.text === "string" && ev.text) {
+            // Model loading/switching: promote the run status line so the
+            // user sees "Loading…" instead of just a transcript card.
+            if (/loading/i.test(ev.text)) {
+              setRunStatus("loading");
+            }
             setItems((prev) => [
               ...prev,
               { kind: "tool", callId: `notice-${Date.now()}`, tool: "note", args: ev.text as string },
@@ -623,6 +646,7 @@ function HarnessChat() {
       setStreaming(false);
       setStreamText(null);
       setAttachments([]);
+      setRunStatus(null);
     }
   };
 
@@ -719,18 +743,17 @@ function HarnessChat() {
     } catch {}
   };
 
-  if (status.type === "starting") {
-    return <ServerStarting />;
-  }
-  if (status.type !== "running") {
-    return <ServerStopped />;
-  }
+  // The view is always available: chats are consultable without the server,
+  // and sending requires a running server + an active project directory.
+  const serverRunning = status.type === "running";
+  const canSend = serverRunning && activeProject != null;
 
   return (
     <div className="flex-1 flex min-h-0">
       {sidebarOpen && (
         <ChatSidebar
           onProjectChanged={() => {
+            refreshActiveProject();
             restoreFromBackend();
           }}
           onSessionPicked={() => {
@@ -758,6 +781,32 @@ function HarnessChat() {
             New chat
           </button>
         </div>
+
+        {/* Availability banners */}
+        {!serverRunning && (
+          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border text-[11px] text-gray-500">
+            <RefreshCw size={11} className={status.type === "starting" ? "animate-spin" : ""} />
+            <span>
+              {status.type === "starting"
+                ? "Server is starting — the model is loading."
+                : "Server is not running — your chats stay available below."}
+            </span>
+            {status.type !== "starting" && (
+              <button
+                className="ml-auto text-primary-light hover:underline"
+                onClick={() => navigate("/server")}
+              >
+                Go to Run
+              </button>
+            )}
+          </div>
+        )}
+        {serverRunning && !activeProject && (
+          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border text-[11px] text-gray-500">
+            <FolderOpen size={11} />
+            Select or add a working directory (project) in the sidebar to start chatting.
+          </div>
+        )}
 
         {/* Messages — select-text re-enables selection (body disables it for the title bar) */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3 select-text">
@@ -895,13 +944,30 @@ function HarnessChat() {
           )}
         </div>
 
-        {error && (
-          <div className="px-6 pb-2">
-            <p className="text-xs text-accent-red break-words">{error}</p>
-          </div>
-        )}
+          {error && (
+            <div className="px-6 pb-2">
+              <p className="text-xs text-accent-red break-words">{error}</p>
+            </div>
+          )}
 
-        {/* Input */}
+          {/* Run status: loading (model warming up) / thinking (agent reasoning) */}
+          {streaming && (
+            <div className="px-6 pb-1 flex items-center gap-1.5 text-[11px] text-gray-500 select-none">
+              {runStatus === "loading" ? (
+                <>
+                  <RefreshCw size={11} className="animate-spin" />
+                  <span>Loading model… your message is queued and will be answered.</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary-light animate-pulse" />
+                  <span>Thinking…</span>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Input */}
         <div className="border-t border-border p-3">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -940,9 +1006,15 @@ function HarnessChat() {
             </button>
             <textarea
               className="input flex-1 resize-none h-16 text-sm"
-              placeholder="Send a message…"
+              placeholder={
+                !canSend
+                  ? activeProject == null
+                    ? "Select a project to start chatting…"
+                    : "Start the server to start chatting…"
+                  : "Send a message…"
+              }
               value={input}
-              disabled={streaming}
+              disabled={streaming || !canSend}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -985,7 +1057,16 @@ function HarnessChat() {
                 Stop
               </button>
             ) : (
-              <button className="btn-primary shrink-0" onClick={send} disabled={!input.trim() && attachments.length === 0} title="Send">
+              <button
+                className="btn-primary shrink-0"
+                onClick={send}
+                disabled={(!input.trim() && attachments.length === 0) || !canSend}
+                title={
+                  !canSend
+                    ? "Needs a running server and an active project"
+                    : "Send"
+                }
+              >
                 <ArrowUp size={14} />
               </button>
             )}
@@ -1080,9 +1161,15 @@ export default function Chat() {
   const [harnessChat, setHarnessChat] = useState<boolean | null>(null);
 
   useEffect(() => {
-    invoke<{ harness_chat: boolean }>("get_config")
-      .then((c) => setHarnessChat(c.harness_chat ?? true))
-      .catch(() => setHarnessChat(true));
+    const refresh = () => {
+      invoke<{ harness_chat: boolean }>("get_config")
+        .then((c) => setHarnessChat(c.harness_chat ?? true))
+        .catch(() => setHarnessChat(true));
+    };
+    refresh();
+    // The options menu toggles this live — refresh without a restart.
+    window.addEventListener("catapult-settings", refresh);
+    return () => window.removeEventListener("catapult-settings", refresh);
   }, []);
 
   if (harnessChat === false) {

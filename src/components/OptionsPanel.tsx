@@ -126,6 +126,8 @@ export default function OptionsPanel({ open, onClose }: {
     try {
       await invoke("set_harness_chat", { enabled });
     } catch {}
+    // The Chat tab caches the mode — refresh it immediately.
+    window.dispatchEvent(new CustomEvent("catapult-settings"));
   };
 
   const setMaxTurns = async (orchestrator: number | null, subagent: number | null) => {

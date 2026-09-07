@@ -345,33 +345,26 @@ fn active_project_path(config: &crate::config::AppConfig) -> Option<String> {
         .map(|p| p.path.clone())
 }
 
-/// Resolve (and create) the sandboxed project root: the active chat project,
-/// else the current server working directory, else the shared workspace.
+/// Resolve the sandboxed project root: the active chat project is required.
+/// Chatting without a working directory is refused (the agent needs a jail).
 fn project_root(state: &AppState) -> Result<PathBuf, String> {
     let active = {
         let c = state.config.lock().unwrap();
         active_project_path(&c)
     };
-    let dir = match active {
-        Some(d) => PathBuf::from(d),
-        None => {
-            let working = {
-                let s = state.server.lock().unwrap();
-                s.config
-                    .as_ref()
-                    .and_then(|c| c.working_dir.clone())
-                    .filter(|d| !d.trim().is_empty())
-            };
-            match working {
-                Some(d) => PathBuf::from(d),
-                None => dirs::data_dir()
-                    .ok_or("Cannot find data directory")?
-                    .join("catapult")
-                    .join("workspace"),
-            }
-        }
+    let Some(dir) = active else {
+        return Err(
+            "Select a project (working directory) in the Chat sidebar to start chatting."
+                .to_string(),
+        );
     };
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = PathBuf::from(dir);
+    if !dir.is_dir() {
+        return Err(
+            "The active project's folder is missing — pick another project in the Chat sidebar."
+                .to_string(),
+        );
+    }
     Ok(dir)
 }
 
@@ -785,9 +778,11 @@ pub async fn harness_agent_reset(state: State<'_, AppState>) -> Result<(), Strin
 }
 
 /// The current runtime transcript (frontend rebuilds its view after a session
-/// load or project switch).
+/// load or project switch). Loading the persisted session first so chats are
+/// consultable without the server running.
 #[tauri::command]
 pub async fn harness_agent_history(state: State<'_, AppState>) -> Result<Vec<ChatMessage>, String> {
+    load_session(&state);
     Ok(state.harness.history.lock().unwrap().clone())
 }
 
