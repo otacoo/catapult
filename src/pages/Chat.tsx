@@ -14,6 +14,7 @@ import {
   ArrowUp,
   Brain,
   Check,
+  CircleHelp,
   Copy,
   Eye,
   FileWarning,
@@ -467,7 +468,61 @@ function ResponseFooter({ model, tokps, elapsedMs, tokens, onCopy, onDelete }: {
   );
 }
 
-// ── Collapsible reasoning block ("Thinking…") ───────────────────────────────
+// ── Tool call card: collapsed by default so long outputs (PowerShell error
+// walls included) don't flood the transcript. Chevron expands args + output.
+function ToolCard({ tool, args, output }: {
+  tool: string;
+  args: string;
+  output?: { ok: boolean; text: string };
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded border border-border bg-surface-2 px-3 py-2 text-xs">
+        <button
+          className="w-full text-gray-400 flex items-center gap-1.5 text-left"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? "Collapse tool call" : "Expand tool call"}
+        >
+          <Wrench size={11} className="text-gray-500 shrink-0" />
+          <span className="text-gray-300 font-medium">{tool}</span>
+          <span className="text-gray-600 truncate">{args}</span>
+          {output && (
+            <span className={`shrink-0 text-[10px] ${output.ok ? "text-accent-green" : "text-accent-yellow"}`}>
+              {output.ok ? "✓" : "!"}
+            </span>
+          )}
+          <span className={`ml-auto shrink-0 transition-transform ${open ? "rotate-180" : ""}`}>
+            <ChevronDown size={12} />
+          </span>
+        </button>
+        {open && (
+          <>
+            <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug mt-1.5 max-h-40 overflow-y-auto text-gray-500 select-text">
+              {args || "(no arguments)"}
+            </pre>
+            {output && (
+              <pre
+                className={`whitespace-pre-wrap break-words text-[11px] leading-snug max-h-40 overflow-y-auto mt-1 ${
+                  output.ok ? "text-gray-400" : "text-accent-yellow"
+                }`}
+              >
+                {output.text}
+              </pre>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Slash commands (handled locally, never sent to the model) ──────────────
+
+const SLASH_COMMANDS: { name: string; hint: string }[] = [
+  { name: "/help", hint: "Show this list" },
+  { name: "/new", hint: "Start a new conversation" },
+];
 
 function ReasoningBlock({ text, streaming, open, onToggle }: {
   text: string;
@@ -643,6 +698,7 @@ function HarnessChat() {
   const [slotCtx, setSlotCtx] = useState<{ used?: number | null; total?: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   // Run status shown under the input: the model is warming up/loading vs. the
   // agent is actively reasoning over the request.
@@ -764,6 +820,24 @@ function HarnessChat() {
   const send = async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || streaming) return;
+    // Slash commands run locally — never sent to the model, never persisted.
+    if (text.startsWith("/")) {
+      const cmd = text.split(/\s+/)[0].toLowerCase();
+      if (cmd === "/help") {
+        setInput("");
+        setShowHelp(true);
+        return;
+      }
+      if (cmd === "/new" || cmd === "/reset" || cmd === "/clear") {
+        setInput("");
+        setShowHelp(false);
+        await newChat();
+        return;
+      }
+      setInput("");
+      setError(`Unknown command "${cmd}". Type /help for the list.`);
+      return;
+    }
     setItems((prev) => [
       ...prev,
       {
@@ -1039,6 +1113,13 @@ function HarnessChat() {
           </button>
           <button
             className="text-xs text-gray-500 hover:text-gray-300"
+            onClick={() => setShowHelp((v) => !v)}
+            title="Chat commands (/help)"
+          >
+            <CircleHelp size={13} />
+          </button>
+          <button
+            className="text-xs text-gray-500 hover:text-gray-300"
             onClick={newChat}
             disabled={streaming}
             title="Start a new conversation"
@@ -1046,6 +1127,22 @@ function HarnessChat() {
             New chat
           </button>
         </div>
+
+        {showHelp && (
+          <div className="border-b border-border bg-surface-1 px-4 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
+              Chat commands
+            </p>
+            <div className="space-y-1">
+              {SLASH_COMMANDS.map((c) => (
+                <div key={c.name} className="flex items-baseline gap-2 text-xs">
+                  <code className="font-mono text-primary-light shrink-0">{c.name}</code>
+                  <span className="text-gray-500">{c.hint}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Availability banners */}
         {!serverRunning && (
@@ -1123,24 +1220,12 @@ function HarnessChat() {
             }
             if (it.kind === "tool") {
               return (
-                <div key={i} className="flex justify-start">
-                  <div className="max-w-[85%] rounded border border-border bg-surface-2 px-3 py-2 text-xs">
-                    <p className="text-gray-400 flex items-center gap-1.5 mb-1">
-                      <Wrench size={11} className="text-gray-500 shrink-0" />
-                      <span className="text-gray-300 font-medium">{it.tool}</span>
-                      <span className="text-gray-600 truncate">{it.args}</span>
-                    </p>
-                    {it.output && (
-                      <pre
-                        className={`whitespace-pre-wrap break-words text-[11px] leading-snug max-h-40 overflow-y-auto ${
-                          it.output.ok ? "text-gray-400" : "text-accent-yellow"
-                        }`}
-                      >
-                        {it.output.text}
-                      </pre>
-                    )}
-                  </div>
-                </div>
+                <ToolCard
+                  key={it.callId || `tool-${i}`}
+                  tool={it.tool}
+                  args={it.args}
+                  output={it.output}
+                />
               );
             }
             // Approval card
@@ -1359,6 +1444,9 @@ function EmptyState({ tools }: { tools: ToolListing[] | null }) {
       <p className="text-base font-semibold text-gray-200">Catapult Chat</p>
       <p className="text-sm text-gray-500 max-w-md">
         The agent can use these sandboxed tools in the project directory:
+      </p>
+      <p className="text-xs text-gray-600">
+        Type <code className="font-mono text-gray-400">/help</code> for chat commands.
       </p>
       {tools && tools.length > 0 && (
         <div className="flex flex-col gap-1.5 max-w-lg text-left">

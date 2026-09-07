@@ -28,13 +28,43 @@ use harness::sandbox::PathJail;
 use harness::tools::ToolRegistry;
 
 /// Byte-stable system prompt (KV-cache friendly). The project line is appended
-/// once and stays stable per project.
-const SYSTEM_PROMPT: &str = "You are Catapult's agent, working inside a sandboxed project directory. \
+/// once and stays stable per project. The OS/shell section is constant per
+/// machine — small models otherwise default to sh/bash idioms that fail
+/// noisily on PowerShell (and vice versa).
+fn system_prompt() -> String {
+    let (os_name, shell, shell_examples, avoid) = if cfg!(windows) {
+        (
+            "Windows",
+            "PowerShell (`powershell -NoProfile -Command ...`)",
+            "Get-ChildItem, Get-Content, Select-String; separate statements with `;`",
+            "sh/bash syntax (`ls -la`, `&&`, `grep`, `/dev/null`, leading `/` paths)",
+        )
+    } else if cfg!(target_os = "macos") {
+        (
+            "macOS",
+            "POSIX sh (`sh -c ...`)",
+            "ls, cat, grep; separate statements with `&&` or `;`",
+            "PowerShell syntax (`Get-ChildItem`, `;` only quirks aside)",
+        )
+    } else {
+        (
+            "Linux",
+            "POSIX sh (`sh -c ...`)",
+            "ls, cat, grep; separate statements with `&&` or `;`",
+            "PowerShell syntax (`Get-ChildItem`, `;` only quirks aside)",
+        )
+    };
+    format!(
+        "You are Catapult's agent, working inside a sandboxed project directory. \
 File tools are rooted at that directory; relative paths resolve there. \
+You run on {os_name}. Shell commands execute via {shell}: use {os_name} syntax ({shell_examples}) — never {avoid}. \
+Prefer the native file tools (read_file, find_files, search_content) over shell listing/searching. \
 Read-only operations run automatically; writes and shell commands may require user approval — \
 if denied, adapt instead of retrying the same call. \
 Work step by step: read before editing, make small exact edits, verify results, \
-and give a concise summary when done.";
+and give a concise summary when done."
+    )
+}
 
 pub struct HarnessRuntime {
     /// Current agent conversation (system prompt included once, byte-stable).
@@ -120,14 +150,10 @@ fn read_session_file(path: &std::path::Path) -> Option<PersistedSession> {
     serde_json::from_str(&content).ok()
 }
 
-/// Resume the most recently updated session (app start).
-fn load_session(state: &AppState) {
-    let rt = &state.harness;
-    if rt.session_loaded.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let Some(dir) = session_dir() else { return };
-    let mut best: Option<PersistedSession> = None;
+/// Read every persisted session (best-effort; corrupt files are skipped).
+fn all_sessions() -> Vec<PersistedSession> {
+    let mut out = Vec::new();
+    let Some(dir) = session_dir() else { return out };
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -135,19 +161,53 @@ fn load_session(state: &AppState) {
                 continue;
             }
             if let Some(s) = read_session_file(&path) {
-                let replace = match &best {
-                    Some(b) => s.updated > b.updated,
-                    None => true,
-                };
-                if replace {
-                    best = Some(s);
-                }
+                out.push(s);
             }
         }
     }
-    if let Some(s) = best {
-        *rt.history.lock().unwrap() = s.messages;
-        *rt.session_id.lock().unwrap() = Some(s.id);
+    out.sort_by(|a, b| b.updated.cmp(&a.updated));
+    out
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// Sessions belonging to a project (None = sessions with no project tag).
+fn sessions_for_project(project: Option<&str>) -> Vec<PersistedSession> {
+    all_sessions()
+        .into_iter()
+        .filter(|s| match (&s.project, project) {
+            (Some(a), Some(b)) => same_path(a, b),
+            (None, None) => true,
+            _ => false,
+        })
+        .collect()
+}
+
+/// Load a persisted session into the runtime (replaces history + id).
+fn adopt_session(state: &AppState, s: PersistedSession) {
+    *state.harness.history.lock().unwrap() = s.messages;
+    *state.harness.session_id.lock().unwrap() = Some(s.id);
+}
+
+/// Resume the most recently updated session for the active project (app
+/// start). Conversations never leak across projects this way.
+fn load_session(state: &AppState) {
+    let rt = &state.harness;
+    if rt.session_loaded.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let project = {
+        let c = state.config.lock().unwrap();
+        active_project_path(&c)
+    };
+    if let Some(s) = sessions_for_project(project.as_deref()).into_iter().next() {
+        adopt_session(state, s);
     }
 }
 
@@ -664,7 +724,8 @@ pub async fn harness_agent_send(
         history.insert(
             0,
             ChatMessage::system(format!(
-                "{SYSTEM_PROMPT}\n\nProject directory: {}{}",
+                "{}\n\nProject directory: {}{}",
+                system_prompt(),
                 root.display(),
                 harness::skills::system_prompt_listing(&skills)
             )),
@@ -929,27 +990,21 @@ pub async fn harness_agent_history(state: State<'_, AppState>) -> Result<Vec<Cha
 // ── Sessions ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn harness_sessions_list() -> Result<Vec<SessionInfo>, String> {
-    let Some(dir) = session_dir() else { return Ok(vec![]) };
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            if let Some(s) = read_session_file(&path) {
-                out.push(SessionInfo {
-                    id: s.id,
-                    title: s.title,
-                    updated: s.updated,
-                    project: s.project,
-                });
-            }
-        }
-    }
-    out.sort_by(|a, b| b.updated.cmp(&a.updated));
-    Ok(out)
+pub async fn harness_sessions_list(state: State<'_, AppState>) -> Result<Vec<SessionInfo>, String> {
+    // Only this project's sessions — conversations stay isolated per project.
+    let project = {
+        let c = state.config.lock().unwrap();
+        active_project_path(&c)
+    };
+    Ok(sessions_for_project(project.as_deref())
+        .into_iter()
+        .map(|s| SessionInfo {
+            id: s.id,
+            title: s.title,
+            updated: s.updated,
+            project: s.project,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -1102,22 +1157,73 @@ pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Re
 
 #[tauri::command]
 pub async fn harness_project_remove(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Remember the path first — its sessions are deleted with the project so
+    // no stale transcript can leak into a later conversation.
+    let removed_path = {
+        let config = state.config.lock().unwrap();
+        config
+            .harness_projects
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.path.clone())
+    };
+    if let Some(path) = removed_path {
+        for s in sessions_for_project(Some(&path)) {
+            if let Some(file) = session_file(&s.id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+    }
     let mut config = state.config.lock().unwrap();
     config.harness_projects.retain(|p| p.id != id);
     if config.harness_active_project.as_deref() == Some(id.as_str()) {
         config.harness_active_project = None;
+        // The active project is gone — drop its transcript too.
+        state.harness.history.lock().unwrap().clear();
+        *state.harness.session_id.lock().unwrap() = None;
     }
     config.save().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn harness_project_active(id: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap();
-    if let Some(id) = &id {
-        if !config.harness_projects.iter().any(|p| &p.id == id) {
-            return Err("Unknown project".to_string());
+    {
+        let mut config = state.config.lock().unwrap();
+        if let Some(id) = &id {
+            if !config.harness_projects.iter().any(|p| &p.id == id) {
+                return Err("Unknown project".to_string());
+            }
+        }
+        config.harness_active_project = id.clone();
+        config.save().map_err(|e| e.to_string())?;
+    }
+    // Switching projects starts a clean slate: the old transcript stays saved
+    // under the old project, and the new project's most recent session (if
+    // any) is adopted. Conversations never leak across projects.
+    state.harness.history.lock().unwrap().clear();
+    *state.harness.session_id.lock().unwrap() = None;
+    let active_path = {
+        let c = state.config.lock().unwrap();
+        active_project_path(&c)
+    };
+    if let Some(s) = sessions_for_project(active_path.as_deref()).into_iter().next() {
+        adopt_session(&state, s);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_path_respects_platform_casing() {
+        if cfg!(windows) {
+            assert!(same_path("H:\\Proj\\A", "h:\\proj\\a"));
+            assert!(!same_path("H:\\Proj\\A", "H:\\Proj\\B"));
+        } else {
+            assert!(same_path("/proj/a", "/proj/a"));
+            assert!(!same_path("/proj/a", "/PROJ/A"));
         }
     }
-    config.harness_active_project = id;
-    config.save().map_err(|e| e.to_string())
 }

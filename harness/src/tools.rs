@@ -376,7 +376,26 @@ impl Tool for ExecTool {
         "exec".to_string()
     }
     fn description(&self) -> String {
-        "Run a shell command in the project directory. Read-only commands (dir, cat, git status, …) run automatically; anything else requires approval.".to_string()
+        // OS-specific shell guidance: small models otherwise default to
+        // sh/bash idioms that fail noisily on PowerShell (and vice versa).
+        #[cfg(target_os = "windows")]
+        {
+            "Run a PowerShell command in the project directory. Use PowerShell syntax only \
+            (Get-ChildItem, Get-Content, Select-String; separate statements with `;`) — \
+            never sh/bash syntax (`ls -la`, `&&`, `grep`, `/dev/null`, leading `/` paths). \
+            Prefer the native file tools over shell listing/searching. \
+            Read-only commands (dir, cat, git status, …) run automatically; \
+            anything else requires approval.".to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "Run a shell command in the project directory. Use POSIX sh syntax only \
+            (ls, cat, grep; separate statements with `&&` or `;`) — \
+            never PowerShell syntax (`Get-ChildItem`, verb-noun cmdlets). \
+            Prefer the native file tools over shell listing/searching. \
+            Read-only commands (ls, cat, git status, …) run automatically; \
+            anything else requires approval.".to_string()
+        }
     }
     fn parameters(&self) -> Value {
         json!({
