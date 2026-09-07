@@ -964,10 +964,14 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
 /// (`model = <path>` is the llama.cpp preset key form). Missing files are
 /// skipped; an empty result means no preset is needed.
 pub fn write_router_preset_paths(dir: &std::path::Path, paths: &[String]) -> Result<Option<PathBuf>> {
+    // Pins, installed-scan, and roles can repeat the same file — without this
+    // the router would register `Model`, `Model-2`, `Model-3` for one file.
+    let mut unique: Vec<&str> = paths.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+    unique.sort_unstable();
+    unique.dedup();
     let mut ini = String::new();
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for raw in paths {
-        let path = raw.trim();
+    for path in unique {
         if path.is_empty() || !std::path::Path::new(path).is_file() {
             continue;
         }
@@ -1476,8 +1480,29 @@ mod tests {
         assert!(content.contains("[alpha]"));
         assert!(content.contains("[alpha-2]"));
         assert!(content.contains("model = "));
-        // Same path repeated yields one section only (dedup by name is per
-        // section name; the same file twice → still one entry each name).
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn router_preset_dedupes_repeated_paths() {
+        // Pins + installed-scan + roles can list the same file several times;
+        // it must register once, not as Model/-2/-3.
+        let dir = std::env::temp_dir().join(format!("catapult-router-dedup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("alpha.gguf");
+        std::fs::write(&a, b"x").unwrap();
+        let a_str = a.to_string_lossy().to_string();
+
+        let out = crate::server::write_router_preset_paths(
+            &dir,
+            &[a_str.clone(), a_str.clone(), a_str.clone()],
+        )
+        .unwrap()
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("[alpha]"));
+        assert!(!content.contains("[alpha-2]"));
         assert!(!content.contains("[alpha-3]"));
         std::fs::remove_dir_all(&dir).unwrap();
     }

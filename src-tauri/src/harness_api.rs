@@ -443,13 +443,19 @@ async fn resolve_roles(
         ));
     }
 
-    // Load on demand (already-running models return an error we tolerate).
-    for id in [&orchestrator_id, &worker_id].into_iter().flatten() {
-        if let Some(m) = models.iter().find(|m| &m.id == id) {
-            if m.status != "loaded" {
-                let _ = client.router_load(id).await;
-            }
+    // Load the orchestrator eagerly. The worker loads lazily when the first
+    // subagent actually needs it — loading both up front on a VRAM-tight
+    // machine makes every request crawl (or thrash the router's LRU).
+    if let Some(id) = &orchestrator_id {
+        let status = models.iter().find(|m| &m.id == id).map(|m| m.status.as_str());
+        log::info!("harness roles: orchestrator='{id}' (router status: {})", status.unwrap_or("unknown"));
+        if status != Some("loaded") {
+            log::info!("harness roles: requesting load of '{id}'");
+            let _ = client.router_load(id).await;
         }
+    }
+    if let Some(id) = &worker_id {
+        log::info!("harness roles: worker '{id}' registered; loads lazily on first subagent use");
     }
 
     // ── VRAM feasibility notice (heuristic: file size ≈ fully-offloaded VRAM) ──

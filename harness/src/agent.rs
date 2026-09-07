@@ -15,7 +15,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -407,6 +407,51 @@ impl AgentRun<'_> {
         }
     }
 
+    /// Ensure a router model is loaded, waiting (with a one-time notice)
+    /// until it is. Bails early if the router reports the model failed,
+    /// instead of spinning until the timeout like the blind 503 retry would.
+    async fn ensure_router_model(
+        client: &LlmClient,
+        id: &str,
+        should_stop: &Arc<dyn Fn() -> bool + Send + Sync>,
+        on_event: &mut (dyn FnMut(AgentEvent) + Send),
+    ) -> Result<()> {
+        const POLL_SECS: u64 = 2;
+        const TIMEOUT_SECS: u64 = 900;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+        let mut noticed = false;
+        loop {
+            if should_stop() {
+                bail!("aborted");
+            }
+            let models = client
+                .router_models()
+                .await
+                .context("router /models failed")?;
+            match models.iter().find(|m| m.id == id) {
+                Some(m) if m.status == "loaded" => return Ok(()),
+                Some(m) if m.status == "failed" => {
+                    bail!("Model '{id}' failed to load — check Server Logs for the child error")
+                }
+                _ => {
+                    if !noticed {
+                        noticed = true;
+                        on_event(AgentEvent::Notice {
+                            text: format!(
+                                "Loading worker model '{id}' — first subagent run may take a while."
+                            ),
+                        });
+                    }
+                    let _ = client.router_load(id).await;
+                    if std::time::Instant::now() >= deadline {
+                        bail!("Timed out waiting for worker model '{id}' to load");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;
+                }
+            }
+        }
+    }
+
     /// Run an ephemeral subagent to completion and return its final report
     /// (truncated for the orchestrator transcript). Nested tool events are
     /// forwarded with a `sub:` call-id prefix so the UI can group them.
@@ -438,6 +483,13 @@ impl AgentRun<'_> {
                 kind: kind.name().into(),
                 goal: goal.clone(),
             });
+
+            // Lazy worker load: the worker model only loads when a subagent
+            // actually needs it (see resolve_roles — eager double-load on a
+            // VRAM-tight machine makes every request crawl).
+            if let Some(worker) = &sub.model {
+                Self::ensure_router_model(self.client, worker, &should_stop, on_event).await?;
+            }
 
             // Fresh, isolated transcript: system prompt + goal (+ ctx files).
             let mut history = vec![ChatMessage::system(kind.prompt().to_string())];

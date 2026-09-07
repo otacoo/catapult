@@ -393,6 +393,17 @@ impl LlmClient {
                     let text = resp.text().await.unwrap_or_default();
                     bail!("Chat request failed (503): {}", text);
                 }
+                // A model that failed to load will 503 forever — bail now with
+                // a clear error instead of spinning until the deadline.
+                if let Some(name) = model {
+                    if let Ok(list) = self.router_models().await {
+                        if let Some(entry) = list.iter().find(|e| e.id == name) {
+                            if entry.status == "failed" {
+                                bail!("Model '{name}' failed to load — check Server Logs for the child error");
+                            }
+                        }
+                    }
+                }
                 if !noticed_loading {
                     noticed_loading = true;
                     on_event(StreamEvent::Notice {
