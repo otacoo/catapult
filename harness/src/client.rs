@@ -399,7 +399,7 @@ impl LlmClient {
                     if let Ok(list) = self.router_models().await {
                         if let Some(entry) = list.iter().find(|e| e.id == name) {
                             if entry.status == "failed" {
-                                bail!("Model '{name}' failed to load — check Server Logs for the child error");
+                                bail!("Model '{name}' failed to load — check Server Logs for error");
                             }
                         }
                     }
@@ -407,7 +407,7 @@ impl LlmClient {
                 if !noticed_loading {
                     noticed_loading = true;
                     on_event(StreamEvent::Notice {
-                        text: "Model is loading — this may take a while; your message will be answered as soon as it is ready.".to_string(),
+                        text: "Model is loading...".to_string(),
                     });
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
