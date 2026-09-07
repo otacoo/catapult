@@ -667,6 +667,20 @@ pub async fn set_harness_max_turns(
     config.save().map_err(|e| e.to_string())
 }
 
+/// Override the agent system prompt (empty string resets to the built-in
+/// default). Applies to new runs; the project directory line is always
+/// appended so sandbox awareness survives customization.
+#[tauri::command]
+pub async fn set_harness_system_prompt(
+    prompt: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    let trimmed = prompt.trim().to_string();
+    config.harness_system_prompt = if trimmed.is_empty() { None } else { Some(trimmed) };
+    config.save().map_err(|e| e.to_string())
+}
+
 /// Assign harness model roles (paths of installed models, or None for the
 /// server default). Takes effect when a run starts in router mode.
 #[tauri::command]
@@ -720,12 +734,21 @@ pub async fn harness_agent_send(
     // Take the history out (never hold the mutex across the async loop).
     let mut history = std::mem::take(&mut *state.harness.history.lock().unwrap());
     if !history.iter().any(|m| m.role == "system") {
-        // Byte-stable per project → good prefix-cache behavior.
+        // Byte-stable per project → good prefix-cache behavior. A custom
+        // prompt from Settings replaces the built-in text, but the project
+        // directory line is always appended so sandbox awareness survives.
+        let base = {
+            let c = state.config.lock().unwrap();
+            c.harness_system_prompt
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(system_prompt)
+        };
         history.insert(
             0,
             ChatMessage::system(format!(
                 "{}\n\nProject directory: {}{}",
-                system_prompt(),
+                base,
                 root.display(),
                 harness::skills::system_prompt_listing(&skills)
             )),

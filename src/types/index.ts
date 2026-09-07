@@ -298,6 +298,8 @@ export interface AppConfig {
   harness_max_turns: number;
   /** Turn budget for each ephemeral subagent run. */
   harness_subagent_max_turns: number;
+  /** Custom system prompt override for the agent harness (null = built-in). */
+  harness_system_prompt: string | null;
   /** Model roles (requires router mode): which model plans vs. executes. */
   harness_roles: { orchestrator: string | null; worker: string | null };
   /** Chat projects: contained working directories shown in the Chat sidebar. */

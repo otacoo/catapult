@@ -14,7 +14,6 @@ import {
   ArrowUp,
   Brain,
   Check,
-  CircleHelp,
   Copy,
   Eye,
   FileWarning,
@@ -85,6 +84,8 @@ type Item =
       tokens?: number;
       reasoning?: string;
       attachments?: string[];
+      /** Local-only entries (/help) — never in backend history. */
+      local?: boolean;
     }
   | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string } }
   | {
@@ -520,7 +521,7 @@ function ToolCard({ tool, args, output }: {
 // ── Slash commands (handled locally, never sent to the model) ──────────────
 
 const SLASH_COMMANDS: { name: string; hint: string }[] = [
-  { name: "/help", hint: "Show this list" },
+  { name: "/help", hint: "List chat commands" },
   { name: "/new", hint: "Start a new conversation" },
 ];
 
@@ -698,7 +699,6 @@ function HarnessChat() {
   const [slotCtx, setSlotCtx] = useState<{ used?: number | null; total?: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [showHelp, setShowHelp] = useState(false);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   // Run status shown under the input: the model is warming up/loading vs. the
   // agent is actively reasoning over the request.
@@ -825,12 +825,22 @@ function HarnessChat() {
       const cmd = text.split(/\s+/)[0].toLowerCase();
       if (cmd === "/help") {
         setInput("");
-        setShowHelp(true);
+        setItems((prev) => [
+          ...prev,
+          {
+            kind: "msg",
+            role: "assistant",
+            content:
+              "Chat commands:\n" +
+              SLASH_COMMANDS.map((c) => `- ${c.name} — ${c.hint}`).join("\n"),
+            time: Date.now(),
+            local: true,
+          } as Item,
+        ]);
         return;
       }
       if (cmd === "/new" || cmd === "/reset" || cmd === "/clear") {
         setInput("");
-        setShowHelp(false);
         await newChat();
         return;
       }
@@ -1055,10 +1065,11 @@ function HarnessChat() {
   };
 
   // Delete = rewind: drop the response and the user turn that produced it.
+  // Local-only bubbles (/help) are skipped — they are not backend history.
   const lastAssistantIdx = (() => {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "msg" && it.role === "assistant") return i;
+      if (it.kind === "msg" && it.role === "assistant" && !it.local) return i;
     }
     return -1;
   })();
@@ -1113,13 +1124,6 @@ function HarnessChat() {
           </button>
           <button
             className="text-xs text-gray-500 hover:text-gray-300"
-            onClick={() => setShowHelp((v) => !v)}
-            title="Chat commands (/help)"
-          >
-            <CircleHelp size={13} />
-          </button>
-          <button
-            className="text-xs text-gray-500 hover:text-gray-300"
             onClick={newChat}
             disabled={streaming}
             title="Start a new conversation"
@@ -1127,22 +1131,6 @@ function HarnessChat() {
             New chat
           </button>
         </div>
-
-        {showHelp && (
-          <div className="border-b border-border bg-surface-1 px-4 py-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
-              Chat commands
-            </p>
-            <div className="space-y-1">
-              {SLASH_COMMANDS.map((c) => (
-                <div key={c.name} className="flex items-baseline gap-2 text-xs">
-                  <code className="font-mono text-primary-light shrink-0">{c.name}</code>
-                  <span className="text-gray-500">{c.hint}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* Availability banners */}
         {!serverRunning && (

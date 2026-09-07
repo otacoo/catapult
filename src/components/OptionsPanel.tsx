@@ -161,6 +161,19 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  // Local draft so typing doesn't hammer config writes; null = pristine.
+  const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  useEffect(() => {
+    if (open) setPromptDraft(null);
+  }, [open ]);
+
+  const setSystemPrompt = async (prompt: string | null) => {
+    setAppConfig((c) => (c ? { ...c, harness_system_prompt: prompt } : c));
+    try {
+      await invoke("set_harness_system_prompt", { prompt: prompt ?? "" });
+    } catch {}
+  };
+
   const generalCard = (
     <div className="card">
       <h2 className="section-title mb-1">General</h2>
@@ -228,6 +241,57 @@ export default function OptionsPanel({ open, onClose }: {
         </label>
       </div>
       <RolePickers appConfig={appConfig} onSet={setRoles} />
+    </div>
+  );
+
+  const storedPrompt = appConfig?.harness_system_prompt ?? "";
+  const promptDirty =
+    promptDraft !== null && promptDraft.trim() !== storedPrompt.trim();
+
+  const systemPromptCard = (
+    <div className="card">
+      <h2 className="section-title mb-1">System prompt</h2>
+      <p className="section-desc">
+        Override the agent's system prompt. Empty restores the built-in default.
+        The project directory line is always appended, so sandbox awareness survives customization.
+      </p>
+      <textarea
+        className="input w-full mt-3 font-mono text-xs leading-relaxed"
+        rows={8}
+        placeholder="Leave empty to use the built-in default…"
+        value={promptDraft ?? storedPrompt}
+        onChange={(e) => setPromptDraft(e.target.value)}
+      />
+      <div className="flex items-center gap-2 mt-2">
+        <button
+          className="btn-primary text-xs"
+          disabled={!promptDirty}
+          onClick={() => {
+            const v = (promptDraft ?? "").trim();
+            setSystemPrompt(v === "" ? null : v);
+            setPromptDraft(null);
+          }}
+        >
+          Save
+        </button>
+        {storedPrompt !== "" && (
+          <button
+            className="btn-secondary text-xs"
+            onClick={() => {
+              setSystemPrompt(null);
+              setPromptDraft(null);
+            }}
+          >
+            Reset to default
+          </button>
+        )}
+        {!promptDirty && storedPrompt !== "" && (
+          <span className="text-[11px] text-gray-500">Custom prompt active</span>
+        )}
+        {!promptDirty && storedPrompt === "" && (
+          <span className="text-[11px] text-gray-500">Using built-in default</span>
+        )}
+      </div>
     </div>
   );
 
@@ -312,6 +376,7 @@ export default function OptionsPanel({ open, onClose }: {
               {/* Harness-specific options are inert while the harness is off. */}
               <div className={appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}>
                 {agentCard}
+                {systemPromptCard}
               </div>
             </>
           )}

@@ -181,6 +181,10 @@ pub struct AppConfig {
     /// Turn budget for each ephemeral subagent run.
     #[serde(default = "default_harness_subagent_max_turns")]
     pub harness_subagent_max_turns: u32,
+    /// Custom system prompt override for the agent harness. None = built-in
+    /// default (recommended: keeps the OS/shell guidance intact).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_system_prompt: Option<String>,
     /// Model roles: which model plans (orchestrator) and which executes
     /// (worker subagents). Requires router mode.
     #[serde(default)]
