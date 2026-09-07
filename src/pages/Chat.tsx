@@ -395,6 +395,26 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   );
 }
 
+// ── Copy button with "Copied" feedback (user messages, errors) ─────────────
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
+      onClick={() => {
+        navigator.clipboard.writeText(text).catch(() => {});
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      title={`Copy ${label.toLowerCase()}`}
+    >
+      {copied ? <Check size={10} /> : <Copy size={10} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 // ── Response footer (model, tok/s, time, tokens, copy, delete) ──────────────
 
 function ResponseFooter({ model, tokps, elapsedMs, tokens, onCopy, onDelete }: {
@@ -991,13 +1011,7 @@ function HarnessChat() {
                       />
                     ) : (
                       <div className="flex items-center justify-end mt-1 px-1 text-[10px] text-gray-600">
-                        <button
-                          className="inline-flex items-center gap-1 hover:text-gray-300 transition-colors"
-                          onClick={() => navigator.clipboard.writeText(it.content).catch(() => {})}
-                          title="Copy message"
-                        >
-                          <Copy size={10} /> Copy
-                        </button>
+                        <CopyButton text={it.content} label="Copy" />
                       </div>
                     )}
                   </div>
@@ -1087,8 +1101,15 @@ function HarnessChat() {
         </div>
 
           {error && (
-            <div className="px-6 pb-2">
-              <p className="text-xs text-accent-red break-words">{error}</p>
+            <div className="px-6 pb-2 flex items-start gap-2">
+              <p className="flex-1 text-xs text-accent-red break-words select-text">{error}</p>
+              <button
+                className="shrink-0 inline-flex items-center gap-1 text-[10px] text-gray-600 hover:text-gray-300 transition-colors"
+                onClick={() => navigator.clipboard.writeText(error).catch(() => {})}
+                title="Copy error"
+              >
+                <Copy size={10} /> Copy
+              </button>
             </div>
           )}
 

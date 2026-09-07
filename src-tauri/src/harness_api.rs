@@ -410,19 +410,36 @@ async fn resolve_roles(
         );
     }
 
-    // Regenerate the preset so role models are registered, then reload.
+    // A role path that no longer exists on disk can never register — fail
+    // with the concrete path instead of the generic restart hint.
+    if let Some(p) = roles.orchestrator.as_deref() {
+        if !std::path::Path::new(p).is_file() {
+            return Err(format!(
+                "Orchestrator model file not found: {p} — pick another model in Settings → Chat"
+            ));
+        }
+    }
+
+    // Regenerate the preset so role models are registered, then reload. The
+    // registry keeps every installed model (same as server start) so a reload
+    // never evicts models the user loaded via the WebUI.
     let dir = dirs::data_dir()
         .ok_or("Cannot find data directory")?
         .join("catapult");
     let worker_path = roles.worker.clone();
-    let mut paths: Vec<String> = state.config.lock().unwrap().router_models.clone();
+    let app_config = state.config.lock().unwrap().clone();
+    let mut paths: Vec<String> = app_config.router_models.clone();
+    if let Ok(installed) = crate::models::list_installed_models(&app_config) {
+        paths.extend(installed.iter().map(|m| m.path.to_string_lossy().to_string()));
+    }
     paths.extend(roles.orchestrator.clone());
     paths.extend(worker_path.clone());
     let _preset = crate::server::write_router_preset_paths(&dir, &paths).map_err(|e| e.to_string())?;
     client.router_reload().await.map_err(|e| e.to_string())?;
 
-    // Map role paths → registered ids (section name = file stem).
-    let models = client.router_models().await.map_err(|e| e.to_string())?;
+    // Map role paths → registered ids (section name = file stem). The reload
+    // applies asynchronously, so poll briefly for the expected id instead of
+    // querying once and failing on a stale list.
     let stem = |p: &str| {
         std::path::Path::new(p)
             .file_stem()
@@ -430,6 +447,22 @@ async fn resolve_roles(
             .unwrap_or("")
             .to_string()
     };
+    let expected_orch = roles.orchestrator.as_deref().map(stem);
+    let expected_worker = worker_path.as_deref().map(stem);
+    let mut models = client.router_models().await.map_err(|e| e.to_string())?;
+    for _ in 0..10 {
+        let have_orch = expected_orch.as_ref().map_or(true, |want| {
+            models.iter().any(|m| &m.id == want)
+        });
+        let have_worker = expected_worker.as_ref().map_or(true, |want| {
+            models.iter().any(|m| &m.id == want)
+        });
+        if have_orch && have_worker {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        models = client.router_models().await.map_err(|e| e.to_string())?;
+    }
     let find_id = |wanted: Option<&str>| -> Option<String> {
         let s = stem(wanted?);
         models.iter().find(|m| m.id == s).map(|m| m.id.clone())
@@ -438,9 +471,10 @@ async fn resolve_roles(
     let worker_id = worker_path.as_deref().and_then(|w| find_id(Some(w)));
 
     if roles.orchestrator.is_some() && orchestrator_id.is_none() {
-        return Err(format!(
-            "Orchestrator model could not be registered with the router — restart the server so the models-preset regenerates"
-        ));
+        return Err(
+            "Orchestrator model is not in the router registry even after reload — restart the server"
+                .to_string(),
+        );
     }
 
     // Load the orchestrator eagerly. The worker loads lazily when the first
