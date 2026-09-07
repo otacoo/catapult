@@ -1137,6 +1137,7 @@ pub fn run() {
             harness_api::set_harness_max_turns,
             harness_api::set_harness_roles,
             harness_api::harness_agent_capabilities,
+            harness_api::harness_reasoning_options,
             attachments::harness_read_attachment,
             harness_api::harness_sessions_list,
             harness_api::harness_session_load,

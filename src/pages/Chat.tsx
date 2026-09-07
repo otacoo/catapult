@@ -95,14 +95,15 @@ type Item =
       resolved?: "denied" | "once" | "session";
     };
 
-const REASONING_OPTIONS = [
-  { value: "", label: "Default" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "max", label: "Max" },
-  { value: "xhigh", label: "X-High" },
-] as const;
+const EFFORT_LABELS: Record<string, string> = {
+  none: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  max: "Max",
+  xhigh: "X-High",
+};
 
 const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
 const REHYPE_PLUGINS = [rehypeKatex];
@@ -537,6 +538,10 @@ function HarnessChat() {
   const [reasoningText, setReasoningText] = useState<string | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState("");
+  // Reasoning support comes from the model's own chat template (levels only
+  // the server accepts — sending anything else 500s). The control stays
+  // hidden for non-reasoning models.
+  const [reasoningOpts, setReasoningOpts] = useState<{ supported: boolean; levels: string[] } | null>(null);
   const [caps, setCaps] = useState<HarnessCapabilities | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [contextUsed, setContextUsed] = useState<number | null>(null);
@@ -564,6 +569,9 @@ function HarnessChat() {
     };
     invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
     invoke<HarnessCapabilities>("harness_agent_capabilities").then(setCaps).catch(() => {});
+    invoke<{ supported: boolean; levels: string[] }>("harness_reasoning_options")
+      .then(setReasoningOpts)
+      .catch(() => {});
     refreshActiveProject();
     // The transcript lives in the backend — restore it so chats are
     // consultable even when the server is stopped.
@@ -1157,7 +1165,9 @@ function HarnessChat() {
                 }
               }}
             />
-            {/* Capability badges + reasoning effort, stacked next to Send */}
+            {/* Capability badges + reasoning effort, stacked next to Send.
+                The effort control only appears for reasoning models, and only
+                offers levels the active model's template accepts. */}
             <div className="flex flex-col items-center gap-1 shrink-0 pb-0.5">
               <div className="flex items-center gap-1.5 h-4" title="Model capabilities">
                 {caps?.vision && (
@@ -1171,19 +1181,22 @@ function HarnessChat() {
                   </span>
                 )}
               </div>
-              <select
-                className="input py-1 px-1 text-[10px] w-20"
-                value={reasoningEffort}
-                onChange={(e) => setReasoningEffort(e.target.value)}
-                title="Reasoning effort (depends on model support)"
-                disabled={streaming}
-              >
-                {REASONING_OPTIONS.map((o) => (
-                  <option key={o.value || "default"} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+              {reasoningOpts?.supported && reasoningOpts.levels.length > 0 && (
+                <select
+                  className="input py-1 px-1 text-[10px] w-20"
+                  value={reasoningOpts.levels.includes(reasoningEffort) || reasoningEffort === "" ? reasoningEffort : ""}
+                  onChange={(e) => setReasoningEffort(e.target.value)}
+                  title="Reasoning effort (levels from the model's chat template)"
+                  disabled={streaming}
+                >
+                  <option value="">Default</option>
+                  {reasoningOpts.levels.map((level) => (
+                    <option key={level} value={level}>
+                      {EFFORT_LABELS[level] ?? level}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             {streaming ? (
               <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">

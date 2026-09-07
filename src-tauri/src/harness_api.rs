@@ -696,21 +696,46 @@ pub struct HarnessCapabilities {
     pub context_length: Option<u64>,
 }
 
+/// Path of the model chat should target: orchestrator role, else the single
+/// loaded model. `None` when neither is set (router mode with no registered
+/// default).
+fn active_model_path(state: &AppState) -> Option<String> {
+    let config = state.config.lock().unwrap();
+    if let Some(role) = config.harness_roles.orchestrator.clone() {
+        return Some(role);
+    }
+    let server = state.server.lock().unwrap();
+    server
+        .config
+        .as_ref()
+        .filter(|cfg| !cfg.model_path.is_empty())
+        .map(|cfg| cfg.model_path.clone())
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReasoningOptions {
+    /// Whether the active model reasons at all (tag, template, or effort knobs).
+    pub supported: bool,
+    /// `reasoning_effort` ids the chat template accepts, in template order.
+    /// Empty when no levels could be parsed — the UI must then not offer any.
+    pub levels: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn harness_reasoning_options(state: State<'_, AppState>) -> Result<ReasoningOptions, String> {
+    let Some(path) = active_model_path(&state) else {
+        return Ok(ReasoningOptions { supported: false, levels: vec![] });
+    };
+    let (supported, levels) = crate::models::read_model_metadata(std::path::Path::new(&path))
+        .map(|m| crate::models::reasoning_support(&m))
+        .unwrap_or((false, vec![]));
+    Ok(ReasoningOptions { supported, levels })
+}
+
 #[tauri::command]
 pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<HarnessCapabilities, String> {
     // Prefer the orchestrator role model; fall back to the single loaded model.
-    let path = {
-        let c = state.config.lock().unwrap();
-        let role = c.harness_roles.orchestrator.clone();
-        let single = {
-            let s = state.server.lock().unwrap();
-            s.config
-                .as_ref()
-                .filter(|cfg| !cfg.model_path.is_empty())
-                .map(|cfg| cfg.model_path.clone())
-        };
-        role.or(single)
-    };
+    let path = active_model_path(&state);
     let Some(path) = path else {
         return Ok(HarnessCapabilities { vision: false, reasoning: false, context_length: None });
     };
@@ -720,9 +745,16 @@ pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<Ha
             .map(|m| m.capabilities.iter().any(|c| c.eq_ignore_ascii_case(want)))
             .unwrap_or(false)
     };
+    // Same template-aware detection as the reason-command above: a template
+    // driving reasoning behavior counts even without a capability string.
+    let reasoning = has_cap("reasoning")
+        || meta
+            .as_ref()
+            .map(|m| crate::models::reasoning_support(m).0)
+            .unwrap_or(false);
     Ok(HarnessCapabilities {
         vision: has_cap("vision"),
-        reasoning: has_cap("reasoning"),
+        reasoning,
         context_length: meta.as_ref().and_then(|m| m.context_length),
     })
 }
