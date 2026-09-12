@@ -959,19 +959,58 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     (args, notes)
 }
 
+/// One router-preset entry: a model path plus optional per-model server
+/// overrides (llama.cpp merges these over the router base args).
+#[derive(Debug, Clone, Default)]
+pub struct PresetEntry {
+    pub path: String,
+    pub ctx_size: Option<u32>,
+    pub n_gpu_layers: Option<i32>,
+}
+
 /// Generate a llama-server router-mode `--models-preset` INI registering the
 /// given model paths. Each section name is the model's file stem
 /// (`model = <path>` is the llama.cpp preset key form). Missing files are
 /// skipped; an empty result means no preset is needed.
 pub fn write_router_preset_paths(dir: &std::path::Path, paths: &[String]) -> Result<Option<PathBuf>> {
+    let entries: Vec<PresetEntry> = paths
+        .iter()
+        .map(|p| PresetEntry { path: p.clone(), ..Default::default() })
+        .collect();
+    write_router_preset_entries(dir, &entries)
+}
+
+/// Same as [`write_router_preset_paths`], with per-model server overrides.
+pub fn write_router_preset_entries(
+    dir: &std::path::Path,
+    entries: &[PresetEntry],
+) -> Result<Option<PathBuf>> {
     // Pins, installed-scan, and roles can repeat the same file — without this
     // the router would register `Model`, `Model-2`, `Model-3` for one file.
-    let mut unique: Vec<&str> = paths.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
-    unique.sort_unstable();
-    unique.dedup();
+    // Overrides merge: the first explicit per-role value wins.
+    let mut unique: Vec<PresetEntry> = Vec::new();
+    for e in entries {
+        let path = e.path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        match unique.iter_mut().find(|u| u.path == path) {
+            Some(u) => {
+                u.ctx_size = u.ctx_size.or(e.ctx_size);
+                u.n_gpu_layers = u.n_gpu_layers.or(e.n_gpu_layers);
+            }
+            None => unique.push(PresetEntry {
+                path: path.to_string(),
+                ctx_size: e.ctx_size,
+                n_gpu_layers: e.n_gpu_layers,
+            }),
+        }
+    }
+    unique.sort_by(|a, b| a.path.cmp(&b.path));
     let mut ini = String::new();
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for path in unique {
+    for entry in &unique {
+        let path = entry.path.as_str();
         if path.is_empty() || !std::path::Path::new(path).is_file() {
             continue;
         }
@@ -987,12 +1026,20 @@ pub fn write_router_preset_paths(dir: &std::path::Path, paths: &[String]) -> Res
             name = format!("{}-{}", base, i);
         }
         ini.push_str(&format!("[{}]\nmodel = {}\n", name, path));
+        // Per-model server overrides (role configs); router base args cover
+        // everything else.
+        if let Some(c) = entry.ctx_size {
+            ini.push_str(&format!("ctx-size = {}\n", c));
+        }
+        if let Some(n) = entry.n_gpu_layers {
+            ini.push_str(&format!("n-gpu-layers = {}\n", n));
+        }
         // Attach a vision projector when one sits next to the model so
         // vision-capable roles work out of the box in router mode.
         if let Some(parent) = std::path::Path::new(path).parent() {
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.flatten() {
-                    let f = entry.path();
+            if let Ok(dir_entries) = std::fs::read_dir(parent) {
+                for dir_entry in dir_entries.flatten() {
+                    let f = dir_entry.path();
                     let fname = f.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
                     if fname.ends_with(".gguf") && fname.contains("mmproj") {
                         ini.push_str(&format!("mmproj = {}\n", f.display()));
@@ -1026,14 +1073,35 @@ pub fn write_router_preset(
         .join("catapult");
     std::fs::create_dir_all(&dir)?;
     // Register every installed model so the router (and the harness roles)
-    // can load any of them on demand — an unloaded entry is cheap.
-    let mut paths: Vec<String> = app_config.router_models.clone();
+    // can load any of them on demand — an unloaded entry is cheap. Role
+    // models carry their per-role server overrides.
+    let mut entries: Vec<PresetEntry> = app_config
+        .router_models
+        .iter()
+        .map(|p| PresetEntry { path: p.clone(), ..Default::default() })
+        .collect();
     if let Ok(installed) = crate::models::list_installed_models(app_config) {
-        paths.extend(installed.iter().map(|m| m.path.to_string_lossy().to_string()));
+        entries.extend(installed.iter().map(|m| PresetEntry {
+            path: m.path.to_string_lossy().to_string(),
+            ..Default::default()
+        }));
     }
-    paths.extend(app_config.harness_roles.orchestrator.clone());
-    paths.extend(app_config.harness_roles.worker.clone());
-    write_router_preset_paths(&dir, &paths)
+    let params = &app_config.harness_role_params;
+    if let Some(p) = app_config.harness_roles.orchestrator.clone() {
+        entries.push(PresetEntry {
+            path: p,
+            ctx_size: params.orchestrator.ctx_size,
+            n_gpu_layers: params.orchestrator.n_gpu_layers,
+        });
+    }
+    if let Some(p) = app_config.harness_roles.worker.clone() {
+        entries.push(PresetEntry {
+            path: p,
+            ctx_size: params.worker.ctx_size,
+            n_gpu_layers: params.worker.n_gpu_layers,
+        });
+    }
+    write_router_preset_entries(&dir, &entries)
 }
 
 /// Build a suggested config based on system info and model size
@@ -1479,6 +1547,31 @@ mod tests {
         assert!(content.contains("[alpha]"));
         assert!(!content.contains("[alpha-2]"));
         assert!(!content.contains("[alpha-3]"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn router_preset_emits_role_overrides() {
+        let dir = std::env::temp_dir().join(format!("catapult-router-overrides-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("worker.gguf");
+        std::fs::write(&a, b"x").unwrap();
+
+        let out = crate::server::write_router_preset_entries(
+            &dir,
+            &[crate::server::PresetEntry {
+                path: a.to_string_lossy().to_string(),
+                ctx_size: Some(32768),
+                n_gpu_layers: Some(20),
+            }],
+        )
+        .unwrap()
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("[worker]"));
+        assert!(content.contains("ctx-size = 32768"));
+        assert!(content.contains("n-gpu-layers = 20"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

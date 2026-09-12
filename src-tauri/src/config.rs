@@ -45,14 +45,35 @@ fn default_harness_max_turns() -> u32 { 40 }
 fn default_harness_subagent_max_turns() -> u32 { 25 }
 
 /// Model-role assignment for the agent harness. Both default to `None` (use
-/// the server's loaded model). Role models are only effective when
-/// llama-server runs in router mode (no single model on the Run page).
+/// the server's loaded model). A distinct worker model requires router mode
+/// (no single model on the Run page); an orchestrator alone also runs on a
+/// single-model server already serving that file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct HarnessRoles {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+}
+
+/// Per-model server settings for a harness role, written as overrides into
+/// the role's router-preset section (`ctx-size`, `n-gpu-layers`). `None`
+/// inherits the router/server default (auto-fit).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct RoleServerParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_gpu_layers: Option<i32>,
+}
+
+/// Server settings per harness role (orchestrator vs. worker).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HarnessRoleParams {
+    #[serde(default)]
+    pub orchestrator: RoleServerParams,
+    #[serde(default)]
+    pub worker: RoleServerParams,
 }
 
 /// A chat project: a contained working directory the agent is sandboxed to.
@@ -193,6 +214,9 @@ pub struct AppConfig {
     /// (worker subagents). Requires router mode.
     #[serde(default)]
     pub harness_roles: HarnessRoles,
+    /// Per-role server settings (context size / GPU layers overrides).
+    #[serde(default)]
+    pub harness_role_params: HarnessRoleParams,
     /// Chat projects: contained working directories shown in the Chat sidebar.
     #[serde(default)]
     pub harness_projects: Vec<HarnessProject>,
