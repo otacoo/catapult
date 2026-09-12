@@ -2,8 +2,8 @@
 //!
 //! Policy: read-only operations are auto-approved; mutating operations
 //! (`write_file`, `edit_file`, non-allowlisted shell commands) require a
-//! grant. Grants carry a scope with a TTL so trust decays over time (late's
-//! approval model). Scope rules:
+//! grant. Grants carry a scope with a TTL so trust decays over time.
+//! Scope rules:
 //!
 //! - `Once`  — single execution, consumed immediately (in-memory)
 //! - `Session` — in-memory, expires quickly (30 min), never persisted
@@ -53,7 +53,8 @@ impl Scope {
 }
 
 /// A granted approval. `command` must match the key exactly when present.
-/// `expires` is a Unix timestamp (None = single-use).
+/// `expires` is a Unix timestamp (None = single-use). `project` tags the
+/// project the grant was made in (None = global-scope or legacy in-memory).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
     pub tool: String,
@@ -62,6 +63,8 @@ pub struct Grant {
     pub scope: Scope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,10 +103,13 @@ impl PermissionEngine {
         grants.push(grant);
     }
 
-    /// Does an active grant cover this key? Read-only tools (empty command
-    /// head matches nothing here) are handled by the caller: only tools that
-    /// produce an `ApprovalKey` consult the engine.
-    pub fn check(&self, key: &ApprovalKey) -> Decision {
+    /// Does an active grant cover this key in this project? Read-only tools
+    /// (empty command head matches nothing here) are handled by the caller:
+    /// only tools that produce an `ApprovalKey` consult the engine.
+    /// `project` is the current project id (None when no project is active).
+    /// Global grants apply everywhere; anything else must match the project
+    /// it was made in, so trust never leaks across projects.
+    pub fn check(&self, key: &ApprovalKey, project: Option<&str>) -> Decision {
         let now = now_unix();
         let mut grants = self.grants.lock().unwrap();
         grants.retain(|g| g.expires.is_none_or(|e| e > now));
@@ -117,6 +123,11 @@ impl PermissionEngine {
                     (None, Some(_)) => true,
                     (Some(_), None) => false,
                     (None, None) => true,
+                }
+                && match (&g.project, project) {
+                    (None, _) => g.scope == Scope::Global,
+                    (Some(p), Some(cur)) => p == cur,
+                    (Some(_), None) => false,
                 }
         });
         match hit {
@@ -132,8 +143,8 @@ impl PermissionEngine {
     }
 
     /// Expire-check only (no consumption), used to display grant state.
-    pub fn has_grant(&self, key: &ApprovalKey) -> bool {
-        self.check(key) == Decision::Allowed
+    pub fn has_grant(&self, key: &ApprovalKey, project: Option<&str>) -> bool {
+        self.check(key, project) == Decision::Allowed
     }
 
     /// Grants that should be persisted with the project / global config.
@@ -152,6 +163,15 @@ impl PermissionEngine {
     pub fn load(&self, grants: Vec<Grant>) {
         self.grants.lock().unwrap().extend(grants);
     }
+
+    /// Drop in-memory grants tagged for `project` (used on project switch
+    /// after saving; global grants are kept).
+    pub fn evict_project(&self, project: &str) {
+        self.grants
+            .lock()
+            .unwrap()
+            .retain(|g| g.project.as_deref() != Some(project));
+    }
 }
 
 #[cfg(test)]
@@ -168,7 +188,7 @@ mod tests {
     #[test]
     fn no_grant_needs_approval() {
         let engine = PermissionEngine::new();
-        assert_eq!(engine.check(&key("write_file", None)), Decision::NeedsApproval);
+        assert_eq!(engine.check(&key("write_file", None), Some("p")), Decision::NeedsApproval);
     }
 
     #[test]
@@ -179,10 +199,11 @@ mod tests {
             command: None,
             scope: Scope::Once,
             expires: None,
+            project: Some("p".into()),
         });
-        assert_eq!(engine.check(&key("write_file", None)), Decision::Allowed);
+        assert_eq!(engine.check(&key("write_file", None), Some("p")), Decision::Allowed);
         // Consumed — next call needs approval again.
-        assert_eq!(engine.check(&key("write_file", None)), Decision::NeedsApproval);
+        assert_eq!(engine.check(&key("write_file", None), Some("p")), Decision::NeedsApproval);
     }
 
     #[test]
@@ -193,13 +214,39 @@ mod tests {
             command: Some("npm".into()),
             scope: Scope::Session,
             expires: None,
+            project: Some("p".into()),
         });
-        assert_eq!(engine.check(&key("exec", Some("npm"))), Decision::Allowed);
-        assert_eq!(engine.check(&key("exec", Some("npm"))), Decision::Allowed);
+        assert_eq!(engine.check(&key("exec", Some("npm")), Some("p")), Decision::Allowed);
+        assert_eq!(engine.check(&key("exec", Some("npm")), Some("p")), Decision::Allowed);
         // Different command head does not match.
-        assert_eq!(engine.check(&key("exec", Some("cargo"))), Decision::NeedsApproval);
+        assert_eq!(engine.check(&key("exec", Some("cargo")), Some("p")), Decision::NeedsApproval);
         // Grant for a specific command must not cover a bare key.
-        assert_eq!(engine.check(&key("exec", None)), Decision::NeedsApproval);
+        assert_eq!(engine.check(&key("exec", None), Some("p")), Decision::NeedsApproval);
+    }
+
+    #[test]
+    fn grants_do_not_leak_across_projects() {
+        let engine = PermissionEngine::new();
+        engine.grant(Grant {
+            tool: "write_file".into(),
+            command: None,
+            scope: Scope::Project,
+            expires: None,
+            project: Some("a".into()),
+        });
+        assert_eq!(engine.check(&key("write_file", None), Some("a")), Decision::Allowed);
+        assert_eq!(engine.check(&key("write_file", None), Some("b")), Decision::NeedsApproval);
+        assert_eq!(engine.check(&key("write_file", None), None), Decision::NeedsApproval);
+        // Global grants apply everywhere.
+        engine.grant(Grant {
+            tool: "exec".into(),
+            command: None,
+            scope: Scope::Global,
+            expires: None,
+            project: None,
+        });
+        assert_eq!(engine.check(&key("exec", None), Some("a")), Decision::Allowed);
+        assert_eq!(engine.check(&key("exec", None), Some("b")), Decision::Allowed);
     }
 
     #[test]
@@ -210,8 +257,9 @@ mod tests {
             command: None,
             scope: Scope::Project,
             expires: Some(now_unix() - 1),
+            project: Some("p".into()),
         });
-        assert_eq!(engine.check(&key("write_file", None)), Decision::NeedsApproval);
+        assert_eq!(engine.check(&key("write_file", None), Some("p")), Decision::NeedsApproval);
     }
 
     #[test]
@@ -223,6 +271,7 @@ mod tests {
                 command: Some(format!("{scope:?}")),
                 scope,
                 expires: None,
+                project: Some("p".into()),
             });
         }
         let persisted = engine.persistable();
@@ -238,7 +287,8 @@ mod tests {
             command: Some("NPM".into()),
             scope: Scope::Session,
             expires: None,
+            project: Some("p".into()),
         });
-        assert_eq!(engine.check(&key("exec", Some("npm"))), Decision::Allowed);
+        assert_eq!(engine.check(&key("exec", Some("npm")), Some("p")), Decision::Allowed);
     }
 }

@@ -165,6 +165,8 @@ pub enum Approved {
     Denied,
     Once,
     Session,
+    Project,
+    Global,
 }
 
 /// Request handed to the gate when a call needs a grant.
@@ -178,6 +180,9 @@ pub struct ApprovalRequest {
 /// (emit Tauri event → await oneshot from the approve command).
 pub trait ApprovalGate: Send + Sync {
     fn decide(&self, req: ApprovalRequest) -> Pin<Box<dyn Future<Output = Approved> + Send>>;
+    /// Called right after a persistable (project/global) grant lands so the
+    /// implementation can save it. Default is a no-op (test gates).
+    fn grants_changed(&self, _grants: &[crate::permissions::Grant]) {}
 }
 
 pub struct AgentRun<'a> {
@@ -185,6 +190,9 @@ pub struct AgentRun<'a> {
     pub registry: Arc<ToolRegistry>,
     pub engine: Arc<PermissionEngine>,
     pub model: Option<String>,
+    /// Project id grants are tagged with (None when no project is active).
+    /// Subagent runs inherit the parent's project.
+    pub project: Option<String>,
     /// Reasoning effort hint for reasoning-capable models
     /// ("low"|"medium"|"high"|"max"|"xhigh"; None = server default).
     pub reasoning_effort: Option<String>,
@@ -374,9 +382,10 @@ impl AgentRun<'_> {
             return format!("error: unknown tool '{tool_name}'");
         };
         // Permission check (read-only tools auto-allow).
+        let project = self.project.as_deref();
         let allowed = match tool.approval_key(args_value) {
             None => true,
-            Some(key) => match self.engine.check(&key) {
+            Some(key) => match self.engine.check(&key, project) {
                 Decision::Allowed => true,
                 Decision::NeedsApproval => match gate
                     .decide(ApprovalRequest {
@@ -393,15 +402,19 @@ impl AgentRun<'_> {
                             scope: match scope {
                                 Approved::Once => Scope::Once,
                                 Approved::Session => Scope::Session,
+                                Approved::Project => Scope::Project,
+                                Approved::Global => Scope::Global,
                                 Approved::Denied => unreachable!(),
                             },
                             expires: None,
+                            project: self.project.clone(),
                         });
+                        gate.grants_changed(&self.engine.persistable());
                         // Once-grants are consumed by check.
                         self.engine.check(&ApprovalKey {
                             tool: tool_name.to_string(),
                             command: None,
-                        }) == Decision::Allowed
+                        }, project) == Decision::Allowed
                     }
                 },
             },
@@ -560,6 +573,7 @@ impl AgentRun<'_> {
                 registry,
                 engine: self.engine.clone(),
                 model: sub.model.clone().or_else(|| self.model.clone()),
+                project: self.project.clone(),
                 reasoning_effort: self.reasoning_effort.clone(),
                 max_turns: sub.max_turns,
                 subagents: None, // no recursion: the strip above is belt-and-braces
