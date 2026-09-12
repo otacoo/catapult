@@ -43,11 +43,18 @@ pub struct GgufMeta {
     pub embedding_length: Option<u64>,
     pub attention_head_count: Option<u64>,
     pub attention_head_count_kv: Option<u64>,
+    /// `<arch>.expert_count` when present — model is MoE if > 0.
+    pub expert_count: Option<u64>,
     pub tags: Vec<String>,
     /// `general.capabilities` array when present (vision, reasoning, …)
     pub capabilities: Vec<String>,
-    /// `tokenizer.chat_template` when present (used for reasoning detection)
+    /// `tokenizer.chat_template` when present (reasoning + effort detection).
+    /// Stored in full — templates are a few KB and live in the parsed header.
     pub chat_template: Option<String>,
+    /// `reasoning_effort` values the chat template accepts, in template order.
+    /// Parsed from the template at read time; the server 500s on values it
+    /// does not list, so the UI must only offer these.
+    pub reasoning_effort_levels: Vec<String>,
     /// True when the model uses sliding-window attention (SWA layers, detected
     /// via the architecture or explicit SWA metadata keys). `--swa-full` only
     /// applies to these models.
@@ -171,7 +178,7 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                 } else if key == "general.size_label" {
                     meta.size_label = Some(val);
                 } else if key.starts_with("tokenizer.chat_template") {
-                    if meta.chat_template.is_none() && val.contains("<think>") {
+                    if meta.chat_template.is_none() {
                         meta.chat_template = Some(val);
                     }
                 }
@@ -190,6 +197,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val as u64);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val as u64);
+                } else if key.ends_with(".expert_count") {
+                    meta.expert_count = Some(val as u64);
                 } else if key.ends_with(".attention.slide_window")
                     || key.ends_with(".attention.swa_length")
                 {
@@ -210,6 +219,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val);
+                } else if key.ends_with(".expert_count") {
+                    meta.expert_count = Some(val);
                 } else if key.ends_with(".attention.slide_window")
                     || key.ends_with(".attention.swa_length")
                 {
@@ -258,6 +269,12 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
         if is_swa_arch(arch) {
             meta.is_swa = true;
         }
+    }
+
+    // Reasoning-effort levels the chat template accepts. The server 500s on
+    // anything it does not list, so this is the single source for the UI.
+    if let Some(template) = meta.chat_template.as_deref() {
+        meta.reasoning_effort_levels = parse_reasoning_effort_levels(template);
     }
 
     Some(meta)
@@ -609,6 +626,114 @@ fn is_reasoning_model(tags: &[String], capabilities: &[String], chat_template: O
         lower == "reasoning" || lower == "thinking"
     });
     tagged || chat_template.map_or(false, |t| t.to_lowercase().contains("<think>"))
+}
+
+/// Reasoning-effort ids llama.cpp chat templates may accept.
+///
+/// "none" is included: a template that explicitly compares against it (e.g.
+/// `reasoning_effort == 'none'`) really does accept it. The UI always keeps a
+/// separate "Default" option that omits the field (the OpenAI convention for
+/// server-default behavior).
+const EFFORT_IDS: &[&str] = &["minimal", "low", "medium", "high", "max", "xhigh", "none"];
+
+/// Words of a sentence that are effort ids, in order, deduped.
+fn effort_words_in(sentence: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in sentence.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let word = word.to_lowercase();
+        if EFFORT_IDS.contains(&word.as_str()) && !out.iter().any(|w| w == &word) {
+            out.push(word);
+        }
+    }
+    out
+}
+
+/// Extract the `reasoning_effort` values a chat template accepts, in template
+/// order, deduped.
+///
+/// Two shapes are handled:
+/// 1. An explicit sentence such as "Supported types are xhigh (default),
+///    medium, and low."
+/// 2. Direct comparisons on `reasoning_effort` lines (`== 'low'`,
+///    `in ['low', 'medium']`, …) — quoted literals only, so Jinja null checks
+///    like `reasoning_effort is none` never leak in as a fake level.
+pub(crate) fn parse_reasoning_effort_levels(template: &str) -> Vec<String> {
+    let lower = template.to_lowercase();
+
+    // 1) Explicit sentence. It ends at the string literal's close (`')`),
+    //    a `}}`, or a line break — never mid-sentence at a `(default)` paren.
+    for marker in ["supported types are", "supported values are", "supported efforts are"] {
+        if let Some(idx) = lower.find(marker) {
+            let rest = &lower[idx + marker.len()..];
+            let cut = rest
+                .find("')")
+                .or_else(|| rest.find("'}}"))
+                .or_else(|| rest.find('\n'))
+                .unwrap_or(rest.len().min(160));
+            let levels = effort_words_in(&rest[..cut]);
+            if !levels.is_empty() {
+                return levels;
+            }
+        }
+    }
+
+    // 2) Quoted literals on reasoning_effort lines.
+    let mut out: Vec<String> = Vec::new();
+    for line in template.lines() {
+        if !line.to_lowercase().contains("reasoning_effort") {
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let quote = chars[i];
+            if quote != '\'' && quote != '"' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            let mut token = String::new();
+            while j < chars.len() && chars[j] != quote {
+                token.push(chars[j]);
+                j += 1;
+            }
+            let token = token.to_lowercase();
+            if EFFORT_IDS.contains(&token.as_str()) && !out.iter().any(|w| w == &token) {
+                out.push(token);
+            }
+            i = j + 1;
+        }
+    }
+    out
+}
+
+/// Does the template drive reasoning behavior at all (effort knobs or an
+/// enable flag), even without `<think>` markers?
+fn template_drives_reasoning(template: Option<&str>) -> bool {
+    template.map_or(false, |t| {
+        let lower = t.to_lowercase();
+        lower.contains("reasoning_effort") || lower.contains("enable_thinking")
+    })
+}
+
+/// Reasoning support for the harness: tagged/capability flag, any think-style
+/// template markers, or parsed effort levels. Levels are (re)parsed from the
+/// template itself so the result is correct even for hand-built metadata.
+pub(crate) fn reasoning_support(meta: &GgufMeta) -> (bool, Vec<String>) {
+    let levels = if meta.reasoning_effort_levels.is_empty() {
+        meta.chat_template
+            .as_deref()
+            .map(parse_reasoning_effort_levels)
+            .unwrap_or_default()
+    } else {
+        meta.reasoning_effort_levels.clone()
+    };
+    let supported = is_reasoning_model(
+        &meta.tags,
+        &meta.capabilities,
+        meta.chat_template.as_deref(),
+    ) || template_drives_reasoning(meta.chat_template.as_deref()) || !levels.is_empty();
+    (supported, levels)
 }
 
 /// Detect mmproj from GGUF metadata: architecture == "clip"
@@ -1184,6 +1309,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reasoning_effort_levels_from_supported_sentence() {
+        // The shape that raised the original 500 (Qwen-style template).
+        let template = "{{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh (default), medium, and low.') }}";
+        assert_eq!(
+            parse_reasoning_effort_levels(template),
+            vec!["xhigh".to_string(), "medium".to_string(), "low".to_string()]
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_levels_from_comparisons() {
+        let template = "{%- if reasoning_effort == 'low' %}\n<think_low>\n{%- elif reasoning_effort == \"medium\" %}\n<think>\n{%- endif -%}";
+        assert_eq!(
+            parse_reasoning_effort_levels(template),
+            vec!["low".to_string(), "medium".to_string()]
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_ignores_jinja_null_checks() {
+        // `is none` tests an unset variable, not a usable level.
+        let template = "{%- if reasoning_effort is none %}\nplain\n{%- endif -%}";
+        assert!(parse_reasoning_effort_levels(template).is_empty());
+    }
+
+    #[test]
+    fn reasoning_effort_empty_without_markers() {
+        assert!(parse_reasoning_effort_levels("{{ message.content }}").is_empty());
+    }
+
+    #[test]
+    fn reasoning_support_flags() {
+        let mut meta = GgufMeta::default();
+        assert!(!reasoning_support(&meta).0);
+
+        meta.capabilities = vec!["reasoning".to_string()];
+        assert!(reasoning_support(&meta).0);
+
+        meta.capabilities.clear();
+        meta.chat_template = Some("{% if enable_thinking %}yes{% endif %}".to_string());
+        let (supported, levels) = reasoning_support(&meta);
+        assert!(supported);
+        assert!(levels.is_empty());
+
+        meta.chat_template = Some("Supported values are low, high.".to_string());
+        let (supported, levels) = reasoning_support(&meta);
+        assert!(supported);
+        assert_eq!(levels, vec!["low".to_string(), "high".to_string()]);
+    }
+
+    #[test]
     fn estimate_size_q4_7b() {
         let mb = estimate_size_mb(7, "Q4_K_M");
         // 7B * 4.5 bits/weight * 1e9 / 8 / 1024^2 ≈ 3755 MB
@@ -1244,6 +1420,70 @@ mod tests {
     fn gguf_parser_handles_missing_file() {
         let result = read_gguf_metadata(std::path::Path::new("/nonexistent/file.gguf"));
         assert!(result.is_none());
+    }
+
+    /// Minimal synthetic GGUF writer for parser unit tests: magic, version,
+    /// tensor count, KV count, then (key, type, value) entries.
+    fn write_test_gguf(path: &std::path::Path, kvs: &[(&str, u32, Vec<u8>)]) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+        for (key, vtype, val) in kvs {
+            buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key.as_bytes());
+            buf.extend_from_slice(&vtype.to_le_bytes());
+            buf.extend_from_slice(val);
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    fn gguf_str(s: &str) -> Vec<u8> {
+        let mut v = (s.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(s.as_bytes());
+        v
+    }
+
+    #[test]
+    fn gguf_parser_reads_expert_count() {
+        let dir = std::env::temp_dir().join("catapult_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("moe_test.gguf");
+        write_test_gguf(
+            &path,
+            &[
+                ("general.architecture", 8, gguf_str("qwen3moe")),
+                ("qwen3moe.block_count", 4, 48u32.to_le_bytes().to_vec()),
+                ("qwen3moe.expert_count", 4, 128u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        let meta = read_gguf_metadata(&path).expect("should parse synthetic GGUF");
+        assert_eq!(meta.architecture.as_deref(), Some("qwen3moe"));
+        assert_eq!(meta.block_count, Some(48));
+        assert_eq!(meta.expert_count, Some(128));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn gguf_parser_no_expert_count_defaults_none() {
+        let dir = std::env::temp_dir().join("catapult_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dense_test.gguf");
+        write_test_gguf(
+            &path,
+            &[
+                ("general.architecture", 8, gguf_str("llama")),
+                ("llama.block_count", 4, 32u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        let meta = read_gguf_metadata(&path).expect("should parse synthetic GGUF");
+        assert_eq!(meta.expert_count, None);
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

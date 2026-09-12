@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+pub mod attachments;
+pub mod harness_api;
 pub mod tray;
 
 // ── App State ────────────────────────────────────────────────────────────────
@@ -31,6 +33,12 @@ pub struct AppState {
     /// (keep partial file for resume). Set by `pause_download` / `cancel_download`
     /// and polled by the download loop between stream chunks.
     pub downloads: Mutex<HashMap<String, Arc<AtomicU8>>>,
+    /// Cooperative abort flag for the harness agent loop. Set by
+    /// `harness_agent_abort`, polled between stream chunks and tool calls.
+    pub harness_abort: Arc<std::sync::atomic::AtomicBool>,
+    /// Agent harness runtime: session history, permission engine, approval
+    /// channel (see `harness_api`).
+    pub harness: Arc<harness_api::HarnessRuntime>,
 }
 
 // ── Hardware commands ─────────────────────────────────────────────────────────
@@ -291,6 +299,13 @@ async fn set_router_models(paths: Vec<String>, state: State<'_, AppState>) -> Re
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .collect();
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_harness_chat(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.harness_chat = enabled;
     config.save().map_err(|e| e.to_string())
 }
 
@@ -918,13 +933,18 @@ async fn save_mcp_servers(
 ) -> Result<(), String> {
     mcp::save(&servers).map_err(|e| e.to_string())?;
     // App-side enabled toggles live in AppConfig; mcp.json stays Cursor-compatible.
-    let mut config = state.config.lock().unwrap();
-    config.mcp_disabled = servers
-        .iter()
-        .filter(|s| !s.enabled)
-        .map(|s| s.name.clone())
-        .collect();
-    config.save().map_err(|e| e.to_string())
+    {
+        let mut config = state.config.lock().unwrap();
+        config.mcp_disabled = servers
+            .iter()
+            .filter(|s| !s.enabled)
+            .map(|s| s.name.clone())
+            .collect();
+        config.save().map_err(|e| e.to_string())?;
+    }
+    // Cached MCP sessions must reconnect with the new config.
+    harness_api::invalidate_mcp(&state);
+    Ok(())
 }
 
 // ── Server config presets ────────────────────────────────────────────────────
@@ -1052,6 +1072,8 @@ pub fn run() {
             server: server::new_server_state(),
             http_client,
             downloads: Mutex::new(HashMap::new()),
+            harness_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            harness: Arc::new(harness_api::HarnessRuntime::new()),
         })
         .invoke_handler(tauri::generate_handler![
             // Hardware
@@ -1073,6 +1095,7 @@ pub fn run() {
             set_close_to_tray,
             set_enable_quick_bench,
             set_router_models,
+            set_harness_chat,
             get_available_backends,
             // Models
             list_installed_models,
@@ -1103,6 +1126,31 @@ pub fn run() {
             run_quick_benchmark,
             list_bench_results,
             clear_bench_results,
+            // Harness
+            harness_api::harness_agent_send,
+            harness_api::harness_agent_abort,
+            harness_api::harness_agent_decide,
+            harness_api::harness_agent_reset,
+            harness_api::harness_agent_rewind,
+            harness_api::harness_agent_history,
+            harness_api::harness_agent_tools,
+            harness_api::harness_context_stats,
+            harness_api::set_harness_max_turns,
+            harness_api::set_harness_system_prompt,
+            harness_api::set_harness_roles,
+            harness_api::harness_agent_capabilities,
+            harness_api::harness_reasoning_options,
+            attachments::harness_read_attachment,
+            harness_api::harness_sessions_list,
+            harness_api::harness_session_load,
+            harness_api::harness_session_delete,
+            harness_api::harness_project_add,
+            harness_api::harness_project_remove,
+            harness_api::harness_project_active,
+            harness_api::harness_git_is_repo,
+            harness_api::harness_worktree_list,
+            harness_api::harness_worktree_add,
+            harness_api::harness_worktree_remove,
             suggest_server_config,
             estimate_model_memory,
             // Config

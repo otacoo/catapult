@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::config::AppConfig;
-use crate::hardware::{suggest_config_with_layers, SystemInfo};
+use crate::hardware::SystemInfo;
 
 /// File tools offered across llama.cpp builds. Some builds add extra tools
 /// (apply_diff, get_datetime) which we don't offer — enabling an unknown tool
@@ -960,24 +960,18 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
 }
 
 /// Generate a llama-server router-mode `--models-preset` INI registering the
-/// app-pinned router models. Only used when starting with no single model
-/// selected; each section name is the model's file stem (`model = <path>` is
-/// the llama.cpp preset key form).
-pub fn write_router_preset(
-    config: &ServerConfig,
-    app_config: &AppConfig,
-) -> Result<Option<PathBuf>> {
-    if !config.model_path.is_empty() || app_config.router_models.is_empty() {
-        return Ok(None);
-    }
-    let dir = dirs::data_dir()
-        .context("Cannot find data directory")?
-        .join("catapult");
-    std::fs::create_dir_all(&dir)?;
+/// given model paths. Each section name is the model's file stem
+/// (`model = <path>` is the llama.cpp preset key form). Missing files are
+/// skipped; an empty result means no preset is needed.
+pub fn write_router_preset_paths(dir: &std::path::Path, paths: &[String]) -> Result<Option<PathBuf>> {
+    // Pins, installed-scan, and roles can repeat the same file — without this
+    // the router would register `Model`, `Model-2`, `Model-3` for one file.
+    let mut unique: Vec<&str> = paths.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+    unique.sort_unstable();
+    unique.dedup();
     let mut ini = String::new();
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for raw in &app_config.router_models {
-        let path = raw.trim();
+    for path in unique {
         if path.is_empty() || !std::path::Path::new(path).is_file() {
             continue;
         }
@@ -992,14 +986,54 @@ pub fn write_router_preset(
             i += 1;
             name = format!("{}-{}", base, i);
         }
-        ini.push_str(&format!("[{}]\nmodel = {}\n\n", name, path));
+        ini.push_str(&format!("[{}]\nmodel = {}\n", name, path));
+        // Attach a vision projector when one sits next to the model so
+        // vision-capable roles work out of the box in router mode.
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let f = entry.path();
+                    let fname = f.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+                    if fname.ends_with(".gguf") && fname.contains("mmproj") {
+                        ini.push_str(&format!("mmproj = {}\n", f.display()));
+                        break;
+                    }
+                }
+            }
+        }
+        ini.push('\n');
     }
     if ini.is_empty() {
         return Ok(None);
     }
+    std::fs::create_dir_all(dir)?;
     let path = dir.join("router_models.ini");
     std::fs::write(&path, ini)?;
     Ok(Some(path))
+}
+
+/// Project preset for router mode: the Run-page pinned models plus any
+/// harness role models, written into the app data directory.
+pub fn write_router_preset(
+    config: &ServerConfig,
+    app_config: &AppConfig,
+) -> Result<Option<PathBuf>> {
+    if !config.model_path.is_empty() {
+        return Ok(None);
+    }
+    let dir = dirs::data_dir()
+        .context("Cannot find data directory")?
+        .join("catapult");
+    std::fs::create_dir_all(&dir)?;
+    // Register every installed model so the router (and the harness roles)
+    // can load any of them on demand — an unloaded entry is cheap.
+    let mut paths: Vec<String> = app_config.router_models.clone();
+    if let Ok(installed) = crate::models::list_installed_models(app_config) {
+        paths.extend(installed.iter().map(|m| m.path.to_string_lossy().to_string()));
+    }
+    paths.extend(app_config.harness_roles.orchestrator.clone());
+    paths.extend(app_config.harness_roles.worker.clone());
+    write_router_preset_paths(&dir, &paths)
 }
 
 /// Build a suggested config based on system info and model size
@@ -1008,59 +1042,34 @@ pub fn suggest_server_config(
     model_size_mb: u64,
     system: &SystemInfo,
 ) -> ServerConfig {
-    // Read model architecture from the GGUF header when available
+    // Study the actual model header — layer count, KV dims, native context
+    // and MoE-ness all drive the fit — then run one coherent estimation.
     let meta = crate::models::read_model_metadata(std::path::Path::new(model_path));
-    let layers = meta.as_ref().and_then(|m| m.block_count).map(|l| l as u32);
-    let suggestion = suggest_config_with_layers(model_size_mb, layers, system);
-
-    let cache_type_k = if suggestion.can_fit_fully_in_vram || suggestion.total_usable_mb > 8192 {
-        "f16".to_string()
-    } else {
-        "q8_0".to_string() // Save memory
+    let spec = crate::hardware::ModelSpec {
+        size_mb: model_size_mb,
+        layers: meta.as_ref().and_then(|m| m.block_count).unwrap_or(32),
+        embedding_length: meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096),
+        attention_head_count: meta.as_ref().and_then(|m| m.attention_head_count).unwrap_or(32),
+        attention_head_count_kv: meta
+            .as_ref()
+            .and_then(|m| m.attention_head_count_kv)
+            .or_else(|| meta.as_ref().and_then(|m| m.attention_head_count))
+            .unwrap_or(32),
+        context_length: meta.as_ref().and_then(|m| m.context_length),
+        expert_count: meta.as_ref().and_then(|m| m.expert_count),
     };
-
-    // When the model doesn't fully fit in VRAM, pick the largest context that
-    // fits in the VRAM left over after the offloaded weights (KV cache lives
-    // on the GPU when offloading). Clamped to [4096, model context].
-    let n_ctx = if suggestion.can_fit_fully_in_vram || suggestion.n_gpu_layers <= 0 {
-        suggestion.n_ctx
-    } else {
-        let embd = meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096);
-        let model_ctx = meta.as_ref().and_then(|m| m.context_length).unwrap_or(131072);
-        let gqa_factor = match (meta.as_ref().and_then(|m| m.attention_head_count),
-                                meta.as_ref().and_then(|m| m.attention_head_count_kv)) {
-            (Some(heads), Some(kv_heads)) if heads > 0 => kv_heads as f64 / heads as f64,
-            _ => 1.0,
-        };
-        let kv_embd = (embd as f64 * gqa_factor).max(1.0) as u64;
-        let layers_u64 = layers.map(|l| l as u64).unwrap_or(32);
-        let kv_bytes_per_tok = crate::hardware::kv_bytes_per_token(layers_u64, kv_embd, &cache_type_k, "f16");
-
-        let vram_total_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
-        // VRAM taken by offloaded weights (proportional to offload layers) + 512 MiB overhead + 1024 MiB margin
-        let offload_ratio = suggestion.n_gpu_layers as f64 / layers_u64.max(1) as f64;
-        let model_in_vram_mb = (model_size_mb as f64 * offload_ratio) as u64;
-        let free_vram_mb = vram_total_mb.saturating_sub(model_in_vram_mb + 512 + 1024);
-
-        let fitted = if kv_bytes_per_tok > 0 {
-            let max_ctx = free_vram_mb * 1024 * 1024 / kv_bytes_per_tok;
-            (max_ctx.clamp(4096, model_ctx) & !511) as u32
-        } else {
-            0
-        };
-        fitted
-    };
+    let full = crate::hardware::suggest_full(&spec, system);
 
     ServerConfig {
         model_path: model_path.to_string(),
-        n_ctx,
-        n_gpu_layers: suggestion.n_gpu_layers,
-        n_threads: suggestion.n_threads,
-        n_batch: suggestion.n_batch.unwrap_or(512),
-        n_ubatch: suggestion.n_ubatch.unwrap_or(512),
+        n_ctx: full.n_ctx,
+        n_gpu_layers: full.n_gpu_layers,
+        n_threads: Some(full.n_threads),
+        n_batch: full.n_batch,
+        n_ubatch: full.n_ubatch,
         flash_attn: "auto".to_string(),
-        cache_type_k,
-        cache_type_v: "f16".to_string(),
+        cache_type_k: full.cache_type_k,
+        cache_type_v: full.cache_type_v,
         ..ServerConfig::default()
     }
 }
@@ -1418,6 +1427,59 @@ mod tests {
             sanitize_tools("read_file,write_file"),
             Some("read_file,write_file".to_string())
         );
+    }
+
+    #[test]
+    fn router_preset_ini_shape_and_dedup() {
+        let dir = std::env::temp_dir().join(format!("catapult-router-preset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("alpha.gguf");
+        let b = dir.join("beta").join("alpha.gguf");
+        std::fs::create_dir_all(b.parent().unwrap()).unwrap();
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+
+        let out = crate::server::write_router_preset_paths(
+            &dir,
+            &[
+                "/nonexistent/model.gguf".to_string(),
+                a.to_string_lossy().to_string(),
+                b.to_string_lossy().to_string(),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(out.file_name().unwrap(), "router_models.ini");
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("[alpha]"));
+        assert!(content.contains("[alpha-2]"));
+        assert!(content.contains("model = "));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn router_preset_dedupes_repeated_paths() {
+        // Pins + installed-scan + roles can list the same file several times;
+        // it must register once, not as Model/-2/-3.
+        let dir = std::env::temp_dir().join(format!("catapult-router-dedup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("alpha.gguf");
+        std::fs::write(&a, b"x").unwrap();
+        let a_str = a.to_string_lossy().to_string();
+
+        let out = crate::server::write_router_preset_paths(
+            &dir,
+            &[a_str.clone(), a_str.clone(), a_str.clone()],
+        )
+        .unwrap()
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("[alpha]"));
+        assert!(!content.contains("[alpha-2]"));
+        assert!(!content.contains("[alpha-3]"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

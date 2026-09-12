@@ -292,6 +292,57 @@ export interface AppConfig {
   enable_quick_bench: boolean;
   /** Model paths registered for llama-server router mode (multi-model). */
   router_models: string[];
+  /** Chat implementation: agent harness (default) or llama-server WebUI. */
+  harness_chat: boolean;
+  /** Turn budget for the agent orchestrator loop. */
+  harness_max_turns: number;
+  /** Turn budget for each ephemeral subagent run. */
+  harness_subagent_max_turns: number;
+  /** Custom system prompt override for the agent harness (null = built-in). */
+  harness_system_prompt: string | null;
+  /** Model roles (requires router mode): which model plans vs. executes. */
+  harness_roles: { orchestrator: string | null; worker: string | null };
+  /** Chat projects: contained working directories shown in the Chat sidebar. */
+  harness_projects: { id: string; name: string; path: string; created: number }[];
+  /** Id of the project the Chat view currently has open. */
+  harness_active_project: string | null;
+}
+
+/** Agent run result: text plus the metadata shown under each response. */
+export interface HarnessRunResult {
+  text: string;
+  model?: string;
+  tokens_per_sec?: number | null;
+  gen_tokens: number;
+  prompt_tokens?: number | null;
+  elapsed_ms: number;
+}
+
+/** Model capability badges for the chat input row. */
+export interface HarnessCapabilities {
+  vision: boolean;
+  reasoning: boolean;
+  context_length?: number | null;
+}
+
+/** A file/image attachment chip in the chat input. */
+export interface ChatAttachment {
+  name: string;
+  kind: "image" | "text";
+  /** Full original path (re-read when sending). */
+  path: string;
+  /** For images: data URL for the chip preview. */
+  preview?: string;
+  /** For text attachments: file content (read at add time). */
+  text?: string;
+}
+
+/** Sidebar session entry. */
+export interface SessionInfo {
+  id: string;
+  title: string;
+  updated: number;
+  project?: string | null;
 }
 
 /** UI theme preference: "system" follows the OS light/dark setting. */

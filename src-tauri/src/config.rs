@@ -40,6 +40,34 @@ fn default_false() -> bool { false }
 
 fn default_true() -> bool { true }
 
+fn default_harness_max_turns() -> u32 { 40 }
+
+fn default_harness_subagent_max_turns() -> u32 { 25 }
+
+/// Model-role assignment for the agent harness. Both default to `None` (use
+/// the server's loaded model). Role models are only effective when
+/// llama-server runs in router mode (no single model on the Run page).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HarnessRoles {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+}
+
+/// A chat project: a contained working directory the agent is sandboxed to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HarnessProject {
+    /// Stable id (slug of the path at add time).
+    pub id: String,
+    /// Display name (folder name).
+    pub name: String,
+    /// Absolute path of the working directory.
+    pub path: String,
+    #[serde(default)]
+    pub created: i64,
+}
+
 /// UI theme preference. `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -143,6 +171,30 @@ pub struct AppConfig {
     /// demand (from the WebUI picker or the API).
     #[serde(default)]
     pub router_models: Vec<String>,
+    /// Chat implementation to use: the Catapult agent harness (default) or
+    /// the classic llama-server WebUI. The WebUI stays fully supported.
+    #[serde(default = "default_true")]
+    pub harness_chat: bool,
+    /// Turn budget for the agent orchestrator loop.
+    #[serde(default = "default_harness_max_turns")]
+    pub harness_max_turns: u32,
+    /// Turn budget for each ephemeral subagent run.
+    #[serde(default = "default_harness_subagent_max_turns")]
+    pub harness_subagent_max_turns: u32,
+    /// Custom system prompt override for the agent harness. None = built-in
+    /// default (recommended: keeps the OS/shell guidance intact).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_system_prompt: Option<String>,
+    /// Model roles: which model plans (orchestrator) and which executes
+    /// (worker subagents). Requires router mode.
+    #[serde(default)]
+    pub harness_roles: HarnessRoles,
+    /// Chat projects: contained working directories shown in the Chat sidebar.
+    #[serde(default)]
+    pub harness_projects: Vec<HarnessProject>,
+    /// Id of the project the Chat view currently has open.
+    #[serde(default)]
+    pub harness_active_project: Option<String>,
 }
 
 impl AppConfig {
