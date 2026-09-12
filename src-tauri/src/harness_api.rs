@@ -365,6 +365,13 @@ pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<Context
             total = crate::models::read_model_metadata(std::path::Path::new(&path))
                 .and_then(|m| m.context_length);
         }
+        if total.is_none() {
+            // Router mode with no roles: ceiling from the served model's header.
+            if let Some(path) = router_active_model_path(&state, &client).await {
+                total = crate::models::read_model_metadata(std::path::Path::new(&path))
+                    .and_then(|m| m.context_length);
+            }
+        }
     }
     Ok(ContextStats { used, total })
 }
@@ -1008,6 +1015,32 @@ fn active_model_path(state: &AppState) -> Option<String> {
         .map(|cfg| cfg.model_path.clone())
 }
 
+/// Installed-model path the router is (or will be) serving: the loaded
+/// registration, else the first registered. Router ids are file stems, so
+/// match installed models by stem. `None` outside router mode or when the
+/// registry is empty. Keeps the context ring, capability badges, and effort
+/// control alive in router mode with no roles set.
+async fn router_active_model_path(state: &AppState, client: &LlmClient) -> Option<String> {
+    if !is_router_mode(state) {
+        return None;
+    }
+    let models = client.router_models().await.ok()?;
+    let id = models
+        .iter()
+        .find(|m| m.status == "loaded")
+        .or_else(|| models.first())?
+        .id
+        .clone();
+    let config = state.config.lock().unwrap().clone();
+    let installed = crate::models::list_installed_models(&config).ok()?;
+    installed
+        .into_iter()
+        .find(|m| {
+            m.path.file_stem().and_then(|s| s.to_str()) == Some(id.as_str())
+        })
+        .map(|m| m.path.to_string_lossy().to_string())
+}
+
 #[derive(Debug, Serialize)]
 pub struct ReasoningOptions {
     /// Whether the active model reasons at all (tag, template, or effort knobs).
@@ -1019,7 +1052,17 @@ pub struct ReasoningOptions {
 
 #[tauri::command]
 pub async fn harness_reasoning_options(state: State<'_, AppState>) -> Result<ReasoningOptions, String> {
-    let Some(path) = active_model_path(&state) else {
+    let path = match active_model_path(&state) {
+        Some(p) => Some(p),
+        None => match port_or_err(&state) {
+            Ok(port) => {
+                let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
+                router_active_model_path(&state, &client).await
+            }
+            Err(_) => None,
+        },
+    };
+    let Some(path) = path else {
         return Ok(ReasoningOptions { supported: false, levels: vec![] });
     };
     let (supported, levels) = crate::models::read_model_metadata(std::path::Path::new(&path))
@@ -1030,8 +1073,18 @@ pub async fn harness_reasoning_options(state: State<'_, AppState>) -> Result<Rea
 
 #[tauri::command]
 pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<HarnessCapabilities, String> {
-    // Prefer the orchestrator role model; fall back to the single loaded model.
-    let path = active_model_path(&state);
+    // Prefer the orchestrator role model; fall back to the single loaded
+    // model, then to the router's served model (router mode, no roles).
+    let path = match active_model_path(&state) {
+        Some(p) => Some(p),
+        None => match port_or_err(&state) {
+            Ok(port) => {
+                let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
+                router_active_model_path(&state, &client).await
+            }
+            Err(_) => None,
+        },
+    };
     let Some(path) = path else {
         return Ok(HarnessCapabilities { vision: false, reasoning: false, context_length: None });
     };
