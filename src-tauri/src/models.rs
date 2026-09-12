@@ -518,12 +518,12 @@ fn scan_gguf_recursive(
             let params_b = cached_meta.size_label
                 .or_else(|| extract_params_from_filename(&filename).map(|p| format!("{}B", p)));
 
-            // Find compatible mmproj for vision models
-            let mmproj_path = if cached_meta.is_vision {
-                find_mmproj(&path, &filename, cache)
-            } else {
-                None
-            };
+            // A matching sibling mmproj is ground truth for vision: some quants
+            // (e.g. Gemma 4, Qwen3.5 GSQ-RCO) ship no vision tags/capabilities
+            // in the GGUF header, so always look for one instead of only when
+            // the header already claims vision.
+            let mmproj_path = find_mmproj(&path, &filename, cache);
+            let is_vision = cached_meta.is_vision || mmproj_path.is_some();
 
             models.push(ModelInfo {
                 id,
@@ -535,7 +535,7 @@ fn scan_gguf_recursive(
                 quant,
                 params_b,
                 context_length: cached_meta.context_length,
-                is_vision: cached_meta.is_vision,
+                is_vision,
                 is_reasoning: cached_meta.is_reasoning,
                 mmproj_path,
                 split_files: vec![],
@@ -1702,5 +1702,29 @@ mod tests {
     fn is_mmproj_by_metadata_none_architecture() {
         let meta = GgufMeta::default();
         assert!(!is_mmproj_by_metadata(&meta));
+    }
+
+    #[test]
+    fn find_mmproj_pairs_quant_without_vision_tags() {
+        // Regression: Gemma 4 / Qwen3.5 GSQ-RCO ship no vision tags or
+        // capabilities, only a sibling mmproj. Detection is by filename,
+        // so empty files suffice.
+        let dir = std::env::temp_dir()
+            .join(format!("catapult-mmproj-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf";
+        let mmproj = "Qwen3.8-27B-GSQ-RCO-mmproj-Qwen3.8-27B-BF16.gguf";
+        std::fs::write(dir.join(model), []).unwrap();
+        std::fs::write(dir.join(mmproj), []).unwrap();
+        let cache: GgufCache = HashMap::new();
+        let found = find_mmproj(&dir.join(model), model, &cache);
+        assert_eq!(found, Some(dir.join(mmproj)));
+
+        // No sibling mmproj → no pair.
+        let lone = "LoneModel-7B-Q4_K_M.gguf";
+        std::fs::write(dir.join(lone), []).unwrap();
+        assert_eq!(find_mmproj(&dir.join(lone), lone, &cache), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
