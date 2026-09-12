@@ -38,6 +38,38 @@ pub enum SubagentKind {
     Researcher,
 }
 
+/// OS/shell guidance shared by the orchestrator prompt and both subagent
+/// prompts. One source so small worker models never default to the wrong
+/// shell idioms (sh on Windows, PowerShell on Unix). This wording is part of
+/// the byte-stable prompt prefix — change it deliberately.
+pub fn os_shell_snippet() -> String {
+    let (os_name, shell, shell_examples, avoid) = if cfg!(windows) {
+        (
+            "Windows",
+            "PowerShell (`powershell -NoProfile -Command ...`)",
+            "Get-ChildItem, Get-Content, Select-String; separate statements with `;`",
+            "sh/bash syntax (`ls -la`, `&&`, `grep`, `/dev/null`, leading `/` paths)",
+        )
+    } else if cfg!(target_os = "macos") {
+        (
+            "macOS",
+            "POSIX sh (`sh -c ...`)",
+            "ls, cat, grep; separate statements with `&&` or `;`",
+            "PowerShell syntax (`Get-ChildItem`, `;` only quirks aside)",
+        )
+    } else {
+        (
+            "Linux",
+            "POSIX sh (`sh -c ...`)",
+            "ls, cat, grep; separate statements with `&&` or `;`",
+            "PowerShell syntax (`Get-ChildItem`, `;` only quirks aside)",
+        )
+    };
+    format!(
+        "You run on {os_name}. Shell commands execute via {shell}: use {os_name} syntax ({shell_examples}) — never {avoid}."
+    )
+}
+
 impl SubagentKind {
     pub fn parse(s: &str) -> Result<Self> {
         match s.trim().to_lowercase().as_str() {
@@ -54,8 +86,8 @@ impl SubagentKind {
         }
     }
 
-    fn prompt(&self) -> &'static str {
-        match self {
+    fn prompt(&self) -> String {
+        let base: &'static str = match self {
             Self::Coder => {
                 "You are a focused implementation subagent. You execute exactly one coding task inside a sandboxed project directory, then report back. \
 You cannot spawn further subagents. \
@@ -70,7 +102,8 @@ You cannot create or modify anything. \
 Use find_files and search_content with specific patterns; read only what is needed; verify claims by reading the actual code. \
 Your final message is the only thing the orchestrator sees: state the answer directly, with concrete file:line references as evidence, then stop."
             }
-        }
+        };
+        format!("{base} {}", os_shell_snippet())
     }
 
     fn allowed_tools(&self) -> &'static [&'static str] {
@@ -492,7 +525,7 @@ impl AgentRun<'_> {
             }
 
             // Fresh, isolated transcript: system prompt + goal (+ ctx files).
-            let mut history = vec![ChatMessage::system(kind.prompt().to_string())];
+            let mut history = vec![ChatMessage::system(kind.prompt())];
             let mut initial = format!("Goal: {goal}\n");
             if let Some(files) = args.get("ctx_files").and_then(|f| f.as_array()) {
                 for f in files {
@@ -646,6 +679,20 @@ mod tests {
         assert!(SubagentKind::parse("orchestrator").is_err());
         assert!(!SubagentKind::Coder.prompt().is_empty());
         assert!(!SubagentKind::Researcher.prompt().is_empty());
+    }
+
+    #[test]
+    fn subagent_prompts_carry_os_shell_guidance() {
+        // Small worker models default to the wrong shell without this.
+        let snippet = os_shell_snippet();
+        assert!(snippet.contains("Shell commands execute via"));
+        if cfg!(windows) {
+            assert!(snippet.contains("PowerShell"));
+        } else {
+            assert!(snippet.contains("POSIX sh"));
+        }
+        assert!(SubagentKind::Coder.prompt().ends_with(&snippet));
+        assert!(SubagentKind::Researcher.prompt().ends_with(&snippet));
     }
 
     #[test]

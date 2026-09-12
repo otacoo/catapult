@@ -28,41 +28,19 @@ use harness::sandbox::PathJail;
 use harness::tools::ToolRegistry;
 
 /// Byte-stable system prompt (KV-cache friendly). The project line is appended
-/// once and stays stable per project. The OS/shell section is constant per
-/// machine — small models otherwise default to sh/bash idioms that fail
-/// noisily on PowerShell (and vice versa).
+/// once and stays stable per project. The OS/shell section comes from the
+/// shared harness snippet so subagents get identical guidance.
 fn system_prompt() -> String {
-    let (os_name, shell, shell_examples, avoid) = if cfg!(windows) {
-        (
-            "Windows",
-            "PowerShell (`powershell -NoProfile -Command ...`)",
-            "Get-ChildItem, Get-Content, Select-String; separate statements with `;`",
-            "sh/bash syntax (`ls -la`, `&&`, `grep`, `/dev/null`, leading `/` paths)",
-        )
-    } else if cfg!(target_os = "macos") {
-        (
-            "macOS",
-            "POSIX sh (`sh -c ...`)",
-            "ls, cat, grep; separate statements with `&&` or `;`",
-            "PowerShell syntax (`Get-ChildItem`, `;` only quirks aside)",
-        )
-    } else {
-        (
-            "Linux",
-            "POSIX sh (`sh -c ...`)",
-            "ls, cat, grep; separate statements with `&&` or `;`",
-            "PowerShell syntax (`Get-ChildItem`, `;` only quirks aside)",
-        )
-    };
     format!(
         "You are Catapult's agent, working inside a sandboxed project directory. \
 File tools are rooted at that directory; relative paths resolve there. \
-You run on {os_name}. Shell commands execute via {shell}: use {os_name} syntax ({shell_examples}) — never {avoid}. \
+{} \
 Prefer the native file tools (read_file, find_files, search_content) over shell listing/searching. \
 Read-only operations run automatically; writes and shell commands may require user approval — \
 if denied, adapt instead of retrying the same call. \
 Work step by step: read before editing, make small exact edits, verify results, \
-and give a concise summary when done."
+and give a concise summary when done.",
+        harness::agent::os_shell_snippet()
     )
 }
 
@@ -1255,5 +1233,14 @@ mod tests {
             assert!(same_path("/proj/a", "/proj/a"));
             assert!(!same_path("/proj/a", "/PROJ/A"));
         }
+    }
+
+    #[test]
+    fn orchestrator_prompt_uses_shared_os_snippet() {
+        // Byte-stability guard: the orchestrator prompt must embed the exact
+        // shared snippet subagents get (KV-cache friendly prefix).
+        let prompt = system_prompt();
+        assert!(prompt.contains(&harness::agent::os_shell_snippet()));
+        assert!(prompt.contains("You are Catapult's agent"));
     }
 }
