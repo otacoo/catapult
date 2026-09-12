@@ -27,50 +27,135 @@ const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "about", label: "About", icon: Info },
 ];
 
-function RolePickers({ appConfig, onSet }: {
+function RolePickers({ appConfig, onSet, onSetParams }: {
   appConfig: AppConfig | null;
   onSet: (orchestrator: string | null, worker: string | null) => void;
+  onSetParams: (role: "orchestrator" | "worker", ctxSize: number | null, nGpuLayers: number | null) => void;
 }) {
   const [models, setModels] = useState<ModelInfo[] | null>(null);
+  const [vramMb, setVramMb] = useState<number | null>(null);
 
   useEffect(() => {
     invoke<ModelInfo[]>("list_installed_models").then(setModels).catch(() => {});
+    invoke<{ gpus: { vram_mb: number }[] }>("get_system_info")
+      .then((s) => setVramMb(s.gpus.reduce((a, g) => a + (g.vram_mb || 0), 0)))
+      .catch(() => {});
   }, []);
 
+  const fmtGB = (bytes: number) => `${(bytes / 1073741824).toFixed(1)} GB`;
+  const sizeOf = (path: string | null | undefined) =>
+    path ? models?.find((m) => m.path === path)?.size_bytes ?? null : null;
+
+  const orchPath = appConfig?.harness_roles?.orchestrator ?? null;
+  const workerPath = appConfig?.harness_roles?.worker ?? null;
+  const orchSize = sizeOf(orchPath);
+  // An unset worker runs on the orchestrator model (single-model harness).
+  const workerSize = workerPath ? sizeOf(workerPath) : orchSize;
+  const combined = (orchSize ?? 0) + (workerPath && workerPath !== orchPath ? (workerSize ?? 0) : 0);
+  const overVram = vramMb !== null && vramMb > 0 && combined > vramMb * 1048576;
+
   const modelOptions = (models ?? []).map((m) => ({ value: m.path, label: m.name }));
+  const roleParams = appConfig?.harness_role_params;
+
+  const renderTuning = (
+    role: "orchestrator" | "worker",
+    path: string | null,
+    sizeBytes: number | null,
+  ) => {
+    if (!path) return null;
+    const p = role === "worker" ? roleParams?.worker : roleParams?.orchestrator;
+    const num = (v: string) => (v === "" ? null : Math.max(0, parseInt(v, 10) || 0));
+    return (
+      <div className="mt-1.5 space-y-1.5">
+        <p className="text-[11px] text-gray-600">
+          {sizeBytes !== null ? `≈ ${fmtGB(sizeBytes)} on disk` : "size unknown (not installed)"}
+        </p>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1 text-[11px] text-gray-500">
+            <span>Ctx</span>
+            <input
+              type="number"
+              min={0}
+              step={1024}
+              placeholder="auto"
+              title="Context size override for this role (empty = auto)"
+              className="input w-20 py-0.5 px-1.5 text-[11px]"
+              value={p?.ctx_size ?? ""}
+              onChange={(e) => {
+                const cur = role === "worker" ? roleParams?.worker : roleParams?.orchestrator;
+                onSetParams(role, num(e.target.value), cur?.n_gpu_layers ?? null);
+              }}
+            />
+          </label>
+          <label className="flex items-center gap-1 text-[11px] text-gray-500">
+            <span>GPU layers</span>
+            <input
+              type="number"
+              min={0}
+              placeholder="auto"
+              title="GPU layers override for this role (empty = auto)"
+              className="input w-16 py-0.5 px-1.5 text-[11px]"
+              value={p?.n_gpu_layers ?? ""}
+              onChange={(e) => {
+                const cur = role === "worker" ? roleParams?.worker : roleParams?.orchestrator;
+                onSetParams(role, cur?.ctx_size ?? null, num(e.target.value));
+              }}
+            />
+          </label>
+        </div>
+      </div>
+    );
+  };
+
+  const sizesKnown =
+    (!orchPath || orchSize !== null) && (!workerPath || workerSize !== null);
+  const singleModel = !workerPath || workerPath === orchPath;
 
   return (
     <div className="space-y-2 mt-4">
       <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1 text-xs text-gray-400">
-          <span>Orchestrator model (planning)</span>
-          <select
-            className="input py-1 px-2 text-xs"
-            value={appConfig?.harness_roles?.orchestrator ?? ""}
-            onChange={(e) => onSet(e.target.value || null, appConfig?.harness_roles?.worker ?? null)}
-          >
-            {[{ value: "", label: "Server default" }, ...modelOptions].map((o) => (
-              <option key={o.value || "default"} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-gray-400">
-          <span>Worker model (subagents)</span>
-          <select
-            className="input py-1 px-2 text-xs"
-            value={appConfig?.harness_roles?.worker ?? ""}
-            onChange={(e) => onSet(appConfig?.harness_roles?.orchestrator ?? null, e.target.value || null)}
-          >
-            {[{ value: "", label: "Same as orchestrator" }, ...modelOptions].map((o) => (
-              <option key={o.value || "default"} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </label>
+        <div>
+          <label className="flex flex-col gap-1 text-xs text-gray-400">
+            <span>Orchestrator model (planning)</span>
+            <select
+              className="input py-1 px-2 text-xs"
+              value={orchPath ?? ""}
+              onChange={(e) => onSet(e.target.value || null, workerPath)}
+            >
+              {[{ value: "", label: "Server default" }, ...modelOptions].map((o) => (
+                <option key={o.value || "default"} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+          {renderTuning("orchestrator", orchPath, orchSize)}
+        </div>
+        <div>
+          <label className="flex flex-col gap-1 text-xs text-gray-400">
+            <span>Worker model (subagents)</span>
+            <select
+              className="input py-1 px-2 text-xs"
+              value={workerPath ?? ""}
+              onChange={(e) => onSet(orchPath, e.target.value || null)}
+            >
+              {[{ value: "", label: "Same as orchestrator" }, ...modelOptions].map((o) => (
+                <option key={o.value || "default"} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+          {renderTuning("worker", workerPath, workerSize)}
+        </div>
       </div>
+      {sizesKnown && (orchPath || workerPath) && vramMb !== null && vramMb > 0 && (
+        <p className={`text-[11px] leading-snug ${overVram ? "text-accent-yellow" : "text-gray-600"}`}>
+          {singleModel
+            ? `Single model ≈ ${fmtGB(combined)} of ${(vramMb / 1024).toFixed(1)} GB VRAM`
+            : `Two models ≈ ${fmtGB(combined)} of ${(vramMb / 1024).toFixed(1)} GB VRAM (needs router mode)`}
+          {overVram && " — exceeds VRAM, the router will swap models while switching roles"}
+        </p>
+      )}
       <p className="text-[11px] text-gray-600 leading-snug">
-        Role models require router mode: launch on the Run page with no single model selected
-        (pin models with the layers icon). The orchestrator model loads at run start; a small
-        worker model alongside a big planner speeds up execution.
+        A distinct worker model requires router mode: launch on the Run page with no single model selected.
+        The orchestrator model loads at run start; a small worker alongside a big planner speeds up execution.
       </p>
     </div>
   );
@@ -157,6 +242,8 @@ export default function OptionsPanel({ open, onClose }: {
     try {
       await invoke("set_harness_roles", { orchestrator, worker });
     } catch {}
+    // The Run tab shows the planned models — refresh it immediately.
+    window.dispatchEvent(new CustomEvent("catapult-settings"));
   };
 
   const setSubagentsEnabled = async (enabled: boolean) => {
@@ -164,6 +251,24 @@ export default function OptionsPanel({ open, onClose }: {
     try {
       await invoke("set_harness_subagents_enabled", { enabled });
     } catch {}
+  };
+
+  const setRoleParams = async (role: "orchestrator" | "worker", ctxSize: number | null, nGpuLayers: number | null) => {
+    const next = { ctx_size: ctxSize, n_gpu_layers: nGpuLayers };
+    setAppConfig((c) =>
+      c
+        ? {
+            ...c,
+            harness_role_params: role === "worker"
+              ? { ...c.harness_role_params, worker: next }
+              : { ...c.harness_role_params, orchestrator: next },
+          }
+        : c,
+    );
+    try {
+      await invoke("set_harness_role_params", { role, ctx_size: ctxSize, n_gpu_layers: nGpuLayers });
+    } catch {}
+    window.dispatchEvent(new CustomEvent("catapult-settings"));
   };
 
   // Local draft so typing doesn't hammer config writes; null = pristine.
@@ -247,7 +352,7 @@ export default function OptionsPanel({ open, onClose }: {
           />
         </label>
       </div>
-      <RolePickers appConfig={appConfig} onSet={setRoles} />
+      <RolePickers appConfig={appConfig} onSet={setRoles} onSetParams={setRoleParams} />
       <div className="space-y-3 mt-3">
         <Toggle
           label="Enable subagents"

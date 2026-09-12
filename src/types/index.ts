@@ -302,8 +302,13 @@ export interface AppConfig {
   harness_subagents_enabled: boolean;
   /** Custom system prompt override for the agent harness (null = built-in). */
   harness_system_prompt: string | null;
-  /** Model roles (requires router mode): which model plans vs. executes. */
+  /** Model roles: which model plans vs. executes (distinct worker needs router mode). */
   harness_roles: { orchestrator: string | null; worker: string | null };
+  /** Per-role server settings (null/undefined = auto). */
+  harness_role_params: {
+    orchestrator: { ctx_size?: number | null; n_gpu_layers?: number | null };
+    worker: { ctx_size?: number | null; n_gpu_layers?: number | null };
+  };
   /** Chat projects: contained working directories shown in the Chat sidebar. */
   harness_projects: { id: string; name: string; path: string; created: number }[];
   /** Id of the project the Chat view currently has open. */

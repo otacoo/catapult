@@ -19,7 +19,7 @@ import {
   Layers,
   Search,
 } from "lucide-react";
-import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig, BenchResult, AppConfig } from "../types";
+import type { ModelInfo, ServerConfig, ServerStatus, MemoryEstimate, SuggestedConfig, BenchResult, AppConfig, SystemInfo } from "../types";
 import Toggle from "../components/Toggle";
 import MemoryVisualizer from "../components/MemoryVisualizer";
 import { sanitizeTools } from "../utils/tools";
@@ -440,11 +440,43 @@ export default function Server() {
   // ── Router mode (multi-model) ─────────────────────────────────────────────
 
   const [routerModels, setRouterModels] = useState<string[]>([]);
+  // Harness model authority (Settings → Chat → Agent). In harness mode the
+  // Run tab shows these planned models instead of the single-model picker.
+  const [harness, setHarness] = useState<{
+    chat: boolean;
+    orch: string | null;
+    worker: string | null;
+    params: { orchestrator: { ctx_size?: number | null; n_gpu_layers?: number | null }; worker: { ctx_size?: number | null; n_gpu_layers?: number | null } };
+  } | null>(null);
+  const [vramMb, setVramMb] = useState<number | null>(null);
 
   useEffect(() => {
     invoke<AppConfig>("get_config")
-      .then((c) => setRouterModels(c.router_models ?? []))
+      .then((c) => {
+        setRouterModels(c.router_models ?? []);
+        setHarness({
+          chat: c.harness_chat ?? true,
+          orch: c.harness_roles?.orchestrator ?? null,
+          worker: c.harness_roles?.worker ?? null,
+          params: c.harness_role_params ?? { orchestrator: {}, worker: {} },
+        });
+      })
       .catch(() => {});
+    invoke<SystemInfo>("get_system_info")
+      .then((s) => setVramMb(s.gpus.reduce((a, g) => a + (g.vram_mb || 0), 0)))
+      .catch(() => {});
+    const refresh = () => {
+      invoke<AppConfig>("get_config")
+        .then((c) => setHarness({
+          chat: c.harness_chat ?? true,
+          orch: c.harness_roles?.orchestrator ?? null,
+          worker: c.harness_roles?.worker ?? null,
+          params: c.harness_role_params ?? { orchestrator: {}, worker: {} },
+        }))
+        .catch(() => {});
+    };
+    window.addEventListener("catapult-settings", refresh);
+    return () => window.removeEventListener("catapult-settings", refresh);
   }, []);
 
   const toggleRouterModel = async (path: string) => {
@@ -762,7 +794,32 @@ export default function Server() {
     invoke("set_selected_model", { modelPath: null }).catch(() => {});
   };
 
+  // Harness mode with roles set: the Run tab shows the planned models
+  // instead of the single-model picker (roles are the model authority).
+  const harnessPanel = !!harness?.chat && !!(harness?.orch || harness?.worker);
+  const harnessSingle = !harness?.worker || harness?.worker === harness?.orch;
+  const fmtGB = (bytes: number) => `${(bytes / 1073741824).toFixed(1)} GB`;
+  const roleInfo = (path: string | null) => {
+    if (!path) return null;
+    const m = models.find((x) => x.path === path);
+    return { name: m?.name ?? path.split(/[/\\]/).pop() ?? path, size: m?.size_bytes ?? null };
+  };
+
   const startServer = async () => {
+    // Harness mode with roles: the planned models decide the launch mode —
+    // single-model server for an orchestrator alone, router otherwise.
+    if (harnessPanel) {
+      const single = !harness.worker || harness.worker === harness.orch;
+      if (single && !harness.orch) { setError("Set an orchestrator model in Settings → Chat."); return; }
+      const modelPath = single ? (harness.orch ?? "") : "";
+      setError(null); setLogs([]); setShowLogs(true);
+      setConfig((c) => ({ ...c, model_path: modelPath }));
+      try {
+        await invoke("start_server", { config: { ...config, model_path: modelPath } });
+      }
+      catch (e) { setError(String(e)); }
+      return;
+    }
     if (!config.model_path && routerModels.length === 0) { setError("Please select a model."); return; }
     setError(null); setLogs([]); setShowLogs(true);
     try {
@@ -879,7 +936,7 @@ export default function Server() {
           {isRunning ? (
             <button className="btn-danger" onClick={stopServer}><Square size={14} /> Stop</button>
           ) : (
-            <button className="btn-primary" onClick={startServer} disabled={!config.model_path && routerModels.length === 0}>
+            <button className="btn-primary" onClick={startServer} disabled={harnessPanel ? (harnessSingle && !harness?.orch) : (!config.model_path && routerModels.length === 0)}>
               <Play size={14} /> Launch
             </button>
           )}
@@ -896,9 +953,60 @@ export default function Server() {
 
       <div className="px-6 pt-4">
 
-        {/* Model selection */}
+        {/* Model selection (harness roles take over in harness mode) */}
         <div className="card">
-          {models.length === 0 ? (
+          {harnessPanel ? (() => {
+            const orch = roleInfo(harness.orch);
+            const worker = roleInfo(harness.worker);
+            const params = (role: "orchestrator" | "worker") => {
+              const p = harness.params?.[role];
+              const bits = [
+                p?.ctx_size ? `ctx ${p.ctx_size}` : null,
+                p?.n_gpu_layers !== null && p?.n_gpu_layers !== undefined ? `ngl ${p.n_gpu_layers}` : null,
+              ].filter(Boolean);
+              return bits.length > 0 ? bits.join(" · ") : "auto";
+            };
+            const combined = (orch?.size ?? null) !== null
+              ? (orch?.size ?? 0) + (!harnessSingle ? (worker?.size ?? 0) : 0)
+              : null;
+            const sizesKnown = combined !== null && (harnessSingle || worker?.size !== null);
+            const overVram = sizesKnown && vramMb !== null && vramMb > 0 && (combined as number) > vramMb * 1048576;
+            return (
+              <>
+                <h2 className="section-title">Harness models</h2>
+                <p className="section-desc mb-3">Planned in Settings → Chat → Agent roles. Launch below starts the matching server mode.</p>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3 px-3 py-2 border border-border">
+                    <span className="text-xs text-gray-500 w-24 shrink-0">Orchestrator</span>
+                    <span className="text-sm text-gray-200 truncate flex-1">{orch?.name}</span>
+                    <span className="text-xs text-gray-500 shrink-0">{orch?.size !== null && orch?.size !== undefined ? `≈ ${fmtGB(orch.size)}` : "size unknown"}</span>
+                    <span className="text-[11px] text-gray-600 shrink-0">{params("orchestrator")}</span>
+                  </div>
+                  <div className="flex items-center gap-3 px-3 py-2 border border-border">
+                    <span className="text-xs text-gray-500 w-24 shrink-0">Worker</span>
+                    {harnessSingle ? (
+                      <span className="text-sm text-gray-400 flex-1">Same as orchestrator (single model)</span>
+                    ) : (
+                      <>
+                        <span className="text-sm text-gray-200 truncate flex-1">{worker?.name}</span>
+                        <span className="text-xs text-gray-500 shrink-0">{worker?.size !== null && worker?.size !== undefined ? `≈ ${fmtGB(worker.size)}` : "size unknown"}</span>
+                        <span className="text-[11px] text-gray-600 shrink-0">{params("worker")}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-3">
+                  {harnessSingle ? "Single-model server" : "Router (two models)"}
+                  {sizesKnown && vramMb !== null && vramMb > 0 && (
+                    <span className={overVram ? "text-accent-yellow" : ""}>
+                      {` — ≈ ${fmtGB(combined as number)} of ${(vramMb / 1024).toFixed(1)} GB VRAM`}
+                      {overVram ? " (exceeds VRAM — expect model swapping)" : ""}
+                    </span>
+                  )}
+                </p>
+              </>
+            );
+          })() : models.length === 0 ? (
             <>
               <h2 className="section-title">Model</h2>
               <p className="text-sm text-gray-500">
