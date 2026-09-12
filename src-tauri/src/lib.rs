@@ -318,6 +318,31 @@ async fn set_harness_subagents_enabled(enabled: bool, state: State<'_, AppState>
     config.save().map_err(|e| e.to_string())
 }
 
+/// Per-role server settings for the harness (context size / GPU layers
+/// overrides written into the role's router-preset section). `role` is
+/// "orchestrator" or "worker"; `None` values inherit the default (auto).
+#[tauri::command]
+async fn set_harness_role_params(
+    role: String,
+    ctx_size: Option<u32>,
+    n_gpu_layers: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    if role == "worker" {
+        config.harness_role_params.worker = crate::config::RoleServerParams {
+            ctx_size: ctx_size.filter(|&c| c > 0),
+            n_gpu_layers,
+        };
+    } else {
+        config.harness_role_params.orchestrator = crate::config::RoleServerParams {
+            ctx_size: ctx_size.filter(|&c| c > 0),
+            n_gpu_layers,
+        };
+    }
+    config.save().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn get_available_backends(_state: State<'_, AppState>) -> Result<Vec<BackendInfo>, String> {
     let system = hardware::get_system_info().map_err(|e| e.to_string())?;
@@ -1106,6 +1131,7 @@ pub fn run() {
             set_router_models,
             set_harness_chat,
             set_harness_subagents_enabled,
+            set_harness_role_params,
             get_available_backends,
             // Models
             list_installed_models,

@@ -592,6 +592,24 @@ async fn resolve_roles(
     if roles.orchestrator.is_none() && roles.worker.is_none() {
         return Ok((None, None, None, None));
     }
+    // Single-model shortcut: orchestrator alone on a single-model server
+    // already serving that file needs no router — use the server default.
+    // (A distinct worker still needs router mode below.)
+    if roles.worker.is_none() {
+        if let Some(orch) = roles.orchestrator.as_deref() {
+            let serving = state
+                .server
+                .lock()
+                .unwrap()
+                .config
+                .as_ref()
+                .map(|c| c.model_path.clone())
+                .unwrap_or_default();
+            if !serving.is_empty() && same_path(&serving, orch) {
+                return Ok((None, None, None, None));
+            }
+        }
+    }
     if !is_router_mode(state) {
         return Err(
             "Model roles require router mode: launch with no single model selected (pin models on the Run page) and start again."
@@ -617,13 +635,34 @@ async fn resolve_roles(
         .join("catapult");
     let worker_path = roles.worker.clone();
     let app_config = state.config.lock().unwrap().clone();
-    let mut paths: Vec<String> = app_config.router_models.clone();
+    let mut entries: Vec<crate::server::PresetEntry> = app_config
+        .router_models
+        .iter()
+        .map(|p| crate::server::PresetEntry { path: p.clone(), ..Default::default() })
+        .collect();
     if let Ok(installed) = crate::models::list_installed_models(&app_config) {
-        paths.extend(installed.iter().map(|m| m.path.to_string_lossy().to_string()));
+        entries.extend(installed.iter().map(|m| crate::server::PresetEntry {
+            path: m.path.to_string_lossy().to_string(),
+            ..Default::default()
+        }));
     }
-    paths.extend(roles.orchestrator.clone());
-    paths.extend(worker_path.clone());
-    let _preset = crate::server::write_router_preset_paths(&dir, &paths).map_err(|e| e.to_string())?;
+    // Role models carry their per-role server overrides (ctx-size / layers).
+    let params = &app_config.harness_role_params;
+    if let Some(p) = roles.orchestrator.clone() {
+        entries.push(crate::server::PresetEntry {
+            path: p,
+            ctx_size: params.orchestrator.ctx_size,
+            n_gpu_layers: params.orchestrator.n_gpu_layers,
+        });
+    }
+    if let Some(p) = worker_path.clone() {
+        entries.push(crate::server::PresetEntry {
+            path: p,
+            ctx_size: params.worker.ctx_size,
+            n_gpu_layers: params.worker.n_gpu_layers,
+        });
+    }
+    let _preset = crate::server::write_router_preset_entries(&dir, &entries).map_err(|e| e.to_string())?;
     client.router_reload().await.map_err(|e| e.to_string())?;
 
     // Map role paths → registered ids (section name = file stem). The reload
