@@ -681,6 +681,13 @@ pub async fn set_harness_system_prompt(
     config.save().map_err(|e| e.to_string())
 }
 
+/// The built-in agent system prompt (before the project directory line is
+/// appended). Shown in Settings so the user can see what the default is.
+#[tauri::command]
+pub async fn get_harness_system_prompt_default() -> Result<String, String> {
+    Ok(system_prompt())
+}
+
 /// Assign harness model roles (paths of installed models, or None for the
 /// server default). Takes effect when a run starts in router mode.
 #[tauri::command]
