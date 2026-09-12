@@ -89,6 +89,7 @@ export default function OptionsPanel({ open, onClose }: {
   useEffect(() => {
     if (open) {
       invoke<AppConfig>("get_config").then(setAppConfig).catch(() => {});
+      invoke<string>("get_harness_system_prompt_default").then(setBuiltInPrompt).catch(() => {});
     }
   }, [open]);
 
@@ -163,6 +164,8 @@ export default function OptionsPanel({ open, onClose }: {
 
   // Local draft so typing doesn't hammer config writes; null = pristine.
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  // Built-in default, shown in the textarea when no override is stored.
+  const [builtInPrompt, setBuiltInPrompt] = useState<string | null>(null);
   useEffect(() => {
     if (open) setPromptDraft(null);
   }, [open ]);
@@ -245,21 +248,24 @@ export default function OptionsPanel({ open, onClose }: {
   );
 
   const storedPrompt = appConfig?.harness_system_prompt ?? "";
+  // What the textarea shows: the override, or the built-in default.
+  const shownBase = storedPrompt !== "" ? storedPrompt : builtInPrompt ?? "";
   const promptDirty =
-    promptDraft !== null && promptDraft.trim() !== storedPrompt.trim();
+    promptDraft !== null && promptDraft.trim() !== shownBase.trim();
 
   const systemPromptCard = (
     <div className="card">
       <h2 className="section-title mb-1">System prompt</h2>
       <p className="section-desc">
-        Override the agent's system prompt. Empty restores the built-in default.
+        Showing the built-in default — edit to override it. Clearing the text and
+        saving restores the default.
         The project directory line is always appended, so sandbox awareness survives customization.
       </p>
       <textarea
         className="input w-full mt-3 font-mono text-xs leading-relaxed"
         rows={8}
-        placeholder="Leave empty to use the built-in default…"
-        value={promptDraft ?? storedPrompt}
+        placeholder="Loading built-in default…"
+        value={promptDraft ?? shownBase}
         onChange={(e) => setPromptDraft(e.target.value)}
       />
       <div className="flex items-center gap-2 mt-2">
@@ -268,7 +274,8 @@ export default function OptionsPanel({ open, onClose }: {
           disabled={!promptDirty}
           onClick={() => {
             const v = (promptDraft ?? "").trim();
-            setSystemPrompt(v === "" ? null : v);
+            // Saving the default verbatim (or empty) stores no override.
+            setSystemPrompt(v === "" || v === (builtInPrompt ?? "").trim() ? null : v);
             setPromptDraft(null);
           }}
         >
@@ -374,7 +381,7 @@ export default function OptionsPanel({ open, onClose }: {
             <>
               {chatEngineCard}
               {/* Harness-specific options are inert while the harness is off. */}
-              <div className={appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}>
+              <div className={`space-y-4 ${appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}`}>
                 {agentCard}
                 {systemPromptCard}
               </div>
