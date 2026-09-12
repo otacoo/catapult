@@ -603,34 +603,8 @@ export default function Server() {
     if (cfg.server_working_dir && !config.working_dir) {
       setConfig((c) => ({ ...c, working_dir: cfg.server_working_dir }));
     }
-    if (mdls.length > 0 && !config.model_path) {
-      // Use the dashboard-selected model if set, otherwise first model
-      const selected = cfg.selected_model
-        ? mdls.find((m) => m.path === cfg.selected_model)
-        : null;
-      const pick = selected ?? mdls[0];
-      setConfig((c) => ({
-        ...c,
-        model_path: pick.path,
-        mmproj_path: autoMmproj && pick.is_vision && pick.mmproj_path ? pick.mmproj_path : null,
-      }));
-      // Auto-load the last-used preset for this model (on first visit only)
-      if (!loadSessionConfig()) {
-        const savedPreset = cfg.model_presets[pick.path] ?? cfg.last_preset;
-        if (savedPreset) {
-          await loadPreset(savedPreset, pick.path);
-        } else if (cfg.last_preset) {
-          // Fallback to last global preset if no per-model preset
-          await loadPreset(cfg.last_preset).catch(() => {});
-        }
-      }
-    } else if (!loadSessionConfig() && cfg.last_preset) {
-      // No model change but we have a last preset and no session preset – restore it
-      const presetName = cfg.last_preset;
-      if (presetName) {
-        await loadPreset(presetName).catch(() => {});
-      }
-    }
+    // No model is auto-selected: an empty model_path means router mode — the
+    // user picks models on demand (WebUI picker / harness roles).
   };
 
   useEffect(() => {
