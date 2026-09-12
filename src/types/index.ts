@@ -298,6 +298,8 @@ export interface AppConfig {
   harness_max_turns: number;
   /** Turn budget for each ephemeral subagent run. */
   harness_subagent_max_turns: number;
+  /** Subagent delegation; false = orchestrator runs alone on one model. */
+  harness_subagents_enabled: boolean;
   /** Custom system prompt override for the agent harness (null = built-in). */
   harness_system_prompt: string | null;
   /** Model roles (requires router mode): which model plans vs. executes. */

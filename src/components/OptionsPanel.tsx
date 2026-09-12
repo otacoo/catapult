@@ -37,10 +37,7 @@ function RolePickers({ appConfig, onSet }: {
     invoke<ModelInfo[]>("list_installed_models").then(setModels).catch(() => {});
   }, []);
 
-  const options = [
-    { value: "", label: "Server default" },
-    ...(models ?? []).map((m) => ({ value: m.path, label: m.name })),
-  ];
+  const modelOptions = (models ?? []).map((m) => ({ value: m.path, label: m.name }));
 
   return (
     <div className="space-y-2 mt-4">
@@ -52,7 +49,7 @@ function RolePickers({ appConfig, onSet }: {
             value={appConfig?.harness_roles?.orchestrator ?? ""}
             onChange={(e) => onSet(e.target.value || null, appConfig?.harness_roles?.worker ?? null)}
           >
-            {options.map((o) => (
+            {[{ value: "", label: "Server default" }, ...modelOptions].map((o) => (
               <option key={o.value || "default"} value={o.value}>{o.label}</option>
             ))}
           </select>
@@ -64,7 +61,7 @@ function RolePickers({ appConfig, onSet }: {
             value={appConfig?.harness_roles?.worker ?? ""}
             onChange={(e) => onSet(appConfig?.harness_roles?.orchestrator ?? null, e.target.value || null)}
           >
-            {options.map((o) => (
+            {[{ value: "", label: "Same as orchestrator" }, ...modelOptions].map((o) => (
               <option key={o.value || "default"} value={o.value}>{o.label}</option>
             ))}
           </select>
@@ -162,6 +159,13 @@ export default function OptionsPanel({ open, onClose }: {
     } catch {}
   };
 
+  const setSubagentsEnabled = async (enabled: boolean) => {
+    setAppConfig((c) => (c ? { ...c, harness_subagents_enabled: enabled } : c));
+    try {
+      await invoke("set_harness_subagents_enabled", { enabled });
+    } catch {}
+  };
+
   // Local draft so typing doesn't hammer config writes; null = pristine.
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   // Built-in default, shown in the textarea when no override is stored.
@@ -244,6 +248,14 @@ export default function OptionsPanel({ open, onClose }: {
         </label>
       </div>
       <RolePickers appConfig={appConfig} onSet={setRoles} />
+      <div className="space-y-3 mt-3">
+        <Toggle
+          label="Enable subagents"
+          hint="Off runs the orchestrator alone on a single model (WebUI-style chat with tools)."
+          checked={appConfig?.harness_subagents_enabled ?? true}
+          onChange={setSubagentsEnabled}
+        />
+      </div>
     </div>
   );
 

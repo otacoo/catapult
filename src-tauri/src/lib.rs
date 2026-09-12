@@ -309,6 +309,15 @@ async fn set_harness_chat(enabled: bool, state: State<'_, AppState>) -> Result<(
     config.save().map_err(|e| e.to_string())
 }
 
+/// Single-model mode: the orchestrator runs alone (no worker delegation).
+/// Takes effect on the next run.
+#[tauri::command]
+async fn set_harness_subagents_enabled(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.harness_subagents_enabled = enabled;
+    config.save().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn get_available_backends(_state: State<'_, AppState>) -> Result<Vec<BackendInfo>, String> {
     let system = hardware::get_system_info().map_err(|e| e.to_string())?;
@@ -1096,6 +1105,7 @@ pub fn run() {
             set_enable_quick_bench,
             set_router_models,
             set_harness_chat,
+            set_harness_subagents_enabled,
             get_available_backends,
             // Models
             list_installed_models,
