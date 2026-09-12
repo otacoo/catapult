@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, ipc::Channel, State};
+use tauri::{AppHandle, Emitter, Manager, ipc::Channel, State};
 
 use crate::AppState;
 use harness::agent::{AgentEvent, AgentRun, ApprovalGate, ApprovalRequest, Approved};
@@ -66,6 +66,11 @@ pub struct HarnessRuntime {
     /// Prompt tokens of the last completed run — the freshest measure of
     /// context fill until the next run finishes.
     pub last_prompt_tokens: Mutex<Option<u64>>,
+    /// Whether the persisted global grants were loaded this app run.
+    pub permissions_global_loaded: std::sync::atomic::AtomicBool,
+    /// Project id whose persisted grants are currently in memory (None =
+    /// none loaded yet, or no project active). Tracks switches for eviction.
+    pub permissions_project: Mutex<Option<String>>,
 }
 
 /// Shape of a persisted session file.
@@ -96,6 +101,89 @@ pub fn session_dir() -> Option<PathBuf> {
 
 fn session_file(id: &str) -> Option<PathBuf> {
     session_dir().map(|d| d.join(format!("{}.json", id)))
+}
+
+// ── Persisted permission grants ─────────────────────────────────────────────
+
+fn permissions_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("catapult").join("permissions"))
+}
+
+fn global_grants_file() -> Option<PathBuf> {
+    permissions_dir().map(|d| d.join("global.json"))
+}
+
+/// Project ids derive from paths (`h/models/foo`), so sanitize for filenames.
+fn project_grants_file(project_id: &str) -> Option<PathBuf> {
+    let safe: String = project_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    permissions_dir().map(|d| d.join(format!("project_{}.json", safe)))
+}
+
+fn read_grants_file(path: &std::path::Path) -> Vec<harness::permissions::Grant> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_default()
+}
+
+/// Write the engine's persistable grants to disk: global grants app-wide,
+/// project grants under the active project. Runs after every persistable
+/// grant lands and on project switch, so trust survives restarts.
+fn save_permission_grants(state: &AppState) {
+    let Some(dir) = permissions_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let project_id = state.config.lock().unwrap().harness_active_project.clone();
+    let mut global: Vec<harness::permissions::Grant> = Vec::new();
+    let mut project: Vec<harness::permissions::Grant> = Vec::new();
+    for g in state.harness.engine.persistable() {
+        if g.scope == harness::permissions::Scope::Global {
+            global.push(g);
+        } else if project_id.as_deref() == g.project.as_deref() {
+            project.push(g);
+        }
+    }
+    if let Some(file) = global_grants_file() {
+        if let Ok(json) = serde_json::to_string(&global) {
+            let _ = std::fs::write(file, json);
+        }
+    }
+    if let Some(id) = &project_id {
+        if let Some(file) = project_grants_file(id) {
+            if let Ok(json) = serde_json::to_string(&project) {
+                let _ = std::fs::write(file, json);
+            }
+        }
+    }
+}
+
+/// Load persisted grants: global once per app run, project grants on change.
+/// Evicts the previous project's in-memory grants (after saving) so trust
+/// never leaks across projects.
+fn ensure_permissions_loaded(state: &AppState) {
+    let rt = &state.harness;
+    if !rt.permissions_global_loaded.swap(true, Ordering::SeqCst) {
+        if let Some(file) = global_grants_file() {
+            rt.engine.load(read_grants_file(&file));
+        }
+    }
+    let project_id = state.config.lock().unwrap().harness_active_project.clone();
+    let mut last = rt.permissions_project.lock().unwrap();
+    if *last != project_id {
+        // Save whatever the previous project accumulated, then evict it.
+        save_permission_grants(state);
+        if let Some(old) = last.as_ref() {
+            rt.engine.evict_project(old);
+        }
+        *last = project_id.clone();
+        if let Some(id) = &project_id {
+            if let Some(file) = project_grants_file(id) {
+                rt.engine.load(read_grants_file(&file));
+            }
+        }
+    }
 }
 
 /// Stable-ish id from a timestamp: `s<millis>`.
@@ -247,6 +335,8 @@ impl HarnessRuntime {
             mcp: Mutex::new(None),
             session_id: Mutex::new(None),
             last_prompt_tokens: Mutex::new(None),
+            permissions_global_loaded: std::sync::atomic::AtomicBool::new(false),
+            permissions_project: Mutex::new(None),
         }
     }
 }
@@ -402,6 +492,15 @@ impl ApprovalGate for UiGate {
             let _ = app.emit("harness_approval", payload);
             rx.await.unwrap_or(Approved::Denied)
         })
+    }
+
+    fn grants_changed(&self, grants: &[harness::permissions::Grant]) {
+        // A project/global grant just landed — persist immediately so trust
+        // survives a restart (or a crash mid-run).
+        if grants.iter().any(|g| g.scope.persistable()) {
+            let state: tauri::State<'_, AppState> = self.app.state();
+            save_permission_grants(&state);
+        }
     }
 }
 
@@ -618,6 +717,11 @@ pub async fn harness_agent_tools(state: State<'_, AppState>) -> Result<Vec<ToolL
     let root = project_root(&state)?;
     let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
     let (registry, _) = build_registry(jail, &state, &root);
+    let registry = if state.config.lock().unwrap().harness_subagents_enabled {
+        registry
+    } else {
+        registry.without(&["spawn_subagent"])
+    };
     Ok(registry
         .names()
         .iter()
@@ -704,12 +808,22 @@ pub async fn harness_agent_send(
 
     load_session(&state);
     let root = project_root(&state)?;
+    // Persisted grants follow the active project (global once per app run).
+    ensure_permissions_loaded(&state);
+    let project_id = state.config.lock().unwrap().harness_active_project.clone();
     let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
 
     // Tools: native sandboxed + skills + MCP (skills also extend the prompt).
+    // Single-model mode strips delegation so the model never attempts it.
+    let subagents_enabled = state.config.lock().unwrap().harness_subagents_enabled;
     let (registry, skills) = build_registry(jail.clone(), &state, &root);
+    let registry = if subagents_enabled {
+        registry
+    } else {
+        registry.without(&["spawn_subagent"])
+    };
 
     // ── Model roles (Phase 3) ──
     // In router mode the chat request REQUIRES a model name ("Server default"
@@ -804,13 +918,18 @@ pub async fn harness_agent_send(
         registry: Arc::new(registry),
         engine: state.harness.engine.clone(),
         model: orchestrator_id.clone(),
+        project: project_id,
         reasoning_effort: reasoning_effort.filter(|e| !e.is_empty() && e != "default"),
         max_turns: max_turns as usize,
-        subagents: Some(harness::agent::Subagents {
-            jail,
-            max_turns: subagent_max_turns as usize,
-            model: worker_id,
-        }),
+        subagents: if subagents_enabled {
+            Some(harness::agent::Subagents {
+                jail,
+                max_turns: subagent_max_turns as usize,
+                model: worker_id,
+            })
+        } else {
+            None
+        },
     };
 
     let result = run
@@ -957,7 +1076,8 @@ pub async fn harness_agent_abort(state: State<'_, AppState>) -> Result<(), Strin
 
 /// User decision for the pending approval prompt. `grant` = None denies;
 /// "once" allows a single call; "session" grants the tool (or command head)
-/// for 30 minutes.
+/// for 30 minutes; "project" persists the grant for this project (30 days);
+/// "global" persists it app-wide (30 days).
 #[tauri::command]
 pub async fn harness_agent_decide(
     grant: Option<String>,
@@ -967,6 +1087,8 @@ pub async fn harness_agent_decide(
     let scope = match grant.as_deref() {
         Some("once") => Approved::Once,
         Some("session") => Approved::Session,
+        Some("project") => Approved::Project,
+        Some("global") => Approved::Global,
         _ => Approved::Denied,
     };
     if let Some(tx) = sender {
@@ -1182,6 +1304,12 @@ pub async fn harness_project_remove(id: String, state: State<'_, AppState>) -> R
             }
         }
     }
+    // The removed project's grants go too — trust must not survive the
+    // project, and a re-added project starts clean.
+    if let Some(file) = project_grants_file(&id) {
+        let _ = std::fs::remove_file(file);
+    }
+    state.harness.engine.evict_project(&id);
     let mut config = state.config.lock().unwrap();
     config.harness_projects.retain(|p| p.id != id);
     if config.harness_active_project.as_deref() == Some(id.as_str()) {

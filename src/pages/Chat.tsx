@@ -94,7 +94,7 @@ type Item =
       tool: string;
       command: string | null;
       args: string;
-      resolved?: "denied" | "once" | "session";
+      resolved?: "denied" | "once" | "session" | "project" | "global";
     };
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -1049,7 +1049,7 @@ function HarnessChat() {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const decide = async (seq: number, grant: "once" | "session" | null) => {
+  const decide = async (seq: number, grant: "once" | "session" | "project" | "global" | null) => {
     setItems((prev) =>
       prev.map((it) =>
         it.kind === "approval" && it.seq === seq && !it.resolved
@@ -1236,12 +1236,18 @@ function HarnessChat() {
                     {it.args}
                   </pre>
                   {!it.resolved ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "once")}>
                         <Check size={11} /> Allow once
                       </button>
                       <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "session")}>
                         <Check size={11} /> Allow session (30 min)
+                      </button>
+                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "project")} title="Remember for this project (30 days)">
+                        <Check size={11} /> Allow project (30 days)
+                      </button>
+                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "global")} title="Remember for all projects (30 days)">
+                        <Check size={11} /> Allow global (30 days)
                       </button>
                       <button className="btn-ghost py-1 px-2 text-accent-red" onClick={() => decide(it.seq, null)}>
                         <X size={11} /> Deny
