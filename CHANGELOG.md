@@ -36,21 +36,6 @@
 - Update Cargo.lock for harness crate deps
 - Create Cargo.lock
 
-### Fixed
-
--
-
-### Added
-
-- 
-
-### Changed
-
-- 
-
-### Fixed
-
-- 
 
 ## [0.4.3] - 2026-09-04
 
