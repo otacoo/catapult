@@ -56,6 +56,79 @@ fn ignored_dir(name: &str) -> bool {
     )
 }
 
+// ── .llmignore ──────────────────────────────────────────────────────────────
+
+/// One parsed `.llmignore` pattern (gitignore-style subset).
+struct IgnorePattern {
+    /// Basename-only match (no `/` in the pattern) or rooted match.
+    rooted: bool,
+    dir_only: bool,
+    negate: bool,
+    glob: glob::Pattern,
+    /// For dir-only patterns: prefix match below this relative dir.
+    prefix: String,
+}
+
+/// Project-local ignore file for agent file tools. Same role as `.gitignore`
+/// but for LLM context: patterns hide generated/noise files from `find_files`
+/// and `search_content`. Missing file = no extra ignores.
+struct LlmIgnore {
+    patterns: Vec<IgnorePattern>,
+}
+
+impl LlmIgnore {
+    fn load(root: &std::path::Path) -> Self {
+        let text = std::fs::read_to_string(root.join(".llmignore")).unwrap_or_default();
+        let mut patterns = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let negate = line.starts_with('!');
+            let mut pat = if negate { &line[1..] } else { line };
+            let dir_only = pat.ends_with('/');
+            pat = pat.trim_end_matches('/');
+            let pat = pat.strip_prefix('/').unwrap_or(pat);
+            let rooted = pat.contains('/');
+            // `glob::Pattern` gives `*`/`?`/`[...]`/`**`; on parse failure
+            // treat the pattern as a literal string.
+            let glob = glob::Pattern::new(pat)
+                .unwrap_or_else(|_| glob::Pattern::new(&glob::Pattern::escape(pat)).unwrap());
+            patterns.push(IgnorePattern {
+                rooted,
+                dir_only,
+                negate,
+                glob,
+                prefix: if dir_only { format!("{pat}/") } else { String::new() },
+            });
+        }
+        Self { patterns }
+    }
+
+    /// `rel` = `/`-separated path relative to the project root.
+    fn is_ignored(&self, rel: &str, is_dir: bool) -> bool {
+        let base = rel.rsplit('/').next().unwrap_or(rel);
+        let mut ignored = false;
+        for p in &self.patterns {
+            let hit = if p.dir_only {
+                // Directory itself or anything beneath it.
+                (is_dir && (p.glob.matches(rel) || p.glob.matches(base)))
+                    || rel.starts_with(&p.prefix)
+                    || (!p.rooted && rel.split('/').any(|c| p.glob.matches(c)))
+            } else if p.rooted {
+                p.glob.matches(rel)
+            } else {
+                p.glob.matches(base)
+            };
+            if hit {
+                ignored = !p.negate; // last matching pattern wins
+            }
+        }
+        ignored
+    }
+}
+
 // ── read_file ───────────────────────────────────────────────────────────────
 
 pub struct ReadFileTool {
@@ -210,7 +283,7 @@ impl Tool for FindFilesTool {
         "find_files".to_string()
     }
     fn description(&self) -> String {
-        "List project files matching a glob pattern (e.g. 'src/**/*.rs'). Respects standard ignores (.git, node_modules, target, …).".to_string()
+        "List project files matching a glob pattern (e.g. 'src/**/*.rs'). Respects standard ignores (.git, node_modules, target, …) and the project's .llmignore.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -229,13 +302,22 @@ impl Tool for FindFilesTool {
         let root = self.jail.root();
         let full = root.join(&pattern);
         let pattern_str = full.to_string_lossy().replace('\\', "/");
+        let llmignore = LlmIgnore::load(&root);
         let mut found: Vec<String> = glob::glob(&pattern_str)
             .map_err(|e| anyhow::anyhow!("Invalid glob '{}': {e}", pattern_str))?
             .filter_map(|p| p.ok())
             .filter(|p| {
                 // Hard ignores: nothing under an ignored directory component.
-                !p.components()
+                if p.components()
                     .any(|c| c.as_os_str().to_str().map(ignored_dir).unwrap_or(false))
+                {
+                    return false;
+                }
+                let rel = p
+                    .strip_prefix(&root)
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                !llmignore.is_ignored(&rel, p.is_dir())
             })
             .take(FIND_CAP)
             .map(|p| {
@@ -267,7 +349,7 @@ impl Tool for SearchContentTool {
         "search_content".to_string()
     }
     fn description(&self) -> String {
-        "Regex search over project text files. Returns path:line: match, capped. Respects standard ignores.".to_string()
+        "Regex search over project text files. Returns path:line: match, capped. Respects standard ignores and the project's .llmignore.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -289,17 +371,31 @@ impl Tool for SearchContentTool {
         let root = self.jail.root();
         let matcher = glob::Pattern::new(&root.join(filter).to_string_lossy().replace('\\', "/"))
             .map_err(|e| anyhow::anyhow!("Invalid glob '{filter}': {e}"))?;
+        let llmignore = LlmIgnore::load(&root);
 
         let mut out: Vec<String> = Vec::new();
         let mut truncated = false;
-        for entry in walkdir::WalkDir::new(root)
+        for entry in walkdir::WalkDir::new(&root)
             .into_iter()
             .filter_entry(|e| {
-                e.file_type().is_file()
+                if !(e.file_type().is_file()
                     || e.file_name()
                         .to_str()
                         .map(|n| !ignored_dir(n))
-                        .unwrap_or(true)
+                        .unwrap_or(true))
+                {
+                    return false;
+                }
+                // .llmignore prunes matching subtrees before descent.
+                let rel = e
+                    .path()
+                    .strip_prefix(&root)
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                if rel.is_empty() {
+                    return true; // the root itself
+                }
+                !llmignore.is_ignored(&rel, e.file_type().is_dir())
             })
         {
             let entry = entry?;
@@ -345,7 +441,7 @@ impl Tool for SearchContentTool {
 
 // ── exec (shell) ────────────────────────────────────────────────────────────
 
-/// Head tokens auto-approved as read-only (late's "safe commands"). Anything
+/// Head tokens auto-approved as read-only ("safe commands"). Anything
 /// else goes through the approval prompt; grants are scoped per head token.
 const READONLY_COMMANDS: &[&str] = &[
     "dir", "ls", "pwd", "type", "cat", "get-content", "get-childitem", "get-location",
@@ -623,13 +719,13 @@ impl ToolRegistry {
     }
 
     /// Should this call be executed now? Read-only → yes; otherwise consult
-    /// the permission engine with the tool's approval key.
-    pub fn check_permissions(&self, name: &str, args: &Value, engine: &PermissionEngine) -> bool {
+    /// the permission engine with the tool's approval key for `project`.
+    pub fn check_permissions(&self, name: &str, args: &Value, engine: &PermissionEngine, project: Option<&str>) -> bool {
         match self.get(name) {
             None => false, // unknown tool → refuse
             Some(tool) => match tool.approval_key(args) {
                 None => true,
-                Some(key) => engine.check(&key) == Decision::Allowed,
+                Some(key) => engine.check(&key, project) == Decision::Allowed,
             },
         }
     }
@@ -697,6 +793,39 @@ mod tests {
             .unwrap()
             .execute(&json!({"path": "../escape.txt", "content": "x"}));
         assert!(err.is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn llmignore_hides_matches_from_find_and_search() {
+        let root = temp_dir("llmignore");
+        std::fs::write(root.join(".llmignore"), "*.log\nbuild/\nkeep.log\n!keep.log\n").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/out.txt"), "needle").unwrap();
+        std::fs::write(root.join("a.log"), "needle").unwrap();
+        std::fs::write(root.join("keep.log"), "needle").unwrap();
+        std::fs::write(root.join("src.txt"), "needle").unwrap();
+        let reg = registry_for(&root);
+
+        let found = reg
+            .get("find_files")
+            .unwrap()
+            .execute(&json!({"pattern": "**/*"}))
+            .unwrap();
+        assert!(!found.contains("a.log"), "glob ignored: {found}");
+        assert!(!found.contains("build"), "dir ignored: {found}");
+        assert!(found.contains("keep.log"), "negation re-includes: {found}");
+        assert!(found.contains("src.txt"), "plain file listed: {found}");
+
+        let hits = reg
+            .get("search_content")
+            .unwrap()
+            .execute(&json!({"query": "needle"}))
+            .unwrap();
+        assert!(!hits.contains("a.log"), "ignored file not searched: {hits}");
+        assert!(!hits.contains("build"), "ignored dir not searched: {hits}");
+        assert!(hits.contains("keep.log"), "negated file searched: {hits}");
+        assert!(hits.contains("src.txt"), "plain file searched: {hits}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -784,18 +913,19 @@ mod tests {
         let registry = registry_for(&root);
         let engine = crate::permissions::PermissionEngine::new();
         // read_file auto-allowed
-        assert!(registry.check_permissions("read_file", &json!({"path": "x"}), &engine));
+        assert!(registry.check_permissions("read_file", &json!({"path": "x"}), &engine, Some("p")));
         // write needs a grant
-        assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine));
+        assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         engine.grant(crate::permissions::Grant {
             tool: "write_file".into(),
             command: None,
             scope: crate::permissions::Scope::Once,
             expires: None,
+            project: Some("p".into()),
         });
-        assert!(registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine));
+        assert!(registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         // Consumed once-grant
-        assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine));
+        assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
