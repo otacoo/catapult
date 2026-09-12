@@ -565,12 +565,14 @@ function fmtTok(n: number): string {
   return `${n}`;
 }
 
-function ContextRing({ used, total, avgTokps, model, genTokens }: {
+function ContextRing({ used, total, avgTokps, model, genTokens, liveGenTps, livePromptTps }: {
   used: number | null;
   total: number | null;
   avgTokps: number | null;
   model?: string;
   genTokens?: number;
+  liveGenTps?: number | null;
+  livePromptTps?: number | null;
 }) {
   const [hover, setHover] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -664,6 +666,23 @@ function ContextRing({ used, total, avgTokps, model, genTokens }: {
                     {used != null ? fmtTok(used) : "–"}
                   </span>
                 </div>
+                <div className="flex justify-between gap-2">
+                  <span>Server gen avg</span>
+                  <span className="tabular-nums text-gray-300">
+                    {liveGenTps != null ? `${liveGenTps.toFixed(1)} t/s` : "–"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>Server prompt avg</span>
+                  <span className="tabular-nums text-gray-300">
+                    {livePromptTps != null ? `${livePromptTps.toFixed(1)} t/s` : "–"}
+                  </span>
+                </div>
+                {liveGenTps == null && (
+                  <p className="text-gray-600 pt-0.5">
+                    Live server stats need the Metrics toggle (Run → Advanced).
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -698,7 +717,7 @@ function HarnessChat() {
   const [contextUsed, setContextUsed] = useState<number | null>(null);
   // Live slot context (refreshed with the status poll); falls back to the
   // last run's usage + GGUF length when the server can't report it.
-  const [slotCtx, setSlotCtx] = useState<{ used?: number | null; total?: number | null } | null>(null);
+  const [slotCtx, setSlotCtx] = useState<{ used?: number | null; total?: number | null; live_gen_tps?: number | null; live_prompt_tps?: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeProject, setActiveProject] = useState<string | null>(null);
@@ -735,7 +754,7 @@ function HarnessChat() {
         wasRunning = running;
         setStatus(s);
         if (running) {
-          invoke<{ used?: number | null; total?: number | null }>("harness_context_stats")
+          invoke<{ used?: number | null; total?: number | null; live_gen_tps?: number | null; live_prompt_tps?: number | null }>("harness_context_stats")
             .then(setSlotCtx)
             .catch(() => {});
         } else {
@@ -1362,6 +1381,8 @@ function HarnessChat() {
               avgTokps={avgTokps}
               model={lastAssistant?.model}
               genTokens={lastAssistant?.tokens}
+              liveGenTps={slotCtx?.live_gen_tps ?? null}
+              livePromptTps={slotCtx?.live_prompt_tps ?? null}
             />
             <button
               className="btn-secondary shrink-0 py-2 px-2.5 mb-0.5"

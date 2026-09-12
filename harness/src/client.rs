@@ -277,6 +277,64 @@ impl LlmClient {
         let text = resp.text().await?;
         Ok(max_slot_n_ctx(&text))
     }
+
+    /// Server-side throughput gauges from the Prometheus endpoint (`GET
+    /// /metrics`, needs the server's Metrics toggle). Router mode requires
+    /// `?model=<id>` — pass the served router model id. `None` when the
+    /// endpoint is disabled or unreachable.
+    pub async fn server_throughput(&self, router_model: Option<&str>) -> Result<ServerThroughput> {
+        let mut req = self.http.get(format!("{}/metrics", self.base_url));
+        if let Some(model) = router_model {
+            req = req.query(&[("model", model)]);
+        }
+        let resp = req.send().await.context("Metrics request failed")?;
+        if !resp.status().is_success() {
+            return Ok(ServerThroughput::default());
+        }
+        let text = resp.text().await?;
+        Ok(parse_throughput(&text))
+    }
+}
+
+/// Average throughputs (tokens/s) from `GET /metrics`. Server-lifetime
+/// averages, not per-request — shown as "server avg" in the ring tooltip.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ServerThroughput {
+    /// `llamacpp:prompt_tokens_seconds` — prefill rate.
+    pub prompt_tps: Option<f64>,
+    /// `llamacpp:predicted_tokens_seconds` — generation rate.
+    pub gen_tps: Option<f64>,
+}
+
+/// Parse the two throughput gauges out of Prometheus text exposition.
+pub fn parse_throughput(text: &str) -> ServerThroughput {
+    let mut out = ServerThroughput::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let (name, value) = match (parts.next(), parts.next()) {
+            (Some(n), Some(v)) => (n, v),
+            _ => continue,
+        };
+        // Counter-style names with {} labels are skipped — the gauges carry
+        // no labels in single-model mode.
+        if name.contains('{') {
+            continue;
+        }
+        let v: f64 = match value.parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => continue,
+        };
+        match name {
+            "llamacpp:prompt_tokens_seconds" => out.prompt_tps = Some(v),
+            "llamacpp:predicted_tokens_seconds" => out.gen_tps = Some(v),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Largest `n_ctx` in a `GET /slots` payload, if any slot reports one.
@@ -503,6 +561,28 @@ mod tests {
     fn router_models_invalid_payload_is_empty() {
         assert!(parse_router_models("not json").is_empty());
         assert!(parse_router_models(r#"{"data":null}"#).is_empty());
+    }
+
+    #[test]
+    fn parses_throughput_gauges() {
+        let payload = "# HELP llamacpp:prompt_tokens_seconds Average prompt throughput.\n\
+            # TYPE llamacpp:prompt_tokens_seconds gauge\n\
+            llamacpp:prompt_tokens_seconds 197.368\n\
+            llamacpp:predicted_tokens_seconds 33.4448\n\
+            llamacpp:tokens_predicted_total 10\n";
+        let t = parse_throughput(payload);
+        assert_eq!(t.prompt_tps, Some(197.368));
+        assert_eq!(t.gen_tps, Some(33.4448));
+    }
+
+    #[test]
+    fn throughput_ignores_labels_and_garbage() {
+        // Labelled counters (router per-model lines) are skipped; only the
+        // plain single-model gauges are read.
+        let payload = "llamacpp:predicted_tokens_seconds{model=\"x\"} 10\nnot-a-metric\n";
+        let t = parse_throughput(payload);
+        assert_eq!(t, ServerThroughput::default());
+        assert_eq!(parse_throughput(""), ServerThroughput::default());
     }
 
     #[test]

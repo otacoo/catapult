@@ -350,6 +350,12 @@ pub struct ContextStats {
     pub used: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
+    /// Server-side avg generation throughput (needs the Metrics toggle).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_gen_tps: Option<f64>,
+    /// Server-side avg prompt (prefill) throughput (needs Metrics toggle).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_prompt_tps: Option<f64>,
 }
 
 #[tauri::command]
@@ -373,7 +379,19 @@ pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<Context
             }
         }
     }
-    Ok(ContextStats { used, total })
+    // Live server throughputs (best-effort: absent without the Metrics
+    // toggle). Router mode scopes the query to the served model.
+    let served = router_served_id(&state, &client).await;
+    let live = client
+        .server_throughput(served.as_deref())
+        .await
+        .unwrap_or_default();
+    Ok(ContextStats {
+        used,
+        total,
+        live_gen_tps: live.gen_tps.filter(|v| *v > 0.0),
+        live_prompt_tps: live.prompt_tps.filter(|v| *v > 0.0),
+    })
 }
 
 /// Connect to every enabled MCP server (cached for the app run). Servers
@@ -1054,22 +1072,27 @@ fn active_model_path(state: &AppState) -> Option<String> {
         .map(|cfg| cfg.model_path.clone())
 }
 
+/// Id of the router model being served: the loaded registration, else the
+/// first registered. `None` outside router mode or for an empty registry.
+async fn router_served_id(state: &AppState, client: &LlmClient) -> Option<String> {
+    if !is_router_mode(state) {
+        return None;
+    }
+    let models = client.router_models().await.ok()?;
+    models
+        .iter()
+        .find(|m| m.status == "loaded")
+        .or_else(|| models.first())
+        .map(|m| m.id.clone())
+}
+
 /// Installed-model path the router is (or will be) serving: the loaded
 /// registration, else the first registered. Router ids are file stems, so
 /// match installed models by stem. `None` outside router mode or when the
 /// registry is empty. Keeps the context ring, capability badges, and effort
 /// control alive in router mode with no roles set.
 async fn router_active_model_path(state: &AppState, client: &LlmClient) -> Option<String> {
-    if !is_router_mode(state) {
-        return None;
-    }
-    let models = client.router_models().await.ok()?;
-    let id = models
-        .iter()
-        .find(|m| m.status == "loaded")
-        .or_else(|| models.first())?
-        .id
-        .clone();
+    let id = router_served_id(state, client).await?;
     let config = state.config.lock().unwrap().clone();
     let installed = crate::models::list_installed_models(&config).ok()?;
     installed
