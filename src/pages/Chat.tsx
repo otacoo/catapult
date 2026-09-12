@@ -698,7 +698,6 @@ function HarnessChat() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
   const [items, setItems] = useState<Item[]>([]);
-  const [tools, setTools] = useState<ToolListing[] | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   // Slash-command autocomplete popup, dismissed with Escape until the input changes.
@@ -762,7 +761,6 @@ function HarnessChat() {
         }
       } catch {}
     };
-    invoke<ToolListing[]>("harness_agent_tools").then(setTools).catch(() => {});
     refreshCaps();
     refreshActiveProject();
     // The transcript lives in the backend — restore it so chats are
@@ -779,17 +777,30 @@ function HarnessChat() {
   // tool-call detail lives server-side.
   const restoreFromBackend = async () => {
     try {
-      const messages = await invoke<{ role: string; content?: string | null; tool_calls?: unknown }[]>(
+      const res = await invoke<{
+        messages: { role: string; content?: string | null; tool_calls?: unknown }[];
+        meta: { index: number; model?: string | null; tokens_per_sec?: number | null; gen_tokens?: number | null; prompt_tokens?: number | null; elapsed_ms?: number | null }[];
+      }>(
         "harness_agent_history",
       );
+      const metaByIndex = new Map((res.meta ?? []).map((m) => [m.index, m]));
       const restored: Item[] = [];
-      for (const m of messages) {
+      res.messages.forEach((m, i) => {
         if (m.role === "user" && m.content) {
           restored.push({ kind: "msg", role: "user", content: m.content });
         } else if (m.role === "assistant" && m.content && !m.tool_calls) {
-          restored.push({ kind: "msg", role: "assistant", content: m.content });
+          const meta = metaByIndex.get(i);
+          restored.push({
+            kind: "msg",
+            role: "assistant",
+            content: m.content,
+            model: meta?.model ?? undefined,
+            tokps: meta?.tokens_per_sec ?? null,
+            tokens: meta?.gen_tokens ?? undefined,
+            elapsedMs: meta?.elapsed_ms ?? undefined,
+          });
         }
-      }
+      });
       setItems(restored);
       setError(null);
     } catch {}
@@ -1186,7 +1197,7 @@ function HarnessChat() {
 
         {/* Messages — select-text re-enables selection (body disables it for the title bar) */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3 select-text">
-          {items.length === 0 && streamText === null && <EmptyState tools={tools} />}
+          {items.length === 0 && streamText === null && <EmptyState />}
           {items.map((it, i) => {
             if (it.kind === "msg") {
               const isUser = it.role === "user";
@@ -1476,40 +1487,11 @@ function HarnessChat() {
   );
 }
 
-interface ToolListing {
-  name: string;
-  description: string;
-  approval: string;
-}
-
-function EmptyState({ tools }: { tools: ToolListing[] | null }) {
+function EmptyState() {
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
-      <p className="text-base font-semibold text-gray-200">Catapult Chat</p>
-      <p className="text-sm text-gray-500 max-w-md">
-        The agent can use these sandboxed tools in the project directory:
-      </p>
-      <p className="text-xs text-gray-600">
-        Type <code className="font-mono text-gray-400">/help</code> for chat commands.
-      </p>
-      {tools && tools.length > 0 && (
-        <div className="flex flex-col gap-1.5 max-w-lg text-left">
-          {tools.map((t) => (
-            <div key={t.name} className="flex items-start gap-2 rounded border border-border bg-surface-2 px-2.5 py-1.5">
-              <Wrench size={11} className="text-gray-500 shrink-0 mt-0.5" />
-              <div className="min-w-0">
-                <p className="text-xs">
-                  <span className="text-gray-300 font-medium font-mono">{t.name}</span>
-                  <span className={`ml-2 text-[10px] ${t.approval === "auto" ? "text-accent-green" : "text-accent-yellow"}`}>
-                    {t.approval}
-                  </span>
-                </p>
-                <p className="text-[11px] text-gray-500 leading-snug">{t.description}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="h-full flex flex-col items-center justify-center gap-4 text-center px-6">
+      <p className="text-6xl font-bold tracking-tight text-primary select-none">Catapult</p>
+      <p className="text-sm text-gray-400">Send a message to start. Use / for commands.</p>
     </div>
   );
 }

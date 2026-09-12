@@ -66,6 +66,8 @@ pub struct HarnessRuntime {
     /// Prompt tokens of the last completed run — the freshest measure of
     /// context fill until the next run finishes.
     pub last_prompt_tokens: Mutex<Option<u64>>,
+    /// Response display metadata by transcript message index (footer stats).
+    pub meta: Mutex<std::collections::HashMap<usize, MessageMeta>>,
     /// Whether the persisted global grants were loaded this app run.
     pub permissions_global_loaded: std::sync::atomic::AtomicBool,
     /// Project id whose persisted grants are currently in memory (None =
@@ -83,6 +85,28 @@ pub struct PersistedSession {
     pub created: i64,
     pub updated: i64,
     pub messages: Vec<ChatMessage>,
+    /// Per-response display metadata (model, tok/s, …) keyed by message
+    /// index. Old session files without it still load (`default`).
+    #[serde(default)]
+    pub meta: Vec<MessageMeta>,
+}
+
+/// Display metadata for one assistant response turn: what the footer under
+/// each bubble shows. Persisted with the session so footers survive restarts;
+/// never sent to the model (stored alongside, not inside, the transcript).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageMeta {
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// Listing entry for the Chat sidebar.
@@ -258,7 +282,7 @@ fn sessions_for_project(project: Option<&str>) -> Vec<PersistedSession> {
 /// Load a persisted session into the runtime (replaces history + id).
 fn adopt_session(state: &AppState, s: PersistedSession) {
     *state.harness.history.lock().unwrap() = s.messages;
-    *state.harness.session_id.lock().unwrap() = Some(s.id);
+    adopt_meta(state, s.meta);
 }
 
 /// Resume the most recently updated session for the active project (app
@@ -315,12 +339,36 @@ fn save_session(state: &AppState) {
         created,
         updated: now,
         messages: history,
+        meta: stored_meta(state),
     };
     if let Some(file) = session_file(&id) {
         if let Ok(json) = serde_json::to_string(&session) {
             let _ = std::fs::write(file, json);
         }
     }
+}
+
+/// Snapshot of the runtime meta map for persistence (index order).
+fn stored_meta(state: &AppState) -> Vec<MessageMeta> {
+    let mut v: Vec<MessageMeta> = state.harness.meta.lock().unwrap().values().cloned().collect();
+    v.sort_by_key(|m| m.index);
+    v
+}
+
+/// Restore a session's meta map from its persisted form.
+fn adopt_meta(state: &AppState, meta: Vec<MessageMeta>) {
+    *state.harness.meta.lock().unwrap() =
+        meta.into_iter().map(|m| (m.index, m)).collect();
+}
+
+/// Drop a session's meta map (new chat / project switch / delete).
+fn clear_meta(state: &AppState) {
+    state.harness.meta.lock().unwrap().clear();
+}
+
+/// Drop meta entries at or past `len` (rewind truncates the transcript).
+fn truncate_meta(state: &AppState, len: usize) {
+    state.harness.meta.lock().unwrap().retain(|&i, _| i < len);
 }
 
 impl HarnessRuntime {
@@ -335,6 +383,7 @@ impl HarnessRuntime {
             mcp: Mutex::new(None),
             session_id: Mutex::new(None),
             last_prompt_tokens: Mutex::new(None),
+            meta: Mutex::new(std::collections::HashMap::new()),
             permissions_global_loaded: std::sync::atomic::AtomicBool::new(false),
             permissions_project: Mutex::new(None),
         }
@@ -1009,13 +1058,34 @@ pub async fn harness_agent_send(
     // Persist the transcript for the session (also on abort/error, so the
     // conversation stays inspectable and resumes after a restart).
     *state.harness.history.lock().unwrap() = history;
-    save_session(&state);
 
     // Resolve the display model name: the role model id, else the loaded one.
     let model = match orchestrator_id.clone() {
         Some(id) => Some(id),
         None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
     };
+    // Footer stats for the finished turn stick to its transcript message so
+    // they survive restarts (recorded before the save below).
+    if let Ok(outcome) = &result {
+        let history = state.harness.history.lock().unwrap();
+        if let Some(idx) = history
+            .iter()
+            .rposition(|m| m.role == "assistant" && m.tool_calls.is_none())
+        {
+            state.harness.meta.lock().unwrap().insert(
+                idx,
+                MessageMeta {
+                    index: idx,
+                    model: model.clone(),
+                    tokens_per_sec: outcome.tokens_per_sec,
+                    gen_tokens: Some(outcome.gen_tokens),
+                    prompt_tokens: outcome.prompt_tokens,
+                    elapsed_ms: Some(outcome.elapsed_ms),
+                },
+            );
+        }
+    }
+    save_session(&state);
     match result {
         Ok(outcome) => {
             *state.harness.last_prompt_tokens.lock().unwrap() = outcome.prompt_tokens;
@@ -1215,6 +1285,7 @@ pub async fn harness_agent_decide(
 #[tauri::command]
 pub async fn harness_agent_reset(state: State<'_, AppState>) -> Result<(), String> {
     state.harness.history.lock().unwrap().clear();
+    clear_meta(&state);
     *state.harness.session_id.lock().unwrap() = None;
     let mut pending = state.harness.pending.lock().unwrap();
     if let Some(tx) = pending.take() {
@@ -1225,11 +1296,21 @@ pub async fn harness_agent_reset(state: State<'_, AppState>) -> Result<(), Strin
 
 /// The current runtime transcript (frontend rebuilds its view after a session
 /// load or project switch). Loading the persisted session first so chats are
-/// consultable without the server running.
+/// consultable without the server running. Display metadata rides along so
+/// response footers survive restarts.
+#[derive(Debug, Serialize)]
+pub struct HistoryResponse {
+    pub messages: Vec<ChatMessage>,
+    pub meta: Vec<MessageMeta>,
+}
+
 #[tauri::command]
-pub async fn harness_agent_history(state: State<'_, AppState>) -> Result<Vec<ChatMessage>, String> {
+pub async fn harness_agent_history(state: State<'_, AppState>) -> Result<HistoryResponse, String> {
     load_session(&state);
-    Ok(state.harness.history.lock().unwrap().clone())
+    Ok(HistoryResponse {
+        messages: state.harness.history.lock().unwrap().clone(),
+        meta: stored_meta(&state),
+    })
 }
 
 // ── Sessions ────────────────────────────────────────────────────────────────
@@ -1260,6 +1341,7 @@ pub async fn harness_session_load(id: String, state: State<'_, AppState>) -> Res
     let s = read_session_file(&path).ok_or("Session file is corrupt")?;
     *state.harness.history.lock().unwrap() = s.messages;
     *state.harness.session_id.lock().unwrap() = Some(s.id);
+    adopt_meta(&state, s.meta);
     Ok(())
 }
 
@@ -1268,6 +1350,7 @@ pub async fn harness_session_delete(id: String, state: State<'_, AppState>) -> R
     if state.harness.session_id.lock().unwrap().as_deref() == Some(id.as_str()) {
         // Deleting the open session also starts a fresh one.
         state.harness.history.lock().unwrap().clear();
+        clear_meta(&state);
         *state.harness.session_id.lock().unwrap() = None;
     }
     if let Some(path) = session_file(&id) {
@@ -1285,6 +1368,7 @@ pub async fn harness_agent_rewind(state: State<'_, AppState>) -> Result<(), Stri
     };
     history.truncate(idx);
     drop(history);
+    truncate_meta(&state, idx);
     save_session(&state);
     Ok(())
 }
@@ -1431,6 +1515,7 @@ pub async fn harness_project_remove(id: String, state: State<'_, AppState>) -> R
         config.harness_active_project = None;
         // The active project is gone — drop its transcript too.
         state.harness.history.lock().unwrap().clear();
+        clear_meta(&state);
         *state.harness.session_id.lock().unwrap() = None;
     }
     config.save().map_err(|e| e.to_string())
@@ -1452,6 +1537,7 @@ pub async fn harness_project_active(id: Option<String>, state: State<'_, AppStat
     // under the old project, and the new project's most recent session (if
     // any) is adopted. Conversations never leak across projects.
     state.harness.history.lock().unwrap().clear();
+    clear_meta(&state);
     *state.harness.session_id.lock().unwrap() = None;
     let active_path = {
         let c = state.config.lock().unwrap();
