@@ -682,6 +682,8 @@ function HarnessChat() {
   const [tools, setTools] = useState<ToolListing[] | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  // Slash-command autocomplete popup, dismissed with Escape until the input changes.
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [streamText, setStreamText] = useState<string | null>(null);
   // Reasoning buffer for the in-flight run (shown as a collapsible block).
   const [reasoningText, setReasoningText] = useState<string | null>(null);
@@ -816,6 +818,11 @@ function HarnessChat() {
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [items, streamText, reasoningText]);
+
+  // Slash-command autocomplete: a single-token "/" prefix filters SLASH_COMMANDS.
+  const slashMatches = !slashDismissed && input.startsWith("/") && !/\s/.test(input)
+    ? SLASH_COMMANDS.filter((c) => c.name.startsWith(input.toLowerCase()))
+    : [];
 
   const send = async () => {
     const text = input.trim();
@@ -1301,6 +1308,22 @@ function HarnessChat() {
 
           {/* Input */}
         <div className="border-t border-border p-3">
+          {slashMatches.length > 0 && (
+            <div className="mb-2 rounded border border-border bg-surface-2 py-1">
+              {slashMatches.map((c) => (
+                <button
+                  key={c.name}
+                  className="w-full flex items-center gap-2 px-2.5 py-1 text-left text-xs hover:bg-surface-3"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setInput(c.name); setSlashDismissed(true); }}
+                  title={c.hint}
+                >
+                  <span className="font-mono text-gray-200">{c.name}</span>
+                  <span className="text-gray-500 truncate">{c.hint}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachments.map((a, i) => (
@@ -1353,11 +1376,17 @@ function HarnessChat() {
               }
               value={input}
               disabled={streaming || !canSend}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => { setInput(e.target.value); setSlashDismissed(false); }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   send();
+                } else if (e.key === "Tab" && slashMatches.length > 0) {
+                  e.preventDefault();
+                  setInput(slashMatches[0].name);
+                } else if (e.key === "Escape" && slashMatches.length > 0) {
+                  e.preventDefault();
+                  setSlashDismissed(true);
                 }
               }}
             />
