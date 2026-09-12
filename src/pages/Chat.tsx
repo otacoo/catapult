@@ -1490,7 +1490,7 @@ function HarnessChat() {
 function EmptyState() {
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 text-center px-6">
-      <p className="text-6xl font-bold tracking-tight text-primary select-none">Catapult</p>
+      <p className="text-8xl font-bold font-sans tracking-tight text-primary select-none">Catapult</p>
       <p className="text-sm text-gray-400">Send a message to start. Use / for commands.</p>
     </div>
   );

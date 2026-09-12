@@ -988,8 +988,7 @@ export default function Server() {
             const overVram = sizesKnown && vramMb !== null && vramMb > 0 && (combined as number) > vramMb * 1048576;
             return (
               <>
-                <h2 className="section-title">Harness models</h2>
-                <p className="section-desc mb-3">Same roles as Settings → Chat → Agent. Launch below starts the matching server mode.</p>
+                <h2 className="section-title">Models</h2>
                 <div className="space-y-2">
                   <div className="flex items-center gap-3 px-3 py-2 border border-border">
                     <span className="text-xs text-gray-500 w-24 shrink-0">Orchestrator</span>
