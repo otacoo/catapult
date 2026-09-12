@@ -664,14 +664,38 @@ export default function Server() {
     };
   }, []);
 
+  // Harness model authority (roles decide the launch mode + estimate target).
+  const harnessPanel = !!harness?.chat && !!(harness?.orch || harness?.worker);
+  const harnessSingle = !harness?.worker || harness?.worker === harness?.orch;
+  // Estimate/bench target: explicit model, else the harness orchestrator.
+  const estimatePath = config.model_path || (harnessPanel ? (harness?.orch ?? "") : "");
+  const fmtGB = (bytes: number) => `${(bytes / 1073741824).toFixed(1)} GB`;
+  const roleInfo = (path: string | null) => {
+    if (!path) return null;
+    const m = models.find((x) => x.path === path);
+    return { name: m?.name ?? path.split(/[/\\]/).pop() ?? path, size: m?.size_bytes ?? null };
+  };
+
+  // Same roles as Settings → Chat → Agent (one setting, two surfaces).
+  const setHarnessRole = async (role: "orchestrator" | "worker", path: string | null) => {
+    const next = role === "orchestrator"
+      ? { orch: path, worker: harness?.worker ?? null }
+      : { orch: harness?.orch ?? null, worker: path };
+    setHarness((h) => (h ? { ...h, orch: next.orch, worker: next.worker } : h));
+    try {
+      await invoke("set_harness_roles", { orchestrator: next.orch, worker: next.worker });
+    } catch {}
+    window.dispatchEvent(new CustomEvent("catapult-settings"));
+  };
+
   // Live memory estimate — debounced as settings change
   useEffect(() => {
-    if (!config.model_path) { setMemoryEstimate(null); return; }
-    const model = models.find((m) => m.path === config.model_path);
+    if (!estimatePath) { setMemoryEstimate(null); return; }
+    const model = models.find((m) => m.path === estimatePath);
     const timer = setTimeout(async () => {
       try {
         const est = await invoke<MemoryEstimate>("estimate_model_memory", {
-          modelPath: config.model_path,
+          modelPath: estimatePath,
           modelSizeMb: Math.round((model?.size_bytes ?? 0) / (1024 * 1024)),
           nCtx: config.n_ctx,
           cacheTypeK: config.cache_type_k,
@@ -679,11 +703,11 @@ export default function Server() {
           nGpuLayers: config.n_gpu_layers,
         });
         setMemoryEstimate(est);
-        sessionStorage.setItem(SESSION_ESTIMATE_KEY, JSON.stringify({ modelPath: config.model_path, estimate: est }));
+        sessionStorage.setItem(SESSION_ESTIMATE_KEY, JSON.stringify({ modelPath: estimatePath, estimate: est }));
       } catch {}
     }, 300);
     return () => clearTimeout(timer);
-  }, [config.model_path, config.n_ctx, config.parallel, config.cache_type_k, config.cache_type_v, config.n_gpu_layers, models]);
+  }, [config.model_path, estimatePath, config.n_ctx, config.parallel, config.cache_type_k, config.cache_type_v, config.n_gpu_layers, models]);
 
   const applyModelConfig = async (modelPath: string) => {
     const model = models.find((m) => m.path === modelPath);
@@ -702,13 +726,14 @@ export default function Server() {
   };
 
   const autoEstimate = async () => {
-    const model = models.find((m) => m.path === config.model_path);
+    const target = config.model_path || estimatePath;
+    const model = models.find((m) => m.path === target);
     if (!model) { setError("Select a model first."); return; }
     setEstimating(true);
     setError(null);
     try {
       const suggested = await invoke<ServerConfig>("suggest_server_config", {
-        modelPath: config.model_path,
+        modelPath: target,
         modelSizeMb: Math.round(model.size_bytes / (1024 * 1024)),
       });
       const notes = await invoke<SuggestedConfig>("suggest_model_config", {
@@ -736,7 +761,8 @@ export default function Server() {
 
   const runBench = async () => {
     if (benchSession.loading) return;
-    const model = models.find((m) => m.path === config.model_path);
+    const target = config.model_path || estimatePath;
+    const model = models.find((m) => m.path === target);
     if (!model) { setError("Select a model first."); return; }
     benchSession = { loading: true, result: null, error: null };
     setBenchLoading(true);
@@ -744,7 +770,7 @@ export default function Server() {
     setBenchResult(null);
     try {
       const res = await invoke<BenchResult>("run_quick_benchmark", {
-        modelPath: config.model_path,
+        modelPath: target,
         nPrompt: 512,
         nGen: 128,
         nThreads: config.n_threads,
@@ -792,17 +818,6 @@ export default function Server() {
     }
     setConfig((c) => ({ ...c, model_path: "", mmproj_path: null }));
     invoke("set_selected_model", { modelPath: null }).catch(() => {});
-  };
-
-  // Harness mode with roles set: the Run tab shows the planned models
-  // instead of the single-model picker (roles are the model authority).
-  const harnessPanel = !!harness?.chat && !!(harness?.orch || harness?.worker);
-  const harnessSingle = !harness?.worker || harness?.worker === harness?.orch;
-  const fmtGB = (bytes: number) => `${(bytes / 1073741824).toFixed(1)} GB`;
-  const roleInfo = (path: string | null) => {
-    if (!path) return null;
-    const m = models.find((x) => x.path === path);
-    return { name: m?.name ?? path.split(/[/\\]/).pop() ?? path, size: m?.size_bytes ?? null };
   };
 
   const startServer = async () => {
@@ -974,21 +989,37 @@ export default function Server() {
             return (
               <>
                 <h2 className="section-title">Harness models</h2>
-                <p className="section-desc mb-3">Planned in Settings → Chat → Agent roles. Launch below starts the matching server mode.</p>
+                <p className="section-desc mb-3">Same roles as Settings → Chat → Agent. Launch below starts the matching server mode.</p>
                 <div className="space-y-2">
                   <div className="flex items-center gap-3 px-3 py-2 border border-border">
                     <span className="text-xs text-gray-500 w-24 shrink-0">Orchestrator</span>
-                    <span className="text-sm text-gray-200 truncate flex-1">{orch?.name}</span>
+                    <select
+                      className="input flex-1 py-1 px-2 text-xs min-w-0"
+                      value={harness.orch ?? ""}
+                      onChange={(e) => setHarnessRole("orchestrator", e.target.value || null)}
+                    >
+                      <option value="">Server default</option>
+                      {models.map((m) => (
+                        <option key={m.id} value={m.path}>{m.name}</option>
+                      ))}
+                    </select>
                     <span className="text-xs text-gray-500 shrink-0">{orch?.size !== null && orch?.size !== undefined ? `≈ ${fmtGB(orch.size)}` : "size unknown"}</span>
                     <span className="text-[11px] text-gray-600 shrink-0">{params("orchestrator")}</span>
                   </div>
                   <div className="flex items-center gap-3 px-3 py-2 border border-border">
                     <span className="text-xs text-gray-500 w-24 shrink-0">Worker</span>
-                    {harnessSingle ? (
-                      <span className="text-sm text-gray-400 flex-1">Same as orchestrator (single model)</span>
-                    ) : (
+                    <select
+                      className="input flex-1 py-1 px-2 text-xs min-w-0"
+                      value={harness.worker ?? ""}
+                      onChange={(e) => setHarnessRole("worker", e.target.value || null)}
+                    >
+                      <option value="">Same as orchestrator</option>
+                      {models.map((m) => (
+                        <option key={m.id} value={m.path}>{m.name}</option>
+                      ))}
+                    </select>
+                    {!harnessSingle && (
                       <>
-                        <span className="text-sm text-gray-200 truncate flex-1">{worker?.name}</span>
                         <span className="text-xs text-gray-500 shrink-0">{worker?.size !== null && worker?.size !== undefined ? `≈ ${fmtGB(worker.size)}` : "size unknown"}</span>
                         <span className="text-[11px] text-gray-600 shrink-0">{params("worker")}</span>
                       </>
@@ -1109,7 +1140,7 @@ export default function Server() {
         <div className="w-[450px] shrink-0 overflow-hidden flex flex-col gap-5 pr-2">
 
         {/* Memory estimate */}
-        {config.model_path && (
+        {estimatePath && (
           <div className="card">
             <div className="flex items-center justify-between mb-3">
               <h2 className="section-title mb-0">Memory Estimate</h2>
@@ -1122,7 +1153,7 @@ export default function Server() {
         )}
 
         {/* Quick bench result */}
-        {quickBenchEnabled && (benchResult || benchLoading || benchError || !config.model_path) && (
+        {quickBenchEnabled && (benchResult || benchLoading || benchError || !estimatePath) && (
           <div className="card">
             <div className="flex items-center justify-between">
               <h2 className="section-title mb-0">Quick Bench</h2>
@@ -1132,7 +1163,7 @@ export default function Server() {
                 </button>
               )}
             </div>
-            {!config.model_path ? (
+            {!estimatePath ? (
               <p className="text-xs text-gray-500 mt-2">Load a model first.</p>
             ) : (
               <>
