@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.5.1] - 2026-09-12
+
+### Added
+
+- Support .llmignore in file tools
+- Show built-in system prompt in Settings
+
+### Changed
+
+- Clean up styling
+- Branded chat empty state; persist response footers
+- Show server throughput gauges in ring tooltip
+- Role pickers and estimate target in Run harness panel
+- Harness model authority in Settings and Run tab
+- Single-model role shortcut; ring ceiling in router mode
+- Per-role server settings in router preset
+- Resolve ring ceiling from served router model
+- Single-model harness mode toggle
+- Persist project/global approval grants
+- Tag permission grants per project
+- Refresh app icons from new charcoal/red design
+- Keep original app icon as backup
+- Sync new icon into Tauri icons dir
+- Share OS shell guidance with subagent prompts
+- Space harness cards in Chat settings
+- Restyle app icon in charcoal and red
+
 ## [0.5.0] - 2026-09-12
 
 ### Added
@@ -36,7 +63,6 @@
 - Update Cargo.lock for harness crate deps
 - Create Cargo.lock
 
-
 ## [0.4.3] - 2026-09-04
 
 ### Added
@@ -48,7 +74,6 @@
 
 - Models can be deselected on Run and Dashboard to run without a single model
 - Quick Bench can be toggled off in the options menu
-
 
 ## [0.4.2] - 2026-09-03
 
@@ -160,14 +185,14 @@
 ### Added
 
 - **Tools/MCP page**: A new tab between Models and Run. It manages app-wide built-in file tools plus MCP servers. MCP servers are persisted to `{data_dir}/catapult/mcp.json` (Cursor-compatible shape) and attached to every run via `--mcp-servers-config`; their tools appear in the chat UI as `<server>_<tool>` (e.g. a web fetch/search server).
-- **Working directory option**: Server launches now run `llama-server` with a configurable working directory — the CWD your model's built-in tools (`read_file`, `file_glob_search`, `grep_search`, …) operate in. Stored per-app in `AppConfig` and auto-applied on load, it can be overridden per session from the Advanced tab. It's a default directory, not a sandbox: write-access prompts are still handled by llama.cpp's WebUI.
+- **Working directory option**: Server launches now run `llama-server` with a configurable working directory â the CWD your model's built-in tools (`read_file`, `file_glob_search`, `grep_search`, â¦) operate in. Stored per-app in `AppConfig` and auto-applied on load, it can be overridden per session from the Advanced tab. It's a default directory, not a sandbox: write-access prompts are still handled by llama.cpp's WebUI.
 - **Settings search bar**: A search box under the Run page tab bar finds any setting across all six tabs (Context, Hardware, Sampling, Server, Chat, Advanced), jumps to the match with a highlight, and supports keyboard navigation (arrows + Enter, Escape to close).
 - **Tool gating tests**: 14 unit tests for the tool set normalization, argument collapsing, and sanitization (`src/utils/tools.test.ts`).
 
 ### Changed
 
-- **Run page layout**: Two-column layout — the model selector sits above both columns, server configuration tabs occupy the right (larger) column, and Memory Estimate + Server Logs live in a fixed left column. Logs stretch to the window height and long lines now wrap instead of scrolling horizontally.
-- **Single embedded chat**: Removed the separate "Pop out" chat window. "Open Chat" now navigates to the embedded Chat tab, giving one WebUI instance instead of two independent browser contexts. Chat history and settings persist in the webview's localStorage per `host:port` — changing the server port starts a fresh origin.
+- **Run page layout**: Two-column layout â the model selector sits above both columns, server configuration tabs occupy the right (larger) column, and Memory Estimate + Server Logs live in a fixed left column. Logs stretch to the window height and long lines now wrap instead of scrolling horizontally.
+- **Single embedded chat**: Removed the separate "Pop out" chat window. "Open Chat" now navigates to the embedded Chat tab, giving one WebUI instance instead of two independent browser contexts. Chat history and settings persist in the webview's localStorage per `host:port` â changing the server port starts a fresh origin.
 - **File tools moved to Tools page**: The built-in tool picker left the Run page's Advanced tab. Tool selection is now app-wide (`AppConfig.server_tools`) and overrides any preset/session value on every start, so stale tool names can never abort llama-server.
 
 ### Fixed
@@ -179,11 +204,11 @@
 
 ### Added
 
-- **API tab**: Shows live connection details for the running server — OpenAI-compatible base URL, chat/completions/embeddings endpoints, model ID, alias, path, context size, slots, and API key — all copyable, plus a ready-to-paste client configuration (environment variables) for OpenAI SDKs.
+- **API tab**: Shows live connection details for the running server â OpenAI-compatible base URL, chat/completions/embeddings endpoints, model ID, alias, path, context size, slots, and API key â all copyable, plus a ready-to-paste client configuration (environment variables) for OpenAI SDKs.
 - **Memory estimate**: The Run page now shows a live visual breakdown of estimated VRAM and RAM usage (model weights / KV cache / overhead) as bars against your hardware, updating as settings change. KV cache sizing accounts for GQA head counts, cache dtypes, and model context.
 - **Auto-estimate button**: One click suggests GPU offload, context size, and cache types that fit your hardware. Context fitting uses the model's real layer/embedding metadata and sizes the KV cache to the VRAM left after offloaded weights.
-- **`--fit` support**: The Fit toggle (Hardware tab) is now wired up — when on, `--fit on` is passed and `--ctx-size`/`--n-gpu-layers` are left to llama-server so it auto-fits context and layers to device memory.
-- **App update settings**: New "App Updates" section on the Dashboard with a "Check for updates on app start" toggle and a manual "Check now" button. Disabled by default — no automatic update checks.
+- **`--fit` support**: The Fit toggle (Hardware tab) is now wired up â when on, `--fit on` is passed and `--ctx-size`/`--n-gpu-layers` are left to llama-server so it auto-fits context and layers to device memory.
+- **App update settings**: New "App Updates" section on the Dashboard with a "Check for updates on app start" toggle and a manual "Check now" button. Disabled by default â no automatic update checks.
 - **HuggingFace sort options**: Browse tab gained sort dropdown (By downloads / By stars / Newest) next to the owner filter.
 - **CUDA version detection**: Runtime asset selection now prefers `nvcc --version` (falling back to `nvidia-smi`) and penalizes assets whose CUDA version doesn't match the installed toolkit, so a mismatched build never gets the "Recommended" badge. New `cuda-X.Y` asset naming is also parsed.
 - **Wizard window controls**: The first-launch wizard now has a drag region and minimize/maximize/close buttons.
@@ -196,10 +221,10 @@
 
 ### Fixed
 
-- **Server stuck on "Starting…" forever**: Readiness detection only matched "HTTP server listening" / "server is listening"; newer llama.cpp logs "listening on http://…", which is now also matched.
+- **Server stuck on "Startingâ¦" forever**: Readiness detection only matched "HTTP server listening" / "server is listening"; newer llama.cpp logs "listening on http://â¦", which is now also matched.
 - **Chat conversation resetting on tab switch**: The embedded WebUI iframe is now kept alive (module-scoped element) and re-attached instead of being recreated on every visit.
 - **mmproj handling**: Turning "mmproj Auto" off no longer injects `--no-mmproj`; it simply stops auto-selecting a projector. The old "mmproj URL" field (which rejected local paths) is now "mmproj Path" and passes `--mmproj` with a local file path.
-- **Memory estimate massively overshooting**: KV cache was computed with the full embedding dimension (ignoring grouped-query attention) and scaled with `--parallel`; both are now correct, cutting estimates by up to ~8× on GQA models.
+- **Memory estimate massively overshooting**: KV cache was computed with the full embedding dimension (ignoring grouped-query attention) and scaled with `--parallel`; both are now correct, cutting estimates by up to ~8Ã on GQA models.
 - **Auto-update check on startup**: Removed the automatic updater check that fired on app start (and on the Runtime tab); checks now only happen when the user asks.
 - **Server logs**: Moved below the Memory Estimate card and made selectable for copying.
 
@@ -221,7 +246,7 @@
 
 ### Fixed
 
-- **macOS app unresponsive (issue #8)**: The debounce introduced in 0.1.2 did not fully resolve the issue. The root cause was the initial `isMaximized()` call on mount, which on macOS triggers a resize event, which calls `isMaximized()` again — an infinite loop. Removed the initial call entirely; the debounced resize handler already keeps the maximize indicator in sync.
+- **macOS app unresponsive (issue #8)**: The debounce introduced in 0.1.2 did not fully resolve the issue. The root cause was the initial `isMaximized()` call on mount, which on macOS triggers a resize event, which calls `isMaximized()` again â an infinite loop. Removed the initial call entirely; the debounced resize handler already keeps the maximize indicator in sync.
 
 - **TUI crash in logs tab (issue #13)**: After restarting the server, the new log file is shorter than the previous one. If the scroll position was beyond the end of the new log, the slice operation panicked with an out-of-range index. The scroll offset is now clamped to the new line count on every tick, with an additional guard in the render path.
 
@@ -233,7 +258,7 @@
 
 - **`--parallel 1` not emitted (issue #11)**: The `--parallel` flag was only emitted when the value was greater than 1. Since llama.cpp defaults to 4 parallel slots when the flag is omitted, users could not explicitly request single-slot mode from the UI. The flag is now always emitted.
 
-- **`--no-cont-batching` not emitted (issue #11)**: Disabling continuous batching in the UI had no effect — the `--no-cont-batching` flag was never passed to llama-server. It is now emitted when the toggle is off.
+- **`--no-cont-batching` not emitted (issue #11)**: Disabling continuous batching in the UI had no effect â the `--no-cont-batching` flag was never passed to llama-server. It is now emitted when the toggle is off.
 
 - **Virtual GPU selected over real GPU on Windows (issue #9)**: GPU detection via WMI returned all video adapters in arbitrary order, so virtual adapters (Hyper-V, Microsoft Basic Display, VMware, etc.) could be picked as the primary GPU. Virtual adapters are now filtered out when a real GPU is present.
 
