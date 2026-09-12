@@ -796,7 +796,6 @@ export default function Models() {
                           <div className="flex gap-3 mt-1 text-xs text-gray-500">
                             <span>↓ {(model.downloads / 1000).toFixed(0)}K</span>
                             <span>♥ {model.likes}</span>
-                            <span>{model.files.length} GGUF files</span>
                           </div>
                         </div>
                         {expandedRepo === model.repo_id ? (
@@ -811,7 +810,11 @@ export default function Models() {
                       <div className="mt-3 pt-3 border-t border-border space-y-1.5">
                         {repoFiles[model.repo_id] ? (
                             repoFiles[model.repo_id].filter((f) => !f.is_mmproj && !f.is_dspark).length > 0 ? (
-                              repoFiles[model.repo_id].filter((f) => !f.is_mmproj && !f.is_dspark).map((f) => {
+                              <>
+                                <div className="px-2 text-[11px] text-gray-500">
+                                  {repoFiles[model.repo_id].filter((f) => !f.is_mmproj && !f.is_dspark).length} GGUF files
+                                </div>
+                              {repoFiles[model.repo_id].filter((f) => !f.is_mmproj && !f.is_dspark).map((f) => {
                               const dl = downloads[f.filename];
                               const hfBasename = f.filename.includes('/') ? f.filename.split('/').pop()! : f.filename;
                               const isInstalled = installed.some(
@@ -901,7 +904,8 @@ export default function Models() {
                                   )}
                                 </div>
                               );
-                            })
+                            })}
+                              </>
                           ) : (
                             <p className="text-xs text-gray-500 px-2">
                               No GGUF files in this repo.
