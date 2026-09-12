@@ -467,6 +467,7 @@ name = "catapult"
 version = "0.4.3"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "flate2",
@@ -1670,9 +1671,13 @@ version = "0.4.3"
 dependencies = [
  "anyhow",
  "futures",
+ "glob",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]
