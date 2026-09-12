@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.5.0] - 2026-09-12
+
+### Added
+
+- Editable system prompt with /help as chat bubble
+- Isolated chats per project with collapsed tool cards and OS-aware prompt
+- Live slot context ring with card-styled hover and fixed full_gpu warning
+- Server log notes and working context ring details
+- KV-aware Auto-estimate with loading status fixes and error copy removal
+- Clear role-registration errors with copyable errors and user copy feedback
+- Lazy worker loading, router preset dedupe, and failed-model fast exit
+- Reasoning effort levels parsed from model chat template
+- Chat settings section with git worktrees in sidebar
+- Always-on chat with project gating, live settings toggle, and loading status
+- Fix router roles fallback and registry coverage
+- Chat UX: router-mode default, load-retry, attachments, context ring
+- Markdown chat rendering with footer dots, persistent reasoning, and input row polish
+- Chat UX: text selection, message times, reasoning block, effort picker, and caps
+- Chat v2: projects sidebar, sessions, response metadata, and actions
+- Skills and MCP tools in the harness with one-shot notices
+- Model roles: orchestrator/worker assignment over router API
+- Settings window with category sidebar and update badge on gear
+- Harness settings: budgets, tool listing in options and chat
+- Ephemeral subagents: coder/researcher delegation with session persistence
+- Agent loop with sandboxed tools and approval flow
+- Harness tools: sandboxed file ops, search, exec allowlist, and permission engine
+- Harness client: SSE streaming, JSON repair, and native chat
+- Harness scaffold: workspace crate, PathJail sandbox, and chat mode toggle
+- Omittable sampling, cache types, and batch sizes
+
+### Changed
+
+- Ignore workspace target dir in Vite watcher; align updater plugin versions
+- Update Cargo.lock for harness crate deps
+- Create Cargo.lock
+
+### Fixed
+
+-
+
+### Added
+
+- 
+
+### Changed
+
+- 
+
+### Fixed
+
+- 
+
 ## [0.4.3] - 2026-09-04
 
 ### Added
