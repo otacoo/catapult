@@ -770,6 +770,7 @@ fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, 
         v.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0)
     };
     let cpu_tensors = parse_num(extra.get("n-cpu-moe")) > 0
+        || parse_num(extra.get("n-cpu-ffn")) > 0
         || parse_num(extra.get("spec-draft-n-cpu-moe")) > 0
         || extra.contains_key("cpu-moe")
         || extra.contains_key("spec-draft-cpu-moe")
@@ -1535,6 +1536,21 @@ mod tests {
         };
         let (args, _) = build_args_with_notes(&config);
         assert!(!args.contains(&"--load-mode".to_string()));
+    }
+
+    #[test]
+    fn build_args_emits_n_cpu_ffn_with_load_mode() {
+        let mut extra = HashMap::new();
+        extra.insert("n-cpu-ffn".to_string(), "4".to_string());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        let idx = args.iter().position(|a| a == "--n-cpu-ffn").unwrap();
+        assert_eq!(args[idx + 1], "4");
+        assert!(notes.iter().any(|n| n.contains("--load-mode")));
     }
 
     #[test]

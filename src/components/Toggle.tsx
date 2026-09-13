@@ -1,5 +1,5 @@
-export default function Toggle({ label, hint, checked, onChange }: {
-  label?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;
+export default function Toggle({ label, hint, flag, checked, onChange }: {
+  label?: string; hint?: string; flag?: string; checked: boolean; onChange: (v: boolean) => void;
 }) {
   return (
     <div className="flex items-start gap-3">
@@ -9,7 +9,7 @@ export default function Toggle({ label, hint, checked, onChange }: {
       </button>
       {(label || hint) && (
         <div>
-          {label && <p className="text-xs font-medium text-gray-300">{label}</p>}
+          {label && <p className="text-xs font-medium text-gray-300">{label}{flag && <code className="ml-1.5 rounded bg-surface-3 px-1 py-px font-mono text-[10px] font-normal text-gray-500">{flag}</code>}</p>}
           {hint && <p className="text-xs text-gray-600">{hint}</p>}
         </div>
       )}

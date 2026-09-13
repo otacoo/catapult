@@ -32,15 +32,20 @@ import {
 
 const KV_TYPES = ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"] as const;
 
-function Slider({ label, hint, value, min, max, step, onChange, format }: {
-  label: string; hint?: string; value: number;
+function FlagChip({ flag }: { flag?: string }) {
+  if (!flag) return null;
+  return <code className="ml-1.5 rounded bg-surface-3 px-1 py-px font-mono text-[10px] font-normal text-gray-500">{flag}</code>;
+}
+
+function Slider({ label, hint, flag, value, min, max, step, onChange, format }: {
+  label: string; hint?: string; flag?: string; value: number;
   min: number; max: number; step: number;
   onChange: (v: number) => void; format?: (v: number) => string;
 }) {
   return (
     <div>
       <div className="flex justify-between items-baseline mb-1">
-        <label className="label mb-0">{label}</label>
+        <label className="label mb-0">{label}<FlagChip flag={flag} /></label>
         <span className="text-xs font-mono text-gray-300">{format ? format(value) : value}</span>
       </div>
       {hint && <p className="text-xs text-gray-600 mb-1">{hint}</p>}
@@ -50,8 +55,8 @@ function Slider({ label, hint, value, min, max, step, onChange, format }: {
   );
 }
 
-function NumberInput({ label, hint, value, min, max, step = 1, onChange }: {
-  label: string; hint?: string; value: number | null;
+function NumberInput({ label, hint, flag, value, min, max, step = 1, onChange }: {
+  label: string; hint?: string; flag?: string; value: number | null;
   min?: number; max?: number; step?: number;
   onChange: (v: number | null) => void;
 }) {
@@ -85,7 +90,7 @@ function NumberInput({ label, hint, value, min, max, step = 1, onChange }: {
 
   return (
     <div>
-      <label className="label">{label}</label>
+      <label className="label">{label}<FlagChip flag={flag} /></label>
       {hint && <p className="text-xs text-gray-600 mb-1">{hint}</p>}
       <input type="number" className="input" value={draft} min={min} max={max} step={step}
         onFocus={() => { editing.current = true; }}
@@ -95,13 +100,13 @@ function NumberInput({ label, hint, value, min, max, step = 1, onChange }: {
   );
 }
 
-function TextInput({ label, hint, value, placeholder, onChange }: {
-  label: string; hint?: string; value: string; placeholder?: string;
+function TextInput({ label, hint, flag, value, placeholder, onChange }: {
+  label: string; hint?: string; flag?: string; value: string; placeholder?: string;
   onChange: (v: string) => void;
 }) {
   return (
     <div>
-      <label className="label">{label}</label>
+      <label className="label">{label}<FlagChip flag={flag} /></label>
       {hint && <p className="text-xs text-gray-600 mb-1">{hint}</p>}
       <input type="text" className="input" value={value} placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)} />
@@ -109,14 +114,14 @@ function TextInput({ label, hint, value, placeholder, onChange }: {
   );
 }
 
-function SelectInput({ label, hint, value, options, onChange }: {
-  label: string; hint?: string; value: string;
+function SelectInput({ label, hint, flag, value, options, onChange }: {
+  label: string; hint?: string; flag?: string; value: string;
   options: { value: string; label: string }[];
   onChange: (v: string) => void;
 }) {
   return (
     <div>
-      <label className="label">{label}</label>
+      <label className="label">{label}<FlagChip flag={flag} /></label>
       {hint && <p className="text-xs text-gray-600 mb-1">{hint}</p>}
       <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -1398,6 +1403,8 @@ export default function Server() {
             <div className="grid grid-cols-2 gap-3 mt-2">
               <NumberInput label="N CPU MoE Layers" hint="Keep MoE experts on CPU — guide: 32 on 12GB (adds --load-mode none automatically)" value={getEpNum("n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("n-cpu-moe", v)} />
+              <NumberInput label="N CPU FFN Layers" hint="Keep dense FFN weights of first N layers on CPU (dense models; adds --load-mode none automatically)" value={getEpNum("n-cpu-ffn")} min={0}
+                onChange={(v) => setEpNum("n-cpu-ffn", v)} />
               <NumberInput label="N CPU MoE Layers (Draft)" hint="Keep MoE weights of first N layers on CPU for draft" value={getEpNum("spec-draft-n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("spec-draft-n-cpu-moe", v)} />
             </div>
@@ -1667,44 +1674,44 @@ export default function Server() {
           <div data-tab="Advanced" className="space-y-4" style={{ display: activeTab === "Advanced" ? undefined : "none" }}>
             <Section title="Performance (llama-optimize heuristics)" />
             <div className="grid grid-cols-2 gap-3">
-              <SelectInput label="Poll" hint="CPU poll level 0/50/100 — 50 is balanced (auto via Auto-estimate)" value={getEp("poll") || ""} options={[{ value: "", label: "Default" }, { value: "0", label: "0" }, { value: "50", label: "50" }, { value: "100", label: "100" }]} onChange={(v) => setEp("poll", v)} />
-              <SelectInput label="Offload Tensors (ot)" hint="VRAM fit lever — none vs ffn_cpu etc." value={getEp("ot") || ""} options={[{ value: "", label: "Default" }, { value: "none", label: "none" }, { value: "ffn_up_cpu", label: "ffn_up_cpu" }, { value: "ffn_cpu", label: "ffn_cpu" }, { value: "exps_cpu", label: "exps_cpu (MoE)" }, { value: "attn_cpu", label: "attn_cpu" }]} onChange={(v) => setEp("ot", v)} />
+              <SelectInput label="Poll" flag="--poll" hint="CPU poll level 0/50/100 — 50 is balanced (auto via Auto-estimate)" value={getEp("poll") || ""} options={[{ value: "", label: "Default" }, { value: "0", label: "0" }, { value: "50", label: "50" }, { value: "100", label: "100" }]} onChange={(v) => setEp("poll", v)} />
+              <SelectInput label="Offload Tensors (ot)" flag="--ot" hint="VRAM fit lever — none vs ffn_cpu etc." value={getEp("ot") || ""} options={[{ value: "", label: "Default" }, { value: "none", label: "none" }, { value: "ffn_up_cpu", label: "ffn_up_cpu" }, { value: "ffn_cpu", label: "ffn_cpu" }, { value: "exps_cpu", label: "exps_cpu (MoE)" }, { value: "attn_cpu", label: "attn_cpu" }]} onChange={(v) => setEp("ot", v)} />
             </div>
             <p className="text-xs text-gray-500">Auto-estimate sets threads/ubatch/batch + cache; poll/ot/nkvo are opt-in (like <code className="font-mono">--factor poll=0,50</code>). Use a workload profile (Server tab) for parallel/context.</p>
             <Section title="RoPE" />
             <div className="grid grid-cols-2 gap-3">
-              <SelectInput label="RoPE Scaling" value={getEp("rope-scaling") || ""}
+              <SelectInput label="RoPE Scaling" flag="--rope-scaling" value={getEp("rope-scaling") || ""}
                 options={[{ value: "", label: "Default" }, { value: "none", label: "None" }, { value: "linear", label: "Linear" }, { value: "yarn", label: "YaRN" }]}
                 onChange={(v) => setEp("rope-scaling", v)} />
-              <NumberInput label="RoPE Scale" hint="Context scaling factor" value={getEpNum("rope-scale")} step={0.1}
+              <NumberInput label="RoPE Scale" flag="--rope-scale" hint="Context scaling factor" value={getEpNum("rope-scale")} step={0.1}
                 onChange={(v) => setEpNum("rope-scale", v)} />
-              <NumberInput label="RoPE Freq Base" value={config.rope_freq_base} step={1000}
+              <NumberInput label="RoPE Freq Base" flag="--rope-freq-base" value={config.rope_freq_base} step={1000}
                 onChange={(v) => setConfig((c) => ({ ...c, rope_freq_base: v }))} />
-              <NumberInput label="RoPE Freq Scale" value={config.rope_freq_scale} step={0.001}
+              <NumberInput label="RoPE Freq Scale" flag="--rope-freq-scale" value={config.rope_freq_scale} step={0.001}
                 onChange={(v) => setConfig((c) => ({ ...c, rope_freq_scale: v }))} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <NumberInput label="YaRN Orig Ctx" value={getEpNum("yarn-orig-ctx")} onChange={(v) => setEpNum("yarn-orig-ctx", v)} />
-              <NumberInput label="YaRN Ext Factor" hint="-1 default, 0=full interp" value={getEpNum("yarn-ext-factor")} step={0.1}
+              <NumberInput label="YaRN Orig Ctx" flag="--yarn-orig-ctx" value={getEpNum("yarn-orig-ctx")} onChange={(v) => setEpNum("yarn-orig-ctx", v)} />
+              <NumberInput label="YaRN Ext Factor" flag="--yarn-ext-factor" hint="-1 default, 0=full interp" value={getEpNum("yarn-ext-factor")} step={0.1}
                 onChange={(v) => setEpNum("yarn-ext-factor", v)} />
-              <NumberInput label="YaRN Attn Factor" value={getEpNum("yarn-attn-factor")} step={0.1}
+              <NumberInput label="YaRN Attn Factor" flag="--yarn-attn-factor" value={getEpNum("yarn-attn-factor")} step={0.1}
                 onChange={(v) => setEpNum("yarn-attn-factor", v)} />
-              <NumberInput label="YaRN Beta Slow" value={getEpNum("yarn-beta-slow")} step={0.1}
+              <NumberInput label="YaRN Beta Slow" flag="--yarn-beta-slow" value={getEpNum("yarn-beta-slow")} step={0.1}
                 onChange={(v) => setEpNum("yarn-beta-slow", v)} />
-              <NumberInput label="YaRN Beta Fast" value={getEpNum("yarn-beta-fast")} step={0.1}
+              <NumberInput label="YaRN Beta Fast" flag="--yarn-beta-fast" value={getEpNum("yarn-beta-fast")} step={0.1}
                 onChange={(v) => setEpNum("yarn-beta-fast", v)} />
             </div>
 
             <Section title="Speculative Decoding" />
             <div className="space-y-3">
-              <Toggle label="Default Speculative Config"
+              <Toggle label="Default Speculative Config" flag="--spec-default"
                 hint="Enable a sensible default (ngram-mod with n_match=24, n_min=48, n_max=64). Quick way to try spec decoding."
                 checked={hasFlag("spec-default")} onChange={(v) => setFlag("spec-default", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <TextInput label="Draft Model" hint="Path to draft model for speculation" value={getEp("spec-draft-model")}
+              <TextInput label="Draft Model" flag="--spec-draft-model" hint="Path to draft model for speculation" value={getEp("spec-draft-model")}
                 onChange={(v) => setEp("spec-draft-model", v)} />
-              <SelectInput label="Spec Type" hint="draft-* types use the draft model; ngram-* types do not" value={getEp("spec-type") || ""}
+              <SelectInput label="Spec Type" flag="--spec-type" hint="draft-* types use the draft model; ngram-* types do not" value={getEp("spec-type") || ""}
                 options={[{ value: "", label: "None" },
                   { value: "draft-simple", label: "Draft Simple" }, { value: "draft-eagle3", label: "Draft EAGLE3" },
                   { value: "draft-mtp", label: "Draft MTP" }, { value: "draft-dspark", label: "Draft DSpark (DeepSeek V4)" },
@@ -1713,107 +1720,108 @@ export default function Server() {
                 onChange={(v) => setEp("spec-type", v)} />
               <NumberInput
                 label="Draft Max"
+                flag="--spec-draft-n-max"
                 hint={getEp("spec-type") === "draft-dspark"
                   ? "Block size for V4 DSpark drafter (default: 16, V4 ckpt trained for 5)"
                   : "Max draft tokens (default: 16)"}
                 value={getEpNum("spec-draft-n-max")} min={1}
                 onChange={(v) => setEpNum("spec-draft-n-max", v)} />
-              <NumberInput label="Draft Min" hint="Min draft tokens (default: 0)" value={getEpNum("spec-draft-n-min")} min={0}
+              <NumberInput label="Draft Min" flag="--spec-draft-n-min" hint="Min draft tokens (default: 0)" value={getEpNum("spec-draft-n-min")} min={0}
                 onChange={(v) => setEpNum("spec-draft-n-min", v)} />
-              <NumberInput label="Draft P Min" hint="Min probability for greedy (default: 0.75)" value={getEpNum("spec-draft-p-min")} step={0.01}
+              <NumberInput label="Draft P Min" flag="--spec-draft-p-min" hint="Min probability for greedy (default: 0.75)" value={getEpNum("spec-draft-p-min")} step={0.01}
                 onChange={(v) => setEpNum("spec-draft-p-min", v)} />
-              <NumberInput label="Draft P Split" hint="Speculative split probability" value={getEpNum("spec-draft-p-split")} step={0.01}
+              <NumberInput label="Draft P Split" flag="--spec-draft-p-split" hint="Speculative split probability" value={getEpNum("spec-draft-p-split")} step={0.01}
                 onChange={(v) => setEpNum("spec-draft-p-split", v)} />
-              <NumberInput label="Draft Ctx Size" hint="0 = from model" value={getEpNum("spec-draft-ctx-size")} min={0}
+              <NumberInput label="Draft Ctx Size" flag="--spec-draft-ctx-size" hint="0 = from model" value={getEpNum("spec-draft-ctx-size")} min={0}
                 onChange={(v) => setEpNum("spec-draft-ctx-size", v)} />
-              <NumberInput label="Draft GPU Layers" value={getEpNum("spec-draft-ngl")}
+              <NumberInput label="Draft GPU Layers" flag="--spec-draft-ngl" value={getEpNum("spec-draft-ngl")}
                 onChange={(v) => setEpNum("spec-draft-ngl", v)} />
-              <NumberInput label="Draft Threads" hint="CPU threads for draft model generation" value={getEpNum("spec-draft-threads")}
+              <NumberInput label="Draft Threads" flag="--spec-draft-threads" hint="CPU threads for draft model generation" value={getEpNum("spec-draft-threads")}
                 onChange={(v) => setEpNum("spec-draft-threads", v)} />
-              <NumberInput label="Draft Batch Threads" hint="Threads for draft model batch/prompt processing" value={getEpNum("spec-draft-threads-batch")}
+              <NumberInput label="Draft Batch Threads" flag="--spec-draft-threads-batch" hint="Threads for draft model batch/prompt processing" value={getEpNum("spec-draft-threads-batch")}
                 onChange={(v) => setEpNum("spec-draft-threads-batch", v)} />
-              <TextInput label="Draft Device" hint="Devices for draft model, comma-separated" value={getEp("spec-draft-device")}
+              <TextInput label="Draft Device" flag="--spec-draft-device" hint="Devices for draft model, comma-separated" value={getEp("spec-draft-device")}
                 onChange={(v) => setEp("spec-draft-device", v)} />
-              <SelectInput label="Draft KV Cache Type (K)" hint="KV cache K data type for draft model" value={getEp("spec-draft-type-k") || "f16"}
+              <SelectInput label="Draft KV Cache Type (K)" flag="--spec-draft-type-k" hint="KV cache K data type for draft model" value={getEp("spec-draft-type-k") || "f16"}
                 options={KV_TYPES.map((t) => ({ value: t, label: t }))}
                 onChange={(v) => setEp("spec-draft-type-k", v === "f16" ? "" : v)} />
-              <SelectInput label="Draft KV Cache Type (V)" hint="KV cache V data type for draft model" value={getEp("spec-draft-type-v") || "f16"}
+              <SelectInput label="Draft KV Cache Type (V)" flag="--spec-draft-type-v" hint="KV cache V data type for draft model" value={getEp("spec-draft-type-v") || "f16"}
                 options={KV_TYPES.map((t) => ({ value: t, label: t }))}
                 onChange={(v) => setEp("spec-draft-type-v", v === "f16" ? "" : v)} />
             </div>
             {/* Per-spec-type ngram controls — shown only for the selected type */}
             {getEp("spec-type") === "ngram-mod" && (
               <div className="grid grid-cols-3 gap-3 mt-2">
-                <NumberInput label="ngram-mod N Min" hint="Default: 48" value={getEpNum("spec-ngram-mod-n-min")} min={0}
+                <NumberInput label="ngram-mod N Min" flag="--spec-ngram-mod-n-min" hint="Default: 48" value={getEpNum("spec-ngram-mod-n-min")} min={0}
                   onChange={(v) => setEpNum("spec-ngram-mod-n-min", v)} />
-                <NumberInput label="ngram-mod N Max" hint="Default: 64" value={getEpNum("spec-ngram-mod-n-max")} min={0}
+                <NumberInput label="ngram-mod N Max" flag="--spec-ngram-mod-n-max" hint="Default: 64" value={getEpNum("spec-ngram-mod-n-max")} min={0}
                   onChange={(v) => setEpNum("spec-ngram-mod-n-max", v)} />
-                <NumberInput label="ngram-mod Match" hint="Lookup length (default: 24)" value={getEpNum("spec-ngram-mod-n-match")} min={1}
+                <NumberInput label="ngram-mod Match" flag="--spec-ngram-mod-n-match" hint="Lookup length (default: 24)" value={getEpNum("spec-ngram-mod-n-match")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-mod-n-match", v)} />
               </div>
             )}
             {getEp("spec-type") === "ngram-simple" && (
               <div className="grid grid-cols-3 gap-3 mt-2">
-                <NumberInput label="ngram-simple Size N" hint="Lookup n-gram length" value={getEpNum("spec-ngram-simple-size-n")} min={1}
+                <NumberInput label="ngram-simple Size N" flag="--spec-ngram-simple-size-n" hint="Lookup n-gram length" value={getEpNum("spec-ngram-simple-size-n")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-simple-size-n", v)} />
-                <NumberInput label="ngram-simple Size M" hint="Draft m-gram length" value={getEpNum("spec-ngram-simple-size-m")} min={1}
+                <NumberInput label="ngram-simple Size M" flag="--spec-ngram-simple-size-m" hint="Draft m-gram length" value={getEpNum("spec-ngram-simple-size-m")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-simple-size-m", v)} />
-                <NumberInput label="ngram-simple Min Hits" value={getEpNum("spec-ngram-simple-min-hits")} min={1}
+                <NumberInput label="ngram-simple Min Hits" flag="--spec-ngram-simple-min-hits" value={getEpNum("spec-ngram-simple-min-hits")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-simple-min-hits", v)} />
               </div>
             )}
             {getEp("spec-type") === "ngram-map-k" && (
               <div className="grid grid-cols-3 gap-3 mt-2">
-                <NumberInput label="ngram-map-k Size N" hint="Lookup n-gram length" value={getEpNum("spec-ngram-map-k-size-n")} min={1}
+                <NumberInput label="ngram-map-k Size N" flag="--spec-ngram-map-k-size-n" hint="Lookup n-gram length" value={getEpNum("spec-ngram-map-k-size-n")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-map-k-size-n", v)} />
-                <NumberInput label="ngram-map-k Size M" hint="Draft m-gram length" value={getEpNum("spec-ngram-map-k-size-m")} min={1}
+                <NumberInput label="ngram-map-k Size M" flag="--spec-ngram-map-k-size-m" hint="Draft m-gram length" value={getEpNum("spec-ngram-map-k-size-m")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-map-k-size-m", v)} />
-                <NumberInput label="ngram-map-k Min Hits" value={getEpNum("spec-ngram-map-k-min-hits")} min={1}
+                <NumberInput label="ngram-map-k Min Hits" flag="--spec-ngram-map-k-min-hits" value={getEpNum("spec-ngram-map-k-min-hits")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-map-k-min-hits", v)} />
               </div>
             )}
             {getEp("spec-type") === "ngram-map-k4v" && (
               <div className="grid grid-cols-3 gap-3 mt-2">
-                <NumberInput label="ngram-map-k4v Size N" hint="Lookup n-gram length" value={getEpNum("spec-ngram-map-k4v-size-n")} min={1}
+                <NumberInput label="ngram-map-k4v Size N" flag="--spec-ngram-map-k4v-size-n" hint="Lookup n-gram length" value={getEpNum("spec-ngram-map-k4v-size-n")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-map-k4v-size-n", v)} />
-                <NumberInput label="ngram-map-k4v Size M" hint="Draft m-gram length" value={getEpNum("spec-ngram-map-k4v-size-m")} min={1}
+                <NumberInput label="ngram-map-k4v Size M" flag="--spec-ngram-map-k4v-size-m" hint="Draft m-gram length" value={getEpNum("spec-ngram-map-k4v-size-m")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-map-k4v-size-m", v)} />
-                <NumberInput label="ngram-map-k4v Min Hits" value={getEpNum("spec-ngram-map-k4v-min-hits")} min={1}
+                <NumberInput label="ngram-map-k4v Min Hits" flag="--spec-ngram-map-k4v-min-hits" value={getEpNum("spec-ngram-map-k4v-min-hits")} min={1}
                   onChange={(v) => setEpNum("spec-ngram-map-k4v-min-hits", v)} />
               </div>
             )}
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <TextInput label="Lookup Cache (Static)" hint="Read-only lookup cache file for lookup decoding" value={getEp("lookup-cache-static")}
+              <TextInput label="Lookup Cache (Static)" flag="--lookup-cache-static" hint="Read-only lookup cache file for lookup decoding" value={getEp("lookup-cache-static")}
                 onChange={(v) => setEp("lookup-cache-static", v)} />
-              <TextInput label="Lookup Cache (Dynamic)" hint="Lookup cache file updated by generation" value={getEp("lookup-cache-dynamic")}
+              <TextInput label="Lookup Cache (Dynamic)" flag="--lookup-cache-dynamic" hint="Lookup cache file updated by generation" value={getEp("lookup-cache-dynamic")}
                 onChange={(v) => setEp("lookup-cache-dynamic", v)} />
             </div>
 
             <Section title="LoRA & Control Vectors" />
             <div className="grid grid-cols-1 gap-3">
-              <TextInput label="LoRA" hint="Comma-separated adapter paths" value={getEp("lora")}
+              <TextInput label="LoRA" flag="--lora" hint="Comma-separated adapter paths" value={getEp("lora")}
                 onChange={(v) => setEp("lora", v)} />
-              <TextInput label="LoRA Scaled" hint="FNAME:SCALE,... format" value={getEp("lora-scaled")}
+              <TextInput label="LoRA Scaled" flag="--lora-scaled" hint="FNAME:SCALE,... format" value={getEp("lora-scaled")}
                 onChange={(v) => setEp("lora-scaled", v)} />
-              <TextInput label="Control Vector" hint="Comma-separated paths" value={getEp("control-vector")}
+              <TextInput label="Control Vector" flag="--control-vector" hint="Comma-separated paths" value={getEp("control-vector")}
                 onChange={(v) => setEp("control-vector", v)} />
-              <TextInput label="Control Vector Scaled" hint="FNAME:SCALE,... format" value={getEp("control-vector-scaled")}
+              <TextInput label="Control Vector Scaled" flag="--control-vector-scaled" hint="FNAME:SCALE,... format" value={getEp("control-vector-scaled")}
                 onChange={(v) => setEp("control-vector-scaled", v)} />
             </div>
-            <Toggle label="LoRA Init Without Apply" hint="Load adapters without applying (use POST /lora-adapters later)"
+            <Toggle label="LoRA Init Without Apply" flag="--lora-init-without-apply" hint="Load adapters without applying (use POST /lora-adapters later)"
               checked={hasFlag("lora-init-without-apply")} onChange={(v) => setFlag("lora-init-without-apply", v)} />
 
             <Section title="Multimodal" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="mmproj Path" hint="Local path to projector file" value={config.mmproj_path ?? ""}
+              <TextInput label="mmproj Path" flag="--mmproj" hint="Local path to projector file" value={config.mmproj_path ?? ""}
                 onChange={(v) => setConfig((c) => ({ ...c, mmproj_path: v || null }))} />
-              <NumberInput label="Image Min Tokens" value={getEpNum("image-min-tokens")} min={0}
+              <NumberInput label="Image Min Tokens" flag="--image-min-tokens" value={getEpNum("image-min-tokens")} min={0}
                 onChange={(v) => setEpNum("image-min-tokens", v)} />
-              <NumberInput label="Image Max Tokens" value={getEpNum("image-max-tokens")} min={0}
+              <NumberInput label="Image Max Tokens" flag="--image-max-tokens" value={getEpNum("image-max-tokens")} min={0}
                 onChange={(v) => setEpNum("image-max-tokens", v)} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="mmproj Offload" hint="GPU offload for multimodal projector (default: on)"
+              <Toggle label="mmproj Offload" flag="--no-mmproj-offload" hint="GPU offload for multimodal projector (default: on)"
                 checked={!hasFlag("no-mmproj-offload")} onChange={(v) => setFlag("no-mmproj-offload", !v)} />
               <Toggle label="mmproj Auto" hint="Auto-select projector when switching models (default: on)"
                 checked={autoMmproj} onChange={(v) => { setAutoMmproj(v); if (!v) setConfig((c) => ({ ...c, mmproj_path: null })); }} />
@@ -1821,47 +1829,47 @@ export default function Server() {
 
             <Section title="TTS / Audio" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="Vocoder Model" hint="Path to vocoder model for audio/TTS generation" value={getEp("model-vocoder")}
+              <TextInput label="Vocoder Model" flag="--model-vocoder" hint="Path to vocoder model for audio/TTS generation" value={getEp("model-vocoder")}
                 onChange={(v) => setEp("model-vocoder", v)} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="TTS Guide Tokens" hint="Use guide tokens to improve TTS word recall" checked={hasFlag("tts-use-guide-tokens")} onChange={(v) => setFlag("tts-use-guide-tokens", v)} />
+              <Toggle label="TTS Guide Tokens" flag="--tts-use-guide-tokens" hint="Use guide tokens to improve TTS word recall" checked={hasFlag("tts-use-guide-tokens")} onChange={(v) => setFlag("tts-use-guide-tokens", v)} />
             </div>
 
             <Section title="CPU Affinity" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="CPU Mask" hint="Hex affinity mask" value={getEp("cpu-mask")} onChange={(v) => setEp("cpu-mask", v)} />
-              <TextInput label="CPU Range" hint="lo-hi range" value={getEp("cpu-range")} onChange={(v) => setEp("cpu-range", v)} />
-              <SelectInput label="CPU Strict" value={getEp("cpu-strict") || "0"}
+              <TextInput label="CPU Mask" flag="--cpu-mask" hint="Hex affinity mask" value={getEp("cpu-mask")} onChange={(v) => setEp("cpu-mask", v)} />
+              <TextInput label="CPU Range" flag="--cpu-range" hint="lo-hi range" value={getEp("cpu-range")} onChange={(v) => setEp("cpu-range", v)} />
+              <SelectInput label="CPU Strict" flag="--cpu-strict" value={getEp("cpu-strict") || "0"}
                 options={[{ value: "0", label: "Off (default)" }, { value: "1", label: "On" }]}
                 onChange={(v) => setEp("cpu-strict", v === "0" ? "" : v)} />
-              <SelectInput label="Priority" value={getEp("prio") || "0"}
+              <SelectInput label="Priority" flag="--prio" value={getEp("prio") || "0"}
                 options={[{ value: "-1", label: "Low" }, { value: "0", label: "Normal (default)" }, { value: "1", label: "Medium" }, { value: "2", label: "High" }, { value: "3", label: "Realtime" }]}
                 onChange={(v) => setEp("prio", v === "0" ? "" : v)} />
-              <NumberInput label="Poll" hint="Polling level 0-100 (default: 50)" value={getEpNum("poll")} min={0} max={100}
+              <NumberInput label="Poll" flag="--poll" hint="Polling level 0-100 (default: 50)" value={getEpNum("poll")} min={0} max={100}
                 onChange={(v) => setEpNum("poll", v)} />
             </div>
 
             <Section title="Logging" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="Log File" value={getEp("log-file")} onChange={(v) => setEp("log-file", v)} />
-              <SelectInput label="Log Colors" value={getEp("log-colors") || "auto"}
+              <TextInput label="Log File" flag="--log-file" value={getEp("log-file")} onChange={(v) => setEp("log-file", v)} />
+              <SelectInput label="Log Colors" flag="--log-colors" value={getEp("log-colors") || "auto"}
                 options={[{ value: "auto", label: "Auto" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setEp("log-colors", v === "auto" ? "" : v)} />
-              <SelectInput label="Verbosity" value={getEp("log-verbosity") || "3"}
+              <SelectInput label="Verbosity" flag="--log-verbosity" value={getEp("log-verbosity") || "3"}
                 options={[{ value: "0", label: "0 - Generic" }, { value: "1", label: "1 - Error" }, { value: "2", label: "2 - Warning" }, { value: "3", label: "3 - Info (default)" }, { value: "4", label: "4 - Debug" }]}
                 onChange={(v) => setEp("log-verbosity", v === "3" ? "" : v)} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="Verbose" hint="Log all messages" checked={hasFlag("verbose")} onChange={(v) => setFlag("verbose", v)} />
-              <Toggle label="Perf Timings" hint="Internal libllama performance timings" checked={hasFlag("perf")} onChange={(v) => setFlag("perf", v)} />
-              <Toggle label="Log Prefix" hint="Add prefix to log messages" checked={hasFlag("log-prefix")} onChange={(v) => setFlag("log-prefix", v)} />
-              <Toggle label="Log Timestamps" hint="Add timestamps to log messages" checked={hasFlag("log-timestamps")} onChange={(v) => setFlag("log-timestamps", v)} />
-              <Toggle label="Offline" hint="Prevent network access, use cache only" checked={hasFlag("offline")} onChange={(v) => setFlag("offline", v)} />
-              <Toggle label="Profile" hint="Enable cross-backend profiling (CPU, BLAS, CUDA)" checked={hasFlag("profile")} onChange={(v) => setFlag("profile", v)} />
+              <Toggle label="Verbose" flag="--verbose" hint="Log all messages" checked={hasFlag("verbose")} onChange={(v) => setFlag("verbose", v)} />
+              <Toggle label="Perf Timings" flag="--perf" hint="Internal libllama performance timings" checked={hasFlag("perf")} onChange={(v) => setFlag("perf", v)} />
+              <Toggle label="Log Prefix" flag="--log-prefix" hint="Add prefix to log messages" checked={hasFlag("log-prefix")} onChange={(v) => setFlag("log-prefix", v)} />
+              <Toggle label="Log Timestamps" flag="--log-timestamps" hint="Add timestamps to log messages" checked={hasFlag("log-timestamps")} onChange={(v) => setFlag("log-timestamps", v)} />
+              <Toggle label="Offline" flag="--offline" hint="Prevent network access, use cache only" checked={hasFlag("offline")} onChange={(v) => setFlag("offline", v)} />
+              <Toggle label="Profile" flag="--profile" hint="Enable cross-backend profiling (CPU, BLAS, CUDA)" checked={hasFlag("profile")} onChange={(v) => setFlag("profile", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <TextInput label="Profile Output" hint="Write profiling JSON to file (default: stdout)" value={getEp("profile-output")}
+              <TextInput label="Profile Output" flag="--profile-output" hint="Write profiling JSON to file (default: stdout)" value={getEp("profile-output")}
                 onChange={(v) => setEp("profile-output", v)} />
             </div>
 
