@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::client::{ChatMessage, LlmClient, StreamCollector, StreamEvent};
-use crate::permissions::{ApprovalKey, Decision, Grant, PermissionEngine, Scope};
+use crate::permissions::{Decision, Grant, PermissionEngine, Scope};
 use crate::tools::ToolRegistry;
+use crate::tools::Tool as _;
 
 use serde_json::Value;
 
@@ -86,7 +87,7 @@ impl SubagentKind {
         }
     }
 
-    fn prompt(&self) -> String {
+    fn prompt(&self, skills: &[crate::skills::Skill]) -> String {
         let base: &'static str = match self {
             Self::Coder => {
                 "You are a focused implementation subagent. You execute exactly one coding task inside a sandboxed project directory, then report back. \
@@ -103,7 +104,34 @@ Use find_files and search_content with specific patterns; read only what is need
 Your final message is the only thing the orchestrator sees: state the answer directly, with concrete file:line references as evidence, then stop."
             }
         };
-        format!("{base} {}", os_shell_snippet())
+        format!("{base} {}{}", os_shell_snippet(), crate::skills::system_prompt_listing(skills))
+    }
+
+    /// Registry for one subagent run: native allowlist + `skill` loader for
+    /// both kinds, MCP tools for the coder kind only (the researcher stays
+    /// read-only by construction). `spawn_subagent` is always stripped.
+    pub fn subagent_registry(
+        jail: Arc<crate::sandbox::PathJail>,
+        skills: &[crate::skills::Skill],
+        mcp_tools: &[crate::mcp::McpTool],
+        kind: SubagentKind,
+    ) -> Arc<ToolRegistry> {
+        let mut registry =
+            ToolRegistry::project_tools(jail).without(&["spawn_subagent"]);
+        let mut allowed: Vec<String> =
+            kind.allowed_tools().iter().map(|s| s.to_string()).collect();
+        if !skills.is_empty() {
+            registry = registry.add(Arc::new(crate::skills::SkillTool::new(skills.to_vec())));
+            allowed.push("skill".to_string());
+        }
+        if kind == SubagentKind::Coder {
+            for tool in mcp_tools {
+                allowed.push(tool.name());
+                registry = registry.add(Arc::new(tool.clone()));
+            }
+        }
+        let refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
+        Arc::new(registry.only(&refs))
     }
 
     fn allowed_tools(&self) -> &'static [&'static str] {
@@ -156,6 +184,11 @@ pub struct Subagents {
     /// Model override for subagent workers (hybrid routing); `None` inherits
     /// the orchestrator's model.
     pub model: Option<String>,
+    /// Discovered skills: both kinds get the `skill` loader (read-only).
+    pub skills: Vec<crate::skills::Skill>,
+    /// MCP tools: coder kind only. The researcher stays read-only by
+    /// construction (MCP actions can mutate the outside world).
+    pub mcp_tools: Vec<crate::mcp::McpTool>,
 }
 
 /// What the UI answers when asked about a suspicious call.
@@ -538,7 +571,8 @@ impl AgentRun<'_> {
             }
 
             // Fresh, isolated transcript: system prompt + goal (+ ctx files).
-            let mut history = vec![ChatMessage::system(kind.prompt())];
+            // Skills ride along (both kinds); MCP tools join the coder kind.
+            let mut history = vec![ChatMessage::system(kind.prompt(&sub.skills))];
             let mut initial = format!("Goal: {goal}\n");
             if let Some(files) = args.get("ctx_files").and_then(|f| f.as_array()) {
                 for f in files {
@@ -563,10 +597,11 @@ impl AgentRun<'_> {
             }
             history.push(ChatMessage::user(initial));
 
-            let registry = Arc::new(
-                ToolRegistry::project_tools(sub.jail.clone())
-                    .without(&["spawn_subagent"])
-                    .only(kind.allowed_tools()),
+            let registry = SubagentKind::subagent_registry(
+                sub.jail.clone(),
+                &sub.skills,
+                &sub.mcp_tools,
+                kind,
             );
             let run = AgentRun {
                 client: self.client,
@@ -691,8 +726,8 @@ mod tests {
         assert!(matches!(SubagentKind::parse("Researcher"), Ok(SubagentKind::Researcher)));
         assert!(SubagentKind::parse("").is_err());
         assert!(SubagentKind::parse("orchestrator").is_err());
-        assert!(!SubagentKind::Coder.prompt().is_empty());
-        assert!(!SubagentKind::Researcher.prompt().is_empty());
+        assert!(!SubagentKind::Coder.prompt(&[]).is_empty());
+        assert!(!SubagentKind::Researcher.prompt(&[]).is_empty());
     }
 
     #[test]
@@ -705,8 +740,8 @@ mod tests {
         } else {
             assert!(snippet.contains("POSIX sh"));
         }
-        assert!(SubagentKind::Coder.prompt().ends_with(&snippet));
-        assert!(SubagentKind::Researcher.prompt().ends_with(&snippet));
+        assert!(SubagentKind::Coder.prompt(&[]).contains(&snippet));
+        assert!(SubagentKind::Researcher.prompt(&[]).contains(&snippet));
     }
 
     #[test]
@@ -726,6 +761,32 @@ mod tests {
         assert!(researcher.get("read_file").is_some());
         assert!(researcher.get("write_file").is_none(), "researcher must be read-only");
         assert!(researcher.get("edit_file").is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn subagent_registries_compose_skills() {
+        let dir = std::env::temp_dir().join(format!("harness-sub-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jail = Arc::new(crate::sandbox::PathJail::new(&dir, &[], &[]).unwrap());
+        let skills = vec![crate::skills::Skill {
+            name: "acme-deploy".to_string(),
+            description: "Ship it".to_string(),
+            path: dir.join("SKILL.md"),
+        }];
+        let coder = SubagentKind::subagent_registry(jail.clone(), &skills, &[], SubagentKind::Coder);
+        assert!(coder.get("skill").is_some(), "coder loads skills on demand");
+        assert!(coder.get("spawn_subagent").is_none(), "recursion must be impossible");
+        assert!(coder.get("write_file").is_some());
+        let researcher =
+            SubagentKind::subagent_registry(jail, &skills, &[], SubagentKind::Researcher);
+        assert!(researcher.get("skill").is_some(), "researcher reads skills too");
+        assert!(researcher.get("write_file").is_none(), "researcher must be read-only");
+        assert!(researcher.get("spawn_subagent").is_none());
+        // The skill listing reaches the subagent system prompt.
+        assert!(SubagentKind::Coder.prompt(&skills).contains("acme-deploy"));
+        assert!(!SubagentKind::Coder.prompt(&[]).contains("acme-deploy"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

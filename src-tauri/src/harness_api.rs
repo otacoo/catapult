@@ -577,6 +577,25 @@ fn skill_roots(root: &std::path::Path) -> Vec<PathBuf> {
     roots
 }
 
+/// MCP tools for subagent registries (same connected sessions the
+/// orchestrator uses — no extra processes). Coder kind only; the researcher
+/// stays read-only by construction.
+fn collect_mcp_tools(state: &AppState) -> Vec<harness::mcp::McpTool> {
+    let mut out = Vec::new();
+    for conn in mcp_connections(state).iter() {
+        for info in &conn.tools {
+            out.push(harness::mcp::McpTool {
+                server: conn.server.clone(),
+                tool_name: info.name.clone(),
+                session: conn.session.clone(),
+                desc: info.description.clone(),
+                schema: info.schema.clone(),
+            });
+        }
+    }
+    out
+}
+
 /// Build the tool registry for a run: native sandboxed tools + the skill tool
 /// (when skills are discovered) + namespaced MCP tools (when servers connect).
 fn build_registry(
@@ -1149,6 +1168,8 @@ pub async fn harness_agent_send(
                 jail,
                 max_turns: subagent_max_turns as usize,
                 model: worker_id,
+                skills: skills.clone(),
+                mcp_tools: collect_mcp_tools(&state),
             })
         } else {
             None

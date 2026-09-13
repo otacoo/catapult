@@ -219,6 +219,7 @@ impl Drop for McpSession {
 }
 
 /// A registry-facing wrapper around one MCP tool.
+#[derive(Clone)]
 pub struct McpTool {
     pub server: String,
     pub tool_name: String,
