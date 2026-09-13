@@ -644,6 +644,11 @@ fn build_registry(
     if !skills.is_empty() {
         registry = registry.add(Arc::new(harness::skills::SkillTool::new(skills.clone())));
     }
+    let global_memory = dirs::data_dir().map(|d| d.join("catapult").join("MEMORY.md"));
+    registry = registry.add(Arc::new(harness::memory::RememberTool::new(
+        project_root_dir,
+        global_memory,
+    )));
     for conn in mcp_connections(state).iter() {
         for info in &conn.tools {
             registry = registry.add(Arc::new(harness::mcp::McpTool {
@@ -1121,12 +1126,17 @@ pub async fn harness_agent_send(
                 .filter(|p| !p.trim().is_empty())
                 .unwrap_or_else(system_prompt)
         };
+        // Declarative memory (global + project MEMORY.md), capped and stable
+        // until the files change.
+        let global_memory = dirs::data_dir().map(|d| d.join("catapult").join("MEMORY.md"));
+        let memory = harness::memory::load_block(global_memory.as_deref(), &root);
         history.insert(
             0,
             ChatMessage::system(format!(
-                "{}\n\nProject directory: {}{}",
+                "{}\n\nProject directory: {}{}{}",
                 base,
                 root.display(),
+                memory,
                 harness::skills::system_prompt_listing(&skills)
             )),
         );

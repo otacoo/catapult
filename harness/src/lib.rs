@@ -9,6 +9,7 @@ pub mod client;
 pub mod git;
 pub mod jsonfix;
 pub mod mcp;
+pub mod memory;
 pub mod permissions;
 pub mod sandbox;
 pub mod skills;
