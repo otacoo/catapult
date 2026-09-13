@@ -722,12 +722,19 @@ function HarnessChat() {
   const restoreFromBackend = async () => {
     try {
       const res = await invoke<{
-        messages: { role: string; content?: string | null; tool_calls?: unknown }[];
+        messages: {
+          role: string;
+          content?: string | null;
+          tool_calls?: { id: string; function: { name: string; arguments: string } }[] | null;
+          tool_call_id?: string | null;
+        }[];
         meta: { index: number; model?: string | null; tokens_per_sec?: number | null; gen_tokens?: number | null; prompt_tokens?: number | null; elapsed_ms?: number | null }[];
       }>(
         "harness_agent_history",
       );
       const metaByIndex = new Map((res.meta ?? []).map((m) => [m.index, m]));
+      const cap = (s: string, n: number) =>
+        s.length > n ? `${s.slice(0, n)}\n[…truncated]` : s;
       const restored: Item[] = [];
       res.messages.forEach((m, i) => {
         if (m.role === "user" && m.content) {
@@ -743,6 +750,27 @@ function HarnessChat() {
             tokens: meta?.gen_tokens ?? undefined,
             elapsedMs: meta?.elapsed_ms ?? undefined,
           });
+        } else if (m.role === "assistant" && m.tool_calls) {
+          for (const tc of m.tool_calls) {
+            let args = tc.function?.arguments ?? "";
+            try {
+              args = JSON.stringify(JSON.parse(args), null, 1);
+            } catch {}
+            restored.push({
+              kind: "tool",
+              callId: tc.id ?? "",
+              tool: tc.function?.name ?? "?",
+              args: cap(args, 2000),
+            });
+          }
+        } else if (m.role === "tool" && typeof m.content === "string" && m.content) {
+          for (let k = restored.length - 1; k >= 0; k--) {
+            const it = restored[k];
+            if (it.kind === "tool" && it.callId === m.tool_call_id && it.output === undefined) {
+              it.output = { ok: true, text: cap(m.content, 4000) };
+              break;
+            }
+          }
         }
       });
       setItems(restored);
