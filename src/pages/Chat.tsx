@@ -136,6 +136,9 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   const [active, setActive] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [newAllowPath, setNewAllowPath] = useState("");
+  const [wtOpen, setWtOpen] = useState(true);
+  const [allowOpen, setAllowOpen] = useState(true);
+  const [sessOpen, setSessOpen] = useState(true);
   const [worktrees, setWorktrees] = useState<{ path: string; branch: string | null; head: string | null; bare: boolean; main: boolean }[]>([]);
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [newBranch, setNewBranch] = useState("");
@@ -328,11 +331,18 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
       </div>
 
       {/* Worktrees — shown when the active project is a git repo */}
-      {isGitRepo && (
+      {active && isGitRepo && (
         <div className="p-3 border-b border-border">
-          <div className="px-1 mb-1.5">
+          <button
+            className="w-full flex items-center justify-between px-1 mb-1.5"
+            onClick={() => setWtOpen((v) => !v)}
+            title={wtOpen ? "Collapse worktrees" : "Expand worktrees"}
+          >
             <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Worktrees</span>
-          </div>
+            <ChevronDown size={12} className={`text-gray-600 transition-transform ${wtOpen ? "" : "-rotate-90"}`} />
+          </button>
+          {wtOpen && (
+          <>
           <div className="space-y-0.5">
             {worktrees.map((w) => (
               <div
@@ -377,11 +387,10 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
               <Plus size={13} />
             </button>
           </div>
-          <p className="text-[10px] text-gray-600 px-1 mt-1 leading-snug">
-            Parallel agents on separate branches — subagents take a `branch` arg; a new worktree lands in a sibling folder; add it as a project.
-          </p>
           {wtError && (
             <p className="text-[10px] text-accent-red px-1 mt-1 break-words">{wtError}</p>
+          )}
+          </>
           )}
         </div>
       )}
@@ -389,9 +398,16 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
       {/* Read allowlist — extra read-only paths outside the active project */}
       {active && (
         <div className="p-3 border-b border-border">
-          <div className="px-1 mb-1.5">
+          <button
+            className="w-full flex items-center justify-between px-1 mb-1.5"
+            onClick={() => setAllowOpen((v) => !v)}
+            title={allowOpen ? "Collapse read allowlist" : "Expand read allowlist"}
+          >
             <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Read allowlist</span>
-          </div>
+            <ChevronDown size={12} className={`text-gray-600 transition-transform ${allowOpen ? "" : "-rotate-90"}`} />
+          </button>
+          {allowOpen && (
+          <>
           <div className="space-y-0.5">
             {activeExtraRead.map((p) => (
               <div
@@ -409,11 +425,6 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
                 </button>
               </div>
             ))}
-            {activeExtraRead.length === 0 && (
-              <p className="text-[11px] text-gray-600 px-2 leading-snug">
-                Only the project folder is readable. Add paths below for shared assets.
-              </p>
-            )}
           </div>
           <div className="flex items-center gap-1.5 mt-1.5 px-1">
             <input
@@ -439,12 +450,23 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
           <p className="text-[10px] text-gray-600 px-1 mt-1 leading-snug">
             Read-only — the agent can never write outside the project.
           </p>
+          </>
+          )}
         </div>
       )}
 
-      {/* Sessions */}
+      {/* Chat sessions — only with a project selected */}
+      {active && (
       <div className="flex-1 overflow-y-auto p-3">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1">Sessions</span>
+        <button
+          className="w-full flex items-center justify-between px-1"
+          onClick={() => setSessOpen((v) => !v)}
+          title={sessOpen ? "Collapse chat sessions" : "Expand chat sessions"}
+        >
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Chat Sessions</span>
+          <ChevronDown size={12} className={`text-gray-600 transition-transform ${sessOpen ? "" : "-rotate-90"}`} />
+        </button>
+        {sessOpen && (
         <div className="space-y-0.5 mt-1.5">
           {sessions.map((s) => (
             <div
@@ -467,7 +489,9 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
             <p className="text-[11px] text-gray-600 px-2 leading-snug">No sessions yet.</p>
           )}
         </div>
+        )}
       </div>
+      )}
     </aside>
   );
 }
@@ -796,8 +820,19 @@ function HarnessChat() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   // Run status shown under the input: the model is warming up/loading vs. the
-  // agent is actively reasoning over the request.
-  const [runStatus, setRunStatus] = useState<"thinking" | "loading" | null>(null);
+  // agent is actively reasoning over the request vs. a subagent is working.
+  const [runStatus, setRunStatus] = useState<"thinking" | "loading" | "working" | null>(null);
+  // Live subagent count (ref: updated from stream events, no re-render needed
+  // beyond the status line it drives).
+  const liveSubs = useRef(0);
+  const markSubSpawned = () => {
+    liveSubs.current += 1;
+    setRunStatus("working");
+  };
+  const markSubFinished = () => {
+    liveSubs.current = Math.max(0, liveSubs.current - 1);
+    setRunStatus(liveSubs.current > 0 ? "working" : "thinking");
+  };
   const approvalSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -1004,6 +1039,7 @@ function HarnessChat() {
     setStreamText("");
     setReasoningText(null);
     setReasoningOpen(false);
+    liveSubs.current = 0;
     setRunStatus("thinking");
     setError(null);
 
@@ -1060,6 +1096,7 @@ function HarnessChat() {
           break;
         case "subagent_spawned":
           setStreamText(null);
+          markSubSpawned();
           setItems((prev) => [
             ...prev,
             {
@@ -1071,6 +1108,7 @@ function HarnessChat() {
           ]);
           break;
         case "subagent_finished":
+          markSubFinished();
           setItems((prev) =>
             prev.map((it): Item =>
               it.kind === "tool" && it.callId === ev.call_id && it.output === undefined
@@ -1133,6 +1171,7 @@ function HarnessChat() {
       setStreaming(false);
       setStreamText(null);
       setAttachments([]);
+      liveSubs.current = 0;
       setRunStatus(null);
       // The active model may have changed (roles, router switches) — keep the
       // context size and capability badges fresh.
@@ -1203,6 +1242,8 @@ function HarnessChat() {
     } catch {}
     setItems([]);
     setError(null);
+    liveSubs.current = 0;
+    setRunStatus(null);
   };
 
   // Delete = rewind: drop the response and the user turn that produced it.
@@ -1429,13 +1470,18 @@ function HarnessChat() {
             </div>
           )}
 
-          {/* Run status: loading (model warming up) / thinking (agent reasoning) */}
+          {/* Run status: loading (model warming up) / thinking (agent reasoning) / working (subagent active) */}
           {streaming && (
             <div className="px-6 pb-1 flex items-center gap-1.5 text-[11px] text-gray-500 select-none">
               {runStatus === "loading" ? (
                 <>
                   <RefreshCw size={11} className="animate-spin" />
                   <span>Loading model…</span>
+                </>
+              ) : runStatus === "working" ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent-orange animate-pulse" />
+                  <span>Working…</span>
                 </>
               ) : (
                 <>
@@ -1566,7 +1612,7 @@ function HarnessChat() {
               )}
             </div>
             {streaming ? (
-              <button className="btn-danger shrink-0" onClick={() => invoke("harness_agent_abort").catch(() => {})} title="Stop">
+              <button className="btn-danger shrink-0" onClick={() => { liveSubs.current = 0; setRunStatus(null); invoke("harness_agent_abort").catch(() => {}); }} title="Stop">
                 <Square size={13} />
                 Stop
               </button>
