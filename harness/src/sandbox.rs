@@ -164,11 +164,21 @@ impl PathJail {
 
     /// Anchor a tool-supplied path: relative paths are relative to the jail
     /// root (models must not — and cannot — resolve against the app's CWD).
+    /// A bare leading root (`/Assets/...`, Windows `\Assets\...`) also
+    /// addresses the project root — models habitually emit root-anchored
+    /// paths. Fully qualified paths (with a volume/drive prefix) and `..`
+    /// escapes keep exact semantics; the canonical boundary check below still
+    /// applies to every form, so remapping can never escape the jail.
     fn anchored(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            lexical_normalize(path)
+        let mut comps = path.components().peekable();
+        if matches!(comps.peek(), Some(Component::RootDir)) {
+            comps.next(); // strip the bare `/`
+        }
+        let rel: PathBuf = comps.collect();
+        if rel.is_absolute() {
+            lexical_normalize(&rel)
         } else {
-            self.root.join(lexical_normalize(path))
+            self.root.join(lexical_normalize(&rel))
         }
     }
 
@@ -240,6 +250,24 @@ mod tests {
         assert!(jail.check_read(&outside).is_err());
         assert!(jail.check_write(&root.join("..").join("escape.txt")).is_err());
         std::fs::remove_file(&outside).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bare_rooted_paths_address_the_project_root() {
+        // Models habitually emit `/Assets/...` (or `\Assets\...` on Windows)
+        // for files inside the project — resolve them inside the jail.
+        let root = temp_dir("rooted");
+        let jail = jail_from(&root);
+        let f = root.join("Assets").join("img.png");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "x").unwrap();
+        let rooted = std::path::Path::new("/").join("Assets").join("img.png");
+        let ok = jail.check_read(&rooted).unwrap();
+        assert_eq!(ok.file_name().unwrap(), "img.png");
+        // …but a rooted escape still canonicalizes outside and is denied.
+        let escape = std::path::Path::new("/").join("..").join("nope.txt");
+        assert!(jail.check_read(&escape).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
