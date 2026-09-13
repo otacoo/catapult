@@ -649,6 +649,14 @@ fn build_registry(
         project_root_dir,
         global_memory,
     )));
+    // Agent-managed skills (orchestrator-only: subagents stay consumers).
+    // Project scope is team-shared; global scope is personal.
+    let project_skills = project_root_dir.join(".catapult").join("skills");
+    let global_skills = dirs::data_dir().map(|d| d.join("catapult").join("skills"));
+    registry = registry.add(Arc::new(harness::skills::ManageSkillTool::new(
+        project_skills,
+        global_skills,
+    )));
     for conn in mcp_connections(state).iter() {
         for info in &conn.tools {
             registry = registry.add(Arc::new(harness::mcp::McpTool {
