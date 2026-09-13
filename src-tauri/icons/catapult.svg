@@ -1,54 +1,54 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2A2420"/>
-      <stop offset="100%" stop-color="#110E0C"/>
+      <stop offset="0%" stop-color="#241F1B"/>
+      <stop offset="100%" stop-color="#0E0B09"/>
     </linearGradient>
     <linearGradient id="arm" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0%" stop-color="#B5342A"/>
-      <stop offset="100%" stop-color="#E06B62"/>
+      <stop offset="0%" stop-color="#C93A2E"/>
+      <stop offset="100%" stop-color="#F08275"/>
     </linearGradient>
     <radialGradient id="shot" cx="0.35" cy="0.35" r="0.9">
-      <stop offset="0%" stop-color="#F0988F"/>
-      <stop offset="55%" stop-color="#E06B62"/>
-      <stop offset="100%" stop-color="#B5342A"/>
+      <stop offset="0%" stop-color="#FFB3A8"/>
+      <stop offset="55%" stop-color="#EE7B6F"/>
+      <stop offset="100%" stop-color="#C93A2E"/>
     </radialGradient>
     <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0%" stop-color="#B5342A" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#B5342A" stop-opacity="0"/>
+      <stop offset="0%" stop-color="#C93A2E" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#C93A2E" stop-opacity="0"/>
     </radialGradient>
   </defs>
   <!-- Charcoal tile -->
   <rect width="256" height="256" rx="58" fill="url(#bg)"/>
-  <rect x="1.5" y="1.5" width="253" height="253" rx="56.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="3"/>
+  <rect x="1.5" y="1.5" width="253" height="253" rx="56.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="3"/>
   <!-- Ambient glow behind the mechanism -->
   <circle cx="128" cy="130" r="86" fill="url(#glow)"/>
 
   <!-- Launch arc -->
-  <path d="M118,58 Q168,22 218,52" fill="none" stroke="#E06B62" stroke-opacity="0.45" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 13"/>
+  <path d="M118,58 Q168,22 218,52" fill="none" stroke="#F08275" stroke-opacity="0.7" stroke-width="6" stroke-linecap="round" stroke-dasharray="1 13"/>
 
   <!-- A-frame -->
-  <line x1="94" y1="190" x2="128" y2="112" stroke="#6B5F55" stroke-width="13" stroke-linecap="round"/>
-  <line x1="162" y1="190" x2="128" y2="112" stroke="#6B5F55" stroke-width="13" stroke-linecap="round"/>
+  <line x1="94" y1="190" x2="128" y2="112" stroke="#B8A99C" stroke-width="14" stroke-linecap="round"/>
+  <line x1="162" y1="190" x2="128" y2="112" stroke="#B8A99C" stroke-width="14" stroke-linecap="round"/>
   <!-- Cross brace -->
-  <line x1="109" y1="156" x2="147" y2="156" stroke="#4A423C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="109" y1="156" x2="147" y2="156" stroke="#6E6259" stroke-width="8" stroke-linecap="round"/>
 
   <!-- Throwing arm -->
-  <line x1="94" y1="152" x2="184" y2="70" stroke="url(#arm)" stroke-width="14" stroke-linecap="round"/>
+  <line x1="94" y1="152" x2="184" y2="70" stroke="url(#arm)" stroke-width="15" stroke-linecap="round"/>
   <!-- Counterweight -->
-  <rect x="66" y="140" width="34" height="24" rx="8" fill="#3A332E" stroke="#6B5F55" stroke-width="4"/>
+  <rect x="66" y="140" width="34" height="24" rx="8" fill="#54483F" stroke="#B8A99C" stroke-width="4"/>
 
   <!-- Pivot joint -->
-  <circle cx="128" cy="112" r="13" fill="#110E0C" stroke="#E06B62" stroke-width="6"/>
+  <circle cx="128" cy="112" r="13" fill="#0E0B09" stroke="#F0988F" stroke-width="7"/>
 
   <!-- Base -->
-  <rect x="56" y="188" width="144" height="14" rx="7" fill="#3A332E"/>
-  <rect x="56" y="188" width="144" height="5" rx="2.5" fill="#5A4F47"/>
+  <rect x="56" y="188" width="144" height="14" rx="7" fill="#4A423C"/>
+  <rect x="56" y="188" width="144" height="5" rx="2.5" fill="#8A7D71"/>
   <!-- Wheels -->
-  <circle cx="90" cy="206" r="10" fill="#241F1B" stroke="#6B5F55" stroke-width="4"/>
-  <circle cx="166" cy="206" r="10" fill="#241F1B" stroke="#6B5F55" stroke-width="4"/>
+  <circle cx="90" cy="206" r="10" fill="#2A2420" stroke="#B8A99C" stroke-width="4"/>
+  <circle cx="166" cy="206" r="10" fill="#2A2420" stroke="#B8A99C" stroke-width="4"/>
 
   <!-- Projectile -->
-  <circle cx="198" cy="54" r="22" fill="#B5342A" opacity="0.25"/>
-  <circle cx="198" cy="54" r="13" fill="url(#shot)"/>
+  <circle cx="198" cy="54" r="24" fill="#C93A2E" opacity="0.35"/>
+  <circle cx="198" cy="54" r="14" fill="url(#shot)"/>
 </svg>
