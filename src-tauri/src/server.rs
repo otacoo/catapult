@@ -782,7 +782,7 @@ fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, 
 
 pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>) {
     let mut args = Vec::new();
-    let (extra_sanitized, notes) = sanitize_extra_for_model(config);
+    let (extra_sanitized, mut notes) = sanitize_extra_for_model(config);
     let config = ServerConfig {
         extra_params: extra_sanitized,
         ..config.clone()
@@ -802,6 +802,45 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
             args.push(mmproj.clone());
         }
     }
+
+    // Speculative decoding (single-model only — router preset sections can't
+    // carry draft models yet). A sibling DSpark/MTP-head file becomes
+    // --spec-draft-model with the matching --spec-type; otherwise embedded
+    // MTP heads (`-MTP-` in the model filename) enable draft-mtp directly.
+    let mut spec_type: Option<&str> = None;
+    let mut spec_draft: Option<String> = None;
+    if !router_mode {
+        if config.extra_params.contains_key("spec-draft") {
+            match crate::models::find_spec_draft(std::path::Path::new(&config.model_path)) {
+                Some((draft, kind)) => {
+                    spec_draft = Some(draft.to_string_lossy().to_string());
+                    spec_type = Some(match kind {
+                        crate::models::SpecDraftKind::Dspark => "draft-dspark",
+                        crate::models::SpecDraftKind::MtpHead => "draft-mtp",
+                    });
+                }
+                None => notes.push(
+                    "spec-draft on but no DSpark/MTP draft sibling found next to the model".to_string(),
+                ),
+            }
+        }
+        if spec_type.is_none()
+            && config.extra_params.contains_key("spec-mtp")
+            && crate::huggingface::has_embedded_mtp(&config.model_path)
+        {
+            spec_type = Some("draft-mtp");
+        }
+    }
+    if let Some(draft) = spec_draft {
+        args.push("--spec-draft-model".to_string());
+        args.push(draft);
+    }
+    if let Some(spec) = spec_type {
+        args.push("--spec-type".to_string());
+        args.push(spec.to_string());
+    }
+    // MTP drafting requires parallel=1 (llama.cpp hard-fails otherwise).
+    let mtp_active = spec_type == Some("draft-mtp");
 
     args.push("--host".to_string());
     args.push(config.host.clone());
@@ -924,11 +963,22 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     }
 
     args.push("--parallel".to_string());
-    args.push(config.parallel.to_string());
+    if mtp_active && config.parallel != 1 {
+        args.push("1".to_string());
+        notes.push("MTP drafting requires parallel=1 — overridden".to_string());
+    } else {
+        args.push(config.parallel.to_string());
+    }
 
     // Extra parameters from the UI
     let mut sorted_params: Vec<_> = config.extra_params.iter()
-        .filter(|(k, _)| k.as_str() != "__raw__" && k.as_str() != "mmproj" && k.as_str() != "fit")
+        .filter(|(k, _)| {
+            k.as_str() != "__raw__"
+                && k.as_str() != "mmproj"
+                && k.as_str() != "fit"
+                && k.as_str() != "spec-draft"
+                && k.as_str() != "spec-mtp"
+        })
         .collect();
     sorted_params.sort_by_key(|(k, _)| (*k).clone());
     for (key, value) in sorted_params {
@@ -1250,6 +1300,57 @@ mod tests {
         let args = build_args(&config);
         let idx = args.iter().position(|a| a == "--parallel").unwrap();
         assert_eq!(args[idx + 1], "1");
+    }
+
+    #[test]
+    fn build_args_spec_draft_attaches_sibling() {
+        let dir = std::env::temp_dir().join(format!("catapult-spec-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("MiniCPM5-2.6B-Q4_K_M.gguf");
+        let draft = dir.join("MiniCPM5-2.6B-DSpark.gguf");
+        std::fs::write(&main, b"x").unwrap();
+        std::fs::write(&draft, b"x").unwrap();
+        let mut extra = HashMap::new();
+        extra.insert("spec-draft".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: main.to_string_lossy().to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        let idx = args.iter().position(|a| a == "--spec-draft-model").unwrap();
+        assert_eq!(args[idx + 1], draft.to_string_lossy().to_string());
+        let idx = args.iter().position(|a| a == "--spec-type").unwrap();
+        assert_eq!(args[idx + 1], "draft-dspark");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_args_spec_mtp_forces_parallel_one() {
+        let dir = std::env::temp_dir().join(format!("catapult-mtp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("Qwen3.6-27B-MTP-Q4_K_M.gguf");
+        std::fs::write(&main, b"x").unwrap();
+        let mut extra = HashMap::new();
+        extra.insert("spec-mtp".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: main.to_string_lossy().to_string(),
+            parallel: 4,
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        let idx = args.iter().position(|a| a == "--spec-type").unwrap();
+        assert_eq!(args[idx + 1], "draft-mtp");
+        let idx = args.iter().position(|a| a == "--parallel").unwrap();
+        assert_eq!(args[idx + 1], "1");
+        assert!(notes.iter().any(|n| n.contains("parallel=1")));
+        // No stray --spec-mtp flag leaks into argv.
+        assert!(!args.contains(&"--spec-mtp".to_string()));
+        assert!(!args.contains(&"--spec-draft".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── model-aware extra param sanitizing ───────────────────────────────────

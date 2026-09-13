@@ -1583,6 +1583,8 @@ export default function Server() {
               <Toggle label="Embedding" hint="Restrict to embedding-only mode" checked={hasFlag("embedding")} onChange={(v) => setFlag("embedding", v)} />
               <Toggle label="Reranking" hint="Enable reranking endpoint" checked={hasFlag("reranking")} onChange={(v) => setFlag("reranking", v)} />
               <Toggle label="Warmup" hint="Perform warmup run on start (default: on)" checked={!hasFlag("no-warmup")} onChange={(v) => setFlag("no-warmup", !v)} />
+              <Toggle label="Speculative draft" hint="Auto-attach a sibling DSpark/MTP draft file next to the model" checked={hasFlag("spec-draft")} onChange={(v) => setFlag("spec-draft", v)} />
+              <Toggle label="MTP heads" hint="Enable embedded MTP heads (-MTP- models; forces parallel=1)" checked={hasFlag("spec-mtp")} onChange={(v) => setFlag("spec-mtp", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
               <TextInput label="Embedding Separator" hint="Separator between embeddings (default: \\n)" value={getEp("embd-separator")}
