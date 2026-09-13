@@ -311,7 +311,7 @@ pub struct RecommendedModel {
 
 /// Cached GGUF metadata keyed by file path. Invalidated when size or mtime changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct GgufCacheEntry {
+pub(crate) struct GgufCacheEntry {
     size_bytes: u64,
     mtime_secs: i64,
     // Cached metadata fields
