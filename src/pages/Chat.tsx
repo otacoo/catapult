@@ -728,7 +728,7 @@ function HarnessChat() {
           tool_calls?: { id: string; function: { name: string; arguments: string } }[] | null;
           tool_call_id?: string | null;
         }[];
-        meta: { index: number; model?: string | null; tokens_per_sec?: number | null; gen_tokens?: number | null; prompt_tokens?: number | null; elapsed_ms?: number | null }[];
+        meta: { index: number; model?: string | null; tokens_per_sec?: number | null; gen_tokens?: number | null; prompt_tokens?: number | null; elapsed_ms?: number | null; reasoning?: string | null }[];
       }>(
         "harness_agent_history",
       );
@@ -749,6 +749,7 @@ function HarnessChat() {
             tokps: meta?.tokens_per_sec ?? null,
             tokens: meta?.gen_tokens ?? undefined,
             elapsedMs: meta?.elapsed_ms ?? undefined,
+            reasoning: meta?.reasoning ?? undefined,
           });
         } else if (m.role === "assistant" && m.tool_calls) {
           for (const tc of m.tool_calls) {

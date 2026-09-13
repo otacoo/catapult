@@ -245,6 +245,9 @@ pub struct AgentOutcome {
     pub prompt_tokens: Option<u64>,
     pub tokens_per_sec: Option<f64>,
     pub elapsed_ms: u64,
+    /// Accumulated `reasoning_content` across turns (persisted per response;
+    /// never sent back to the model).
+    pub reasoning: String,
 }
 
 impl AgentRun<'_> {
@@ -259,8 +262,9 @@ impl AgentRun<'_> {
         mut on_stream: impl FnMut(StreamEvent) + Send,
         mut on_event: impl FnMut(AgentEvent) + Send,
     ) -> Result<AgentOutcome> {
-        let mut turns_used = 0usize;
-        let mut sub_seq = 0usize;
+            let mut turns_used = 0usize;
+            let mut sub_seq = 0usize;
+            let mut reasoning_acc = String::new();
         loop {
             if should_stop() {
                 bail!("aborted");
@@ -286,6 +290,9 @@ impl AgentRun<'_> {
                     StreamEvent::Content { text } => {
                         text_acc.push_str(text);
                         deltas += 1;
+                    }
+                    StreamEvent::ReasoningDelta { text } => {
+                        reasoning_acc.push_str(text);
                     }
                     StreamEvent::ToolCallDelta { .. } => deltas += 1,
                     StreamEvent::Usage { prompt_tokens, completion_tokens } => {
@@ -340,6 +347,7 @@ impl AgentRun<'_> {
                     prompt_tokens: usage_prompt,
                     tokens_per_sec: tokens_per_sec.filter(|v| *v > 0.0 && v.is_finite()),
                     elapsed_ms: elapsed.as_millis() as u64,
+                    reasoning: std::mem::take(&mut reasoning_acc),
                 });
             }
 

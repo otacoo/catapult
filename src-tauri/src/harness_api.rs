@@ -66,6 +66,9 @@ pub struct HarnessRuntime {
     /// Prompt tokens of the last completed run — the freshest measure of
     /// context fill until the next run finishes.
     pub last_prompt_tokens: Mutex<Option<u64>>,
+    /// Generated tokens of the last completed run (added to the above for
+    /// the ring's used figure).
+    pub last_gen_tokens: Mutex<Option<u64>>,
     /// Response display metadata by transcript message index (footer stats).
     pub meta: Mutex<std::collections::HashMap<usize, MessageMeta>>,
     /// Throttled /metrics scrape (lifetime-average gauges barely move; every
@@ -111,6 +114,9 @@ pub struct MessageMeta {
     pub prompt_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// Reasoning trace for the turn (capped; restored collapsed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 /// Listing entry for the Chat sidebar.
@@ -416,6 +422,7 @@ impl HarnessRuntime {
             mcp: Mutex::new(None),
             session_id: Mutex::new(None),
             last_prompt_tokens: Mutex::new(None),
+            last_gen_tokens: Mutex::new(None),
             meta: Mutex::new(std::collections::HashMap::new()),
             metrics_at: Mutex::new(None),
             metrics_cache: Mutex::new(ServerThroughput::default()),
@@ -444,34 +451,40 @@ pub struct ContextStats {
 
 #[tauri::command]
 pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<ContextStats, String> {
-    let mut used = *state.harness.last_prompt_tokens.lock().unwrap();
+    let last_prompt = *state.harness.last_prompt_tokens.lock().unwrap();
+    let last_gen = *state.harness.last_gen_tokens.lock().unwrap();
+    // Used figure: prompt + generated added together (the run's footprint).
+    let mut used = match (last_prompt, last_gen) {
+        (Some(p), Some(g)) => Some(p.saturating_add(g)),
+        (Some(p), None) => Some(p),
+        _ => None,
+    };
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
     let router = is_router_mode(&state);
-    // Live slot fill — single-model only. Router frontends neither proxy
-    // /slots usefully nor appreciate a proxied request every poll (each one
-    // logs a proxy line), so router mode skips straight to the fallbacks.
+    // Total = the model's max context (GGUF header): role model, single
+    // loaded model, then the router's served model. Stable and always
+    // available, unlike --fit/live slot sizes.
     let mut total: Option<u64> = None;
-    if !router {
-        if let Ok(Some((ctx, prompt))) = client.slot_fill().await {
-            total = Some(ctx);
-            if prompt > 0 {
-                used = Some(prompt);
-            }
-        }
+    if let Some(path) = active_model_path(&state) {
+        total = crate::models::read_model_metadata(std::path::Path::new(&path))
+            .and_then(|m| m.context_length);
     }
     if total.is_none() {
-        // GGUF header length: role model, single loaded model, then the
-        // router's served model. Conservative (can exceed --fit), but always
-        // available without touching the server.
-        if let Some(path) = active_model_path(&state) {
+        if let Some(path) = router_active_model_path(&state, &client).await {
             total = crate::models::read_model_metadata(std::path::Path::new(&path))
                 .and_then(|m| m.context_length);
         }
-        if total.is_none() {
-            if let Some(path) = router_active_model_path(&state, &client).await {
-                total = crate::models::read_model_metadata(std::path::Path::new(&path))
-                    .and_then(|m| m.context_length);
+    }
+    // Live slot fill refines both figures on single-model servers (router
+    // mode skips it: unproxied here, and every query logs a proxy line).
+    if !router {
+        if let Ok(Some((ctx, prompt))) = client.slot_fill().await {
+            if total.is_none() {
+                total = Some(ctx);
+            }
+            if prompt > 0 {
+                used = Some(prompt);
             }
         }
     }
@@ -1196,13 +1209,24 @@ pub async fn harness_agent_send(
         None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
     };
     // Footer stats for the finished turn stick to its transcript message so
-    // they survive restarts (recorded before the save below).
+    // they survive restarts (recorded before the save below). Reasoning is
+    // capped — traces can dwarf the answer.
     if let Ok(outcome) = &result {
         let history = state.harness.history.lock().unwrap();
         if let Some(idx) = history
             .iter()
             .rposition(|m| m.role == "assistant" && m.tool_calls.is_none())
         {
+            const REASONING_CAP: usize = 20_000;
+            let reasoning = if outcome.reasoning.is_empty() {
+                None
+            } else if outcome.reasoning.chars().count() > REASONING_CAP {
+                let mut t: String = outcome.reasoning.chars().take(REASONING_CAP).collect();
+                t.push_str("\n[…reasoning truncated]");
+                Some(t)
+            } else {
+                Some(outcome.reasoning.clone())
+            };
             state.harness.meta.lock().unwrap().insert(
                 idx,
                 MessageMeta {
@@ -1212,6 +1236,7 @@ pub async fn harness_agent_send(
                     gen_tokens: Some(outcome.gen_tokens),
                     prompt_tokens: outcome.prompt_tokens,
                     elapsed_ms: Some(outcome.elapsed_ms),
+                    reasoning,
                 },
             );
         }
@@ -1220,6 +1245,7 @@ pub async fn harness_agent_send(
     match result {
         Ok(outcome) => {
             *state.harness.last_prompt_tokens.lock().unwrap() = outcome.prompt_tokens;
+            *state.harness.last_gen_tokens.lock().unwrap() = Some(outcome.gen_tokens as u64);
             Ok(RunResult {
                 text: outcome.text,
                 model,
