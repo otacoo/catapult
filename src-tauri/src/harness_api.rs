@@ -449,16 +449,39 @@ pub struct ContextStats {
     pub live_prompt_tps: Option<f64>,
 }
 
+/// Ring "used" figure: measured prompt + generated added together; when the
+/// server omits usage reporting, the prompt is estimated from transcript
+/// characters (~4 chars/token) so the ring still moves.
+fn used_figure(last_prompt: Option<u64>, last_gen: Option<u64>, hist_chars: usize) -> Option<u64> {
+    match (last_prompt, last_gen) {
+        (Some(p), Some(g)) => Some(p.saturating_add(g)),
+        (Some(p), None) => Some(p),
+        (None, Some(g)) => Some((hist_chars / 4) as u64 + g),
+        _ => None,
+    }
+}
+
 #[tauri::command]
+
 pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<ContextStats, String> {
     let last_prompt = *state.harness.last_prompt_tokens.lock().unwrap();
     let last_gen = *state.harness.last_gen_tokens.lock().unwrap();
+    let hist_chars: usize = state
+        .harness
+        .history
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m.content.as_ref())
+        .map(|c| match c {
+            serde_json::Value::String(s) => s.len(),
+            other => other.to_string().len(),
+        })
+        .sum();
     // Used figure: prompt + generated added together (the run's footprint).
-    let mut used = match (last_prompt, last_gen) {
-        (Some(p), Some(g)) => Some(p.saturating_add(g)),
-        (Some(p), None) => Some(p),
-        _ => None,
-    };
+    // Small models/servers often omit usage reporting — then estimate the
+    // prompt from the transcript (~4 chars/token) so the ring still moves.
+    let mut used = used_figure(last_prompt, last_gen, hist_chars);
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
     let router = is_router_mode(&state);
@@ -1729,5 +1752,14 @@ mod tests {
         assert_eq!(longest_prefix_in(&sessions, &fresh), None);
         // …and an empty history never matches (fresh chats stay fresh).
         assert_eq!(longest_prefix_in(&sessions, &[]), None);
+    }
+
+    #[test]
+    fn used_figure_adds_prompt_and_gen() {
+        assert_eq!(used_figure(Some(10000), Some(346), 0), Some(10346));
+        assert_eq!(used_figure(Some(10000), None, 0), Some(10000));
+        // No usage reported: prompt estimated from transcript chars.
+        assert_eq!(used_figure(None, Some(346), 40000), Some(10346));
+        assert_eq!(used_figure(None, None, 40000), None);
     }
 }
