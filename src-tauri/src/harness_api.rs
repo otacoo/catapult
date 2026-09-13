@@ -305,7 +305,38 @@ fn load_session(state: &AppState) {
     }
 }
 
+/// Id of the stored session (same project) whose transcript is the longest
+/// exact prefix of `history`. Used when the runtime id was lost so sending
+/// into an old session updates it instead of forking a duplicate file.
+fn longest_prefix_session(state: &AppState, history: &[ChatMessage]) -> Option<String> {
+    let project = {
+        let c = state.config.lock().unwrap();
+        active_project_path(&c)
+    };
+    longest_prefix_in(&sessions_for_project(project.as_deref()), history)
+}
+
+/// Pure core of [`longest_prefix_session`]: longest stored transcript that is
+/// an exact prefix of `history` (and strictly shorter — identical content
+/// means this exact save already happened).
+fn longest_prefix_in(sessions: &[PersistedSession], history: &[ChatMessage]) -> Option<String> {
+    sessions
+        .iter()
+        .filter(|s| !s.messages.is_empty() && s.messages.len() <= history.len())
+        .filter(|s| {
+            s.messages
+                .iter()
+                .zip(history.iter())
+                .all(|(a, b)| a == b)
+        })
+        .max_by_key(|s| s.messages.len())
+        .map(|s| s.id.clone())
+}
+
 /// Save the current transcript under its id (creating the id if needed).
+/// When the runtime id was lost (restart races, explicit loads), reuse the
+/// session file this history extends instead of forking a duplicate: the
+/// longest stored transcript that is an exact prefix of the current one wins.
 fn save_session(state: &AppState) {
     let Some(dir) = session_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
@@ -313,14 +344,12 @@ fn save_session(state: &AppState) {
     if history.iter().all(|m| m.role != "user") {
         return; // nothing worth persisting
     }
-    let id = state
-        .harness
-        .session_id
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_else(new_session_id);
-    *state.harness.session_id.lock().unwrap() = Some(id.clone());
+    let mut id_guard = state.harness.session_id.lock().unwrap();
+    if id_guard.is_none() {
+        *id_guard = longest_prefix_session(state, &history);
+    }
+    let id = id_guard.clone().unwrap_or_else(new_session_id);
+    *id_guard = Some(id.clone());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1430,6 +1459,8 @@ pub async fn harness_session_load(id: String, state: State<'_, AppState>) -> Res
     *state.harness.history.lock().unwrap() = s.messages;
     *state.harness.session_id.lock().unwrap() = Some(s.id);
     adopt_meta(&state, s.meta);
+    // An explicit selection wins: never let the lazy auto-resume clobber it.
+    state.harness.session_loaded.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1561,6 +1592,7 @@ pub async fn harness_project_active(id: Option<String>, state: State<'_, AppStat
     if let Some(s) = sessions_for_project(active_path.as_deref()).into_iter().next() {
         adopt_session(&state, s);
     }
+    state.harness.session_loaded.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1608,5 +1640,47 @@ mod tests {
         let prompt = system_prompt();
         assert!(prompt.contains(&harness::agent::os_shell_snippet()));
         assert!(prompt.contains("You are Catapult's agent"));
+    }
+
+    fn stored(id: &str, texts: &[(&str, &str)]) -> PersistedSession {
+        PersistedSession {
+            id: id.to_string(),
+            title: id.to_string(),
+            project: None,
+            created: 0,
+            updated: 0,
+            messages: texts
+                .iter()
+                .map(|(role, text)| ChatMessage {
+                    role: role.to_string(),
+                    content: Some(serde_json::Value::String(text.to_string())),
+                    tool_calls: None,
+                    tool_call_id: None,
+                })
+                .collect(),
+            meta: vec![],
+        }
+    }
+
+    #[test]
+    fn longest_prefix_reuses_extended_session() {
+        let old = stored("old", &[("user", "hi"), ("assistant", "hello")]);
+        let older = stored("older", &[("user", "hi")]);
+        let other = stored("other", &[("user", "bye")]);
+        let sessions = vec![old, older, other];
+        // Extended history reuses the longest matching file…
+        let mut history = sessions[0].messages.clone();
+        history.push(ChatMessage {
+            role: "user".into(),
+            content: Some(serde_json::Value::String("more".into())),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        assert_eq!(longest_prefix_in(&sessions, &history), Some("old".to_string()));
+        // …unrelated history matches nothing…
+        let fresh = stored("x", &[("user", "something else")]).messages;
+        assert_eq!(longest_prefix_in(&sessions, &fresh), None);
+        // …and an empty history never matches (fresh chats stay fresh).
+        assert_eq!(longest_prefix_in(&sessions, &[]), None);
     }
 }

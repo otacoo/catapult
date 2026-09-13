@@ -390,15 +390,18 @@ impl AgentRun<'_> {
                 Decision::NeedsApproval => match gate
                     .decide(ApprovalRequest {
                         args_pretty: args_pretty.clone(),
-                        key,
+                        key: key.clone(),
                     })
                     .await
                 {
                     Approved::Denied => false,
                     scope => {
+                        // Grant exactly what was approved (the approval key:
+                        // per MCP server, per shell head) — never the bare
+                        // registry name, which would never match a later check.
                         self.engine.grant(Grant {
-                            tool: tool_name.to_string(),
-                            command: None,
+                            tool: key.tool.clone(),
+                            command: key.command.clone(),
                             scope: match scope {
                                 Approved::Once => Scope::Once,
                                 Approved::Session => Scope::Session,
@@ -411,10 +414,7 @@ impl AgentRun<'_> {
                         });
                         gate.grants_changed(&self.engine.persistable());
                         // Once-grants are consumed by check.
-                        self.engine.check(&ApprovalKey {
-                            tool: tool_name.to_string(),
-                            command: None,
-                        }, project) == Decision::Allowed
+                        self.engine.check(&key, project) == Decision::Allowed
                     }
                 },
             },
