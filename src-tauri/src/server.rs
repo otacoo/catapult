@@ -515,10 +515,15 @@ pub async fn stop_server(state: &SharedServerState) -> Result<()> {
             log::info!("Sent SIGTERM to server (pid {})", pid);
         }
 
-        // On Windows, start_kill sends TerminateProcess immediately
+        // On Windows, kill the whole process tree: in router mode llama-server
+        // spawns per-model children that TerminateProcess alone would orphan.
         #[cfg(not(unix))]
-        {
-            let _ = child.start_kill();
+        if let Some(pid) = child.id() {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
         }
 
         // Wait up to 30 seconds for graceful shutdown
@@ -686,9 +691,15 @@ pub fn kill_server_sync(state: &SharedServerState) {
             log::info!("Sent SIGTERM to server on exit (pid {})", pid);
         }
 
+        // Windows: kill the whole tree (router children would otherwise
+        // survive app exit holding VRAM and ports).
         #[cfg(not(unix))]
-        {
-            let _ = child.start_kill();
+        if let Some(pid) = child.id() {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
         }
 
         // Block briefly to let the process clean up

@@ -1214,6 +1214,9 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
+                // Drop MCP sessions so their child processes die with the app
+                // (process exit alone would orphan them).
+                harness_api::invalidate_mcp(&state);
                 server::kill_server_sync(&state.server);
             }
         });
