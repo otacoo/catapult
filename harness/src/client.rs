@@ -278,6 +278,23 @@ impl LlmClient {
         Ok(max_slot_n_ctx(&text))
     }
 
+    /// Live slot fill (`GET /slots`): largest `n_ctx` (ceiling) plus the most
+    /// prompt tokens held by any slot (currently used context). `None` when
+    /// the endpoint is disabled, unreachable, or has no slots.
+    pub async fn slot_fill(&self) -> Result<Option<(u64, u64)>> {
+        let resp = self
+            .http
+            .get(format!("{}/slots", self.base_url))
+            .send()
+            .await
+            .context("Slots request failed")?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let text = resp.text().await?;
+        Ok(max_slot_fill(&text))
+    }
+
     /// Server-side throughput gauges from the Prometheus endpoint (`GET
     /// /metrics`, needs the server's Metrics toggle). Router mode requires
     /// `?model=<id>` — pass the served router model id. `None` when the
@@ -304,9 +321,14 @@ pub struct ServerThroughput {
     pub prompt_tps: Option<f64>,
     /// `llamacpp:predicted_tokens_seconds` — generation rate.
     pub gen_tps: Option<f64>,
+    /// Context-size gauge when the build exposes one
+    /// (`llama_server_context_size` or similar) — live ceiling.
+    pub context_size: Option<u64>,
 }
 
-/// Parse the two throughput gauges out of Prometheus text exposition.
+/// Parse live gauges out of Prometheus text exposition. Metric names vary
+/// across llama.cpp builds (`llamacpp:` vs `llamacpp_` prefixes), so names
+/// are normalized before matching.
 pub fn parse_throughput(text: &str) -> ServerThroughput {
     let mut out = ServerThroughput::default();
     for line in text.lines() {
@@ -324,13 +346,30 @@ pub fn parse_throughput(text: &str) -> ServerThroughput {
         if name.contains('{') {
             continue;
         }
-        let v: f64 = match value.parse::<f64>() {
-            Ok(v) if v.is_finite() => v,
-            _ => continue,
-        };
-        match name {
-            "llamacpp:prompt_tokens_seconds" => out.prompt_tps = Some(v),
-            "llamacpp:predicted_tokens_seconds" => out.gen_tps = Some(v),
+        let norm = name.replace(':', "_").to_lowercase();
+        let short = norm.strip_prefix("llamacpp_").unwrap_or(&norm);
+        match short {
+            "prompt_tokens_seconds" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    if v.is_finite() {
+                        out.prompt_tps = Some(v);
+                    }
+                }
+            }
+            "predicted_tokens_seconds" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    if v.is_finite() {
+                        out.gen_tps = Some(v);
+                    }
+                }
+            }
+            s if s.contains("context") || s == "n_ctx" || s == "ctx_size" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    if v.is_finite() && v > 0.0 {
+                        out.context_size = Some(v as u64);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -344,6 +383,26 @@ pub fn max_slot_n_ctx(json_text: &str) -> Option<u64> {
     arr.iter()
         .filter_map(|s| s.get("n_ctx")?.as_u64())
         .max()
+}
+
+/// Live slot fill: largest `n_ctx` (ceiling) plus the most context tokens
+/// held by any slot (`n_prompt` + predicted live in the context window).
+/// Missing fields simply don't contribute — unknown stays unknown.
+pub fn max_slot_fill(json_text: &str) -> Option<(u64, u64)> {
+    let v: Value = serde_json::from_str(json_text).ok()?;
+    let arr = v.as_array()?;
+    let ctx = arr.iter().filter_map(|s| s.get("n_ctx")?.as_u64()).max()?;
+    let used = arr
+        .iter()
+        .map(|s| {
+            let num = |k: &str| s.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
+            // Schemas vary (`n_prompt`+`n_predicted` vs a single `n_tokens`);
+            // take the larger reading per slot so nothing double-counts.
+            (num("n_prompt") + num("n_predicted")).max(num("n_tokens"))
+        })
+        .max()
+        .unwrap_or(0);
+    Some((ctx, used))
 }
 
 // ── Client ──────────────────────────────────────────────────────────────────
@@ -583,6 +642,26 @@ mod tests {
         let t = parse_throughput(payload);
         assert_eq!(t, ServerThroughput::default());
         assert_eq!(parse_throughput(""), ServerThroughput::default());
+    }
+
+    #[test]
+    fn throughput_accepts_underscore_names_and_context_gauge() {
+        let payload = "llamacpp_predicted_tokens_seconds 33.5\nllama_server_context_size 32768\n";
+        let t = parse_throughput(payload);
+        assert_eq!(t.gen_tps, Some(33.5));
+        assert_eq!(t.context_size, Some(32768));
+        assert_eq!(t.prompt_tps, None);
+    }
+
+    #[test]
+    fn max_slot_fill_reads_ceiling_and_used() {
+        let payload = r#"[
+            {"id":0,"n_ctx":65536,"n_prompt":100,"n_predicted":20},
+            {"id":1,"n_ctx":32768,"n_prompt":500}
+        ]"#;
+        assert_eq!(max_slot_fill(payload), Some((65536, 500)));
+        assert_eq!(max_slot_fill("[]"), None);
+        assert_eq!(max_slot_fill("not json"), None);
     }
 
     #[test]

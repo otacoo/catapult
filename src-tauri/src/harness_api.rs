@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, Manager, ipc::Channel, State};
 
 use crate::AppState;
 use harness::agent::{AgentEvent, AgentRun, ApprovalGate, ApprovalRequest, Approved};
-use harness::client::{ChatMessage, LlmClient, StreamEvent};
+use harness::client::{ChatMessage, LlmClient, ServerThroughput, StreamEvent};
 use harness::permissions::PermissionEngine;
 use harness::sandbox::PathJail;
 use harness::tools::ToolRegistry;
@@ -68,6 +68,10 @@ pub struct HarnessRuntime {
     pub last_prompt_tokens: Mutex<Option<u64>>,
     /// Response display metadata by transcript message index (footer stats).
     pub meta: Mutex<std::collections::HashMap<usize, MessageMeta>>,
+    /// Throttled /metrics scrape (lifetime-average gauges barely move; every
+    /// router query logs a proxy line, so this refreshes at most ~30s).
+    pub metrics_at: Mutex<Option<std::time::Instant>>,
+    pub metrics_cache: Mutex<ServerThroughput>,
     /// Whether the persisted global grants were loaded this app run.
     pub permissions_global_loaded: std::sync::atomic::AtomicBool,
     /// Project id whose persisted grants are currently in memory (None =
@@ -384,6 +388,8 @@ impl HarnessRuntime {
             session_id: Mutex::new(None),
             last_prompt_tokens: Mutex::new(None),
             meta: Mutex::new(std::collections::HashMap::new()),
+            metrics_at: Mutex::new(None),
+            metrics_cache: Mutex::new(ServerThroughput::default()),
             permissions_global_loaded: std::sync::atomic::AtomicBool::new(false),
             permissions_project: Mutex::new(None),
         }
@@ -409,32 +415,73 @@ pub struct ContextStats {
 
 #[tauri::command]
 pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<ContextStats, String> {
-    let used = *state.harness.last_prompt_tokens.lock().unwrap();
+    let mut used = *state.harness.last_prompt_tokens.lock().unwrap();
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
-    // Live ceiling first; the GGUF length is only a fallback (it can exceed
-    // what --fit actually chose, and says nothing in router mode).
-    let mut total = client.slot_context().await.unwrap_or(None);
+    let router = is_router_mode(&state);
+    // Live slot fill — single-model only. Router frontends neither proxy
+    // /slots usefully nor appreciate a proxied request every poll (each one
+    // logs a proxy line), so router mode skips straight to the fallbacks.
+    let mut total: Option<u64> = None;
+    if !router {
+        if let Ok(Some((ctx, prompt))) = client.slot_fill().await {
+            total = Some(ctx);
+            if prompt > 0 {
+                used = Some(prompt);
+            }
+        }
+    }
     if total.is_none() {
+        // GGUF header length: role model, single loaded model, then the
+        // router's served model. Conservative (can exceed --fit), but always
+        // available without touching the server.
         if let Some(path) = active_model_path(&state) {
             total = crate::models::read_model_metadata(std::path::Path::new(&path))
                 .and_then(|m| m.context_length);
         }
         if total.is_none() {
-            // Router mode with no roles: ceiling from the served model's header.
             if let Some(path) = router_active_model_path(&state, &client).await {
                 total = crate::models::read_model_metadata(std::path::Path::new(&path))
                     .and_then(|m| m.context_length);
             }
         }
     }
-    // Live server throughputs (best-effort: absent without the Metrics
-    // toggle). Router mode scopes the query to the served model.
-    let served = router_served_id(&state, &client).await;
-    let live = client
-        .server_throughput(served.as_deref())
-        .await
-        .unwrap_or_default();
+    // Live server gauges (best-effort): only when launched with the Metrics
+    // toggle, throttled — the values are lifetime averages that barely move,
+    // and every router query logs a proxy line. Router mode scopes the query
+    // to the served model.
+    let metrics_on = state
+        .server
+        .lock()
+        .unwrap()
+        .config
+        .as_ref()
+        .map(|c| c.extra_params.contains_key("metrics"))
+        .unwrap_or(false);
+    let mut live = *state.harness.metrics_cache.lock().unwrap();
+    if metrics_on {
+        let now = std::time::Instant::now();
+        let stale = state
+            .harness
+            .metrics_at
+            .lock()
+            .unwrap()
+            .map(|t| now.duration_since(t).as_secs() >= 30)
+            .unwrap_or(true);
+        if stale {
+            let served = router_served_id(&state, &client).await;
+            live = client
+                .server_throughput(served.as_deref())
+                .await
+                .unwrap_or_default();
+            *state.harness.metrics_cache.lock().unwrap() = live;
+            *state.harness.metrics_at.lock().unwrap() = Some(now);
+        }
+        // A context-size gauge beats the GGUF fallback (reflects --fit).
+        if total.is_none() {
+            total = live.context_size;
+        }
+    }
     Ok(ContextStats {
         used,
         total,
