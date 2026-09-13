@@ -226,7 +226,7 @@ impl Tool for EditFileTool {
         "edit_file".to_string()
     }
     fn description(&self) -> String {
-        "Exact-match search/replace in a project file. The search text must appear exactly once — include enough surrounding context to disambiguate. Fails loudly on zero or multiple matches.".to_string()
+        "Search/replace in a project file. The search text must match exactly once — include enough surrounding context to disambiguate. Line endings and trailing whitespace are tolerated; anything else fails loudly.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -252,24 +252,77 @@ impl Tool for EditFileTool {
         let resolved = self.jail.check_write(std::path::Path::new(&path))?;
         let text = std::fs::read_to_string(&resolved)
             .with_context(|| format!("Cannot read {}", resolved.display()))?;
+        // Pass 1: strict exact match (fast path, byte-identical result).
+        if text.matches(&search).count() == 1 {
+            let updated = text.replacen(&search, &replace, 1);
+            std::fs::write(&resolved, &updated)
+                .with_context(|| format!("Cannot write {}", resolved.display()))?;
+            return Ok(format!("Edited {} (1 match replaced)", resolved.display()));
+        }
+        // Pass 2: line-ending variant (LF search vs CRLF file and vice versa).
+        let flipped = if search.contains("\r\n") {
+            search.replace("\r\n", "\n")
+        } else {
+            search.replace('\n', "\r\n")
+        };
+        if flipped != search && text.matches(&flipped).count() == 1 {
+            let updated = text.replacen(&flipped, &replace, 1);
+            std::fs::write(&resolved, &updated)
+                .with_context(|| format!("Cannot write {}", resolved.display()))?;
+            return Ok(format!(
+                "Edited {} (1 match replaced after normalizing line endings)",
+                resolved.display()
+            ));
+        }
+        // Pass 3: line-oriented match ignoring trailing whitespace (models
+        // routinely drop trailing spaces). Still requires exactly one match;
+        // anything ambiguous fails loudly below.
+        if let Some((start, end)) = heal_trailing_whitespace(&text, &search) {
+            let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let mut lines: Vec<&str> = text.split('\n').collect();
+            let replacement: Vec<&str> = replace.split('\n').collect();
+            lines.splice(start..end, replacement);
+            let updated = lines.join(newline);
+            std::fs::write(&resolved, &updated)
+                .with_context(|| format!("Cannot write {}", resolved.display()))?;
+            return Ok(format!(
+                "Edited {} (1 match replaced ignoring trailing whitespace)",
+                resolved.display()
+            ));
+        }
         let matches = text.matches(&search).count();
         match matches {
             0 => bail!(
                 "edit_file: search text not found in {} — re-read the file and use exact content",
                 path
             ),
-            1 => {
-                let updated = text.replacen(&search, &replace, 1);
-                std::fs::write(&resolved, &updated)
-                    .with_context(|| format!("Cannot write {}", resolved.display()))?;
-                Ok(format!("Edited {} (1 match replaced)", resolved.display()))
-            }
-            n => bail!(
-                "edit_file: search text matches {n} places in {} — include more surrounding context",
+            _ => bail!(
+                "edit_file: search text matches {matches} places in {} — include more surrounding context",
                 path
             ),
         }
     }
+}
+
+/// Line range `[start, end)` of `text` matching `search` once whitespace at
+/// line ends is ignored (and CRLF folded by line splitting). `None` unless
+/// there is exactly one such range.
+fn heal_trailing_whitespace(text: &str, search: &str) -> Option<(usize, usize)> {
+    let t: Vec<&str> = text.split('\n').collect();
+    let s: Vec<&str> = search.split('\n').collect();
+    if s.is_empty() || s.len() > t.len() {
+        return None;
+    }
+    let mut hits = Vec::new();
+    for i in 0..=(t.len() - s.len()) {
+        if t[i..i + s.len()].iter().zip(s.iter()).all(|(a, b)| a.trim_end() == b.trim_end()) {
+            hits.push(i);
+            if hits.len() > 1 {
+                return None; // ambiguous even healed — fail loudly
+            }
+        }
+    }
+    hits.pop().map(|i| (i, i + s.len()))
 }
 
 // ── find_files ──────────────────────────────────────────────────────────────
@@ -937,6 +990,33 @@ mod tests {
         edit.execute(&json!({"path": "a.rs", "search": "println!(\"hi\");", "replace": "println!(\"bye\");"})).unwrap();
         let text = std::fs::read_to_string(root.join("a.rs")).unwrap();
         assert!(text.contains("bye"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn edit_file_heals_line_endings_and_trailing_space() {
+        let root = temp_dir("edit-heal");
+        let registry = registry_for(&root);
+        let edit = registry.get("edit_file").unwrap();
+        // CRLF file, LF search: heals without rewriting the whole file.
+        std::fs::write(root.join("crlf.txt"), "line one\r\nline two\r\n").unwrap();
+        let out = edit
+            .execute(&json!({"path": "crlf.txt", "search": "line one\nline two", "replace": "CHANGED"}))
+            .unwrap();
+        assert!(out.contains("line endings"), "unexpected: {out}");
+        let text = std::fs::read_to_string(root.join("crlf.txt")).unwrap();
+        assert!(text.contains("CHANGED"));
+        // Trailing spaces the model dropped: heals line-wise.
+        std::fs::write(root.join("ws.txt"), "key = 1;   \nnext = 2;\n").unwrap();
+        let out = edit
+            .execute(&json!({"path": "ws.txt", "search": "key = 1;\nnext = 2;", "replace": "key = 9;"}))
+            .unwrap();
+        assert!(out.contains("trailing whitespace"), "unexpected: {out}");
+        let text = std::fs::read_to_string(root.join("ws.txt")).unwrap();
+        assert!(text.starts_with("key = 9;"));
+        // Ambiguous even after healing: still loud.
+        std::fs::write(root.join("amb.txt"), "dup   \ndup\t\n").unwrap();
+        assert!(edit.execute(&json!({"path": "amb.txt", "search": "dup", "replace": "x"})).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
