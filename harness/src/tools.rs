@@ -463,6 +463,90 @@ fn command_is_readonly(command: &str) -> bool {
         .any(|c| *c == words[0] || *c == two_words)
 }
 
+/// Strip single/double-quoted spans so operator checks don't misfire on
+/// URLs and literals (e.g. `?a=1&&b=2`). Naive but sufficient for gating.
+fn unquoted(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut quote: Option<char> = None;
+    for c in command.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                } else {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Wrong-shell syntax for this OS (small models emit it despite the system
+/// prompt + tool description). Returns a corrective hint; the call is
+/// rejected before spawning so the model rewrites it instead of failing
+/// noisily (or worse, running half-parsed).
+fn shell_mismatch_hint(command: &str) -> Option<String> {
+    let lower = unquoted(command).to_lowercase();
+    // Padded once so `grep` etc. match on word boundaries only.
+    let padded = format!(" {lower} ");
+    #[cfg(target_os = "windows")]
+    {
+        if lower.contains("/dev/null") {
+            return Some("use `$null` instead of `/dev/null`".to_string());
+        }
+        if padded.contains(" head ") || padded.contains(" head -") || padded.contains("|head") {
+            return Some("use `| Select-Object -First N` instead of `| head -N`".to_string());
+        }
+        if padded.contains(" tail ") || padded.contains(" tail -") || padded.contains("|tail") {
+            return Some("use `| Select-Object -Last N` instead of `| tail -N`".to_string());
+        }
+        if padded.contains(" grep ") {
+            return Some("use `Select-String` instead of `grep`".to_string());
+        }
+        if padded.contains(" ls -") {
+            return Some("use `Get-ChildItem` instead of `ls -la`".to_string());
+        }
+        if lower.contains("&&") {
+            return Some("separate PowerShell statements with `;`, not `&&`".to_string());
+        }
+        if lower.contains("||") {
+            return Some("PowerShell 5.1 has no `||`; run statements with `;` and check `$?`/`$LASTEXITCODE`".to_string());
+        }
+        if padded.contains(" export ") {
+            return Some("use `$env:NAME = \"value\"` instead of `export NAME=value`".to_string());
+        }
+        if padded.contains(" chmod ") || padded.contains(" sudo ") {
+            return Some("chmod/sudo do not exist on Windows PowerShell — describe what you need instead".to_string());
+        }
+        if (lower.contains("curl ") || lower.contains("wget ")) && (lower.contains("| sh") || lower.contains("| bash")) {
+            return Some("never pipe downloads into sh/bash on Windows".to_string());
+        }
+        None
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if padded.contains(" get-") {
+            return Some("use ls/cat/grep, not PowerShell verb-noun cmdlets like `Get-ChildItem`".to_string());
+        }
+        if lower.contains("powershell") {
+            return Some("run sh commands directly instead of via powershell".to_string());
+        }
+        if padded.contains(" select-string ") || padded.contains(" select-object ") {
+            return Some("use `grep`, `head -N`, `cut` instead of `Select-String`/`Select-Object`".to_string());
+        }
+        if lower.contains("$env:") {
+            return Some("use `$VAR`/`export VAR=...` instead of `$env:VAR`".to_string());
+        }
+        None
+    }
+}
+
 pub struct ExecTool {
     jail: Arc<PathJail>,
 }
@@ -481,7 +565,8 @@ impl Tool for ExecTool {
             never sh/bash syntax (`ls -la`, `&&`, `grep`, `/dev/null`, leading `/` paths). \
             Prefer the native file tools over shell listing/searching. \
             Read-only commands (dir, cat, git status, …) run automatically; \
-            anything else requires approval.".to_string()
+            anything else requires approval. sh-only syntax is rejected \
+            automatically — use the PowerShell forms above.".to_string()
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -490,7 +575,8 @@ impl Tool for ExecTool {
             never PowerShell syntax (`Get-ChildItem`, verb-noun cmdlets). \
             Prefer the native file tools over shell listing/searching. \
             Read-only commands (ls, cat, git status, …) run automatically; \
-            anything else requires approval.".to_string()
+            anything else requires approval. PowerShell-only syntax is \
+            rejected automatically — use the sh forms above.".to_string()
         }
     }
     fn parameters(&self) -> Value {
@@ -519,6 +605,11 @@ impl Tool for ExecTool {
         let command = str_arg(args, "command")?;
         if command.trim().is_empty() {
             bail!("'command' must not be empty");
+        }
+        // Wrong-shell idioms never reach the shell: explain the native
+        // equivalent so the model rewrites instead of failing noisily.
+        if let Some(hint) = shell_mismatch_hint(&command) {
+            bail!("Wrong-shell syntax for this OS: {hint}. Rewrite the command and try again.");
         }
         #[cfg(target_os = "windows")]
         let mut cmd = {
@@ -927,6 +1018,23 @@ mod tests {
         // Consumed once-grant
         assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn shell_mismatch_guard_matches_this_os() {
+        if cfg!(windows) {
+            assert!(shell_mismatch_hint("find /x -type d 2>/dev/null | head -20").is_some());
+            assert!(shell_mismatch_hint("npm install && npm test").is_some());
+            assert!(shell_mismatch_hint("cat foo | grep bar").is_some());
+            assert!(shell_mismatch_hint("export FOO=1").is_some());
+            // Quoted operators are data, not syntax.
+            assert!(shell_mismatch_hint("curl \"http://x/?a=1&&b=2\"").is_none());
+            assert!(shell_mismatch_hint("Get-ChildItem -Recurse; git status").is_none());
+        } else {
+            assert!(shell_mismatch_hint("Get-ChildItem C:\\x").is_some());
+            assert!(shell_mismatch_hint("powershell -Command ls").is_some());
+            assert!(shell_mismatch_hint("ls -la && grep foo bar").is_none());
+        }
     }
 
     #[test]
