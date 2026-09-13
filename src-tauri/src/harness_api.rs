@@ -749,13 +749,29 @@ async fn resolve_roles(
         );
     }
 
-    // A role path that no longer exists on disk can never register — fail
-    // with the concrete path instead of the generic restart hint.
-    if let Some(p) = roles.orchestrator.as_deref() {
-        if !std::path::Path::new(p).is_file() {
-            return Err(format!(
-                "Orchestrator model file not found: {p} — pick another model in Settings → Chat"
-            ));
+    // Role paths must be real, loadable models — an auxiliary file here
+    // (mmproj projector, spec draft, MTP head, imatrix) would silently never
+    // register and stall resolution. Fail fast with the concrete path.
+    for (label, path) in [
+        ("Orchestrator", roles.orchestrator.as_deref()),
+        ("Worker", roles.worker.as_deref()),
+    ] {
+        if let Some(p) = path {
+            if !std::path::Path::new(p).is_file() {
+                return Err(format!(
+                    "{label} model file not found: {p} — pick another model in Settings → Chat"
+                ));
+            }
+            if crate::huggingface::is_mmproj_file(p) {
+                return Err(format!(
+                    "{label} model is a vision projector file ({p}) — pick the main model; its mmproj attaches automatically"
+                ));
+            }
+            if crate::huggingface::is_auxiliary_file(p) {
+                return Err(format!(
+                    "{label} model is an auxiliary file, not a loadable model: {p} — pick the main model"
+                ));
+            }
         }
     }
 
@@ -1207,8 +1223,10 @@ fn active_model_path(state: &AppState) -> Option<String> {
         .map(|cfg| cfg.model_path.clone())
 }
 
-/// Id of the router model being served: the loaded registration, else the
-/// first registered. `None` outside router mode or for an empty registry.
+/// Id of the router model currently LOADED (never a mere registration).
+/// Stats polling must not name an unloaded model: the router would start
+/// loading it on demand (minutes for big models, proxy/ensure log spam,
+/// VRAM churn) just because the ring looked at it.
 async fn router_served_id(state: &AppState, client: &LlmClient) -> Option<String> {
     if !is_router_mode(state) {
         return None;
@@ -1217,15 +1235,13 @@ async fn router_served_id(state: &AppState, client: &LlmClient) -> Option<String
     models
         .iter()
         .find(|m| m.status == "loaded")
-        .or_else(|| models.first())
         .map(|m| m.id.clone())
 }
 
-/// Installed-model path the router is (or will be) serving: the loaded
-/// registration, else the first registered. Router ids are file stems, so
-/// match installed models by stem. `None` outside router mode or when the
-/// registry is empty. Keeps the context ring, capability badges, and effort
-/// control alive in router mode with no roles set.
+/// Installed-model path the router is currently serving (loaded model).
+/// `None` outside router mode, when nothing is loaded, or when the registry
+/// is empty. Keeps the context ring, capability badges, and effort control
+/// honest in router mode with no roles set.
 async fn router_active_model_path(state: &AppState, client: &LlmClient) -> Option<String> {
     let id = router_served_id(state, client).await?;
     let config = state.config.lock().unwrap().clone();
