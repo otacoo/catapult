@@ -148,6 +148,21 @@ impl PathJail {
         &self.root
     }
 
+    /// A jail on another root with the same extra scope (used for subagent
+    /// git worktrees: the branch checkout inherits the project allowlist).
+    pub fn rooted_at(&self, root: &Path) -> Result<Self> {
+        let root = std::fs::canonicalize(root)
+            .with_context(|| format!("Worktree root does not exist: {}", root.display()))?;
+        if !root.is_dir() {
+            bail!("Worktree root is not a directory: {}", root.display());
+        }
+        Ok(Self {
+            root: normalize(&root),
+            extra_read: self.extra_read.clone(),
+            extra_write: self.extra_write.clone(),
+        })
+    }
+
     fn scope(&self, canonical: &Path) -> PathScope {
         let norm = normalize(canonical);
         if starts_with_dir(&self.root, &norm) {

@@ -707,7 +707,7 @@ impl Tool for SpawnSubagentTool {
         "spawn_subagent".to_string()
     }
     fn description(&self) -> String {
-        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small.".to_string()
+        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small. Pass 'branch' to run it in a sibling git worktree (created on demand, reused if present) so parallel agents share the codebase without clashing — requires a git project; its edits land in the worktree, not the main checkout.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -715,7 +715,8 @@ impl Tool for SpawnSubagentTool {
             "properties": {
                 "goal": { "type": "string", "description": "The specific, self-contained task for the subagent" },
                 "agent_type": { "type": "string", "enum": ["coder", "researcher"], "description": "coder implements code changes; researcher investigates and reports" },
-                "ctx_files": { "type": "array", "items": { "type": "string" }, "description": "Optional file paths (relative to the project) to hand to the subagent as context" }
+                "ctx_files": { "type": "array", "items": { "type": "string" }, "description": "Optional file paths (relative to the project) to hand to the subagent as context" },
+                "branch": { "type": "string", "description": "Optional git branch: run isolated in a sibling worktree on this branch (created if missing). Use for parallel implementation streams." }
             },
             "required": ["goal", "agent_type"]
         })

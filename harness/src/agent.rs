@@ -170,7 +170,8 @@ pub enum AgentEvent {
     /// A grant is required; the UI must show the approval prompt.
     ApprovalRequired { tool: String, command: Option<String>, args: String },
     /// A subagent started working (UI shows an inline activity card).
-    SubagentSpawned { call_id: String, kind: String, goal: String },
+    /// `branch` is set when it runs in a sibling git worktree.
+    SubagentSpawned { call_id: String, kind: String, goal: String, branch: Option<String> },
     /// A subagent finished; `summary` is what the orchestrator received.
     SubagentFinished { call_id: String, kind: String, summary: String },
     /// Non-fatal notice for the user (e.g. VRAM feasibility warning).
@@ -564,11 +565,40 @@ impl AgentRun<'_> {
             if goal.is_empty() {
                 bail!("spawn_subagent requires a non-empty 'goal'");
             }
+            // Optional git branch: run isolated in a sibling worktree so
+            // parallel agents share the codebase without clashing on files.
+            // A fresh worktree is created on demand; an existing one is reused
+            // for continued work. Loud failure (never a silent fallback into
+            // the main checkout — that could clobber parallel work).
+            let branch = args
+                .get("branch")
+                .and_then(|b| b.as_str())
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+                .map(str::to_string);
+            let (work_root, worktree_note) = match branch.as_deref() {
+                Some(b) => {
+                    let (path, created) = crate::git::ensure_worktree(sub.jail.root(), b)
+                        .with_context(|| format!("Cannot prepare worktree for branch '{b}'"))?;
+                    let note = format!(
+                        "Working directory: {} (git worktree on branch '{b}', sibling of the project — {}). Your edits land here, not in the main checkout.",
+                        path.display(),
+                        if created { "freshly created" } else { "reused" },
+                    );
+                    (path, Some(note))
+                }
+                None => (sub.jail.root().to_path_buf(), None),
+            };
+            // The worktree jail keeps the parent's extra scope (allowlist).
+            let work_jail = Arc::new(sub.jail.rooted_at(&work_root).map_err(|e| {
+                anyhow::anyhow!("Cannot sandbox worktree {}: {e:#}", work_root.display())
+            })?);
             let call_ref = format!("subagent-{seq}");
             on_event(AgentEvent::SubagentSpawned {
                 call_id: call_ref.clone(),
                 kind: kind.name().into(),
                 goal: goal.clone(),
+                branch: branch.clone(),
             });
 
             // Lazy worker load: the worker model only loads when a subagent
@@ -581,12 +611,15 @@ impl AgentRun<'_> {
             // Fresh, isolated transcript: system prompt + goal (+ ctx files).
             // Skills ride along (both kinds); MCP tools join the coder kind.
             let mut history = vec![ChatMessage::system(kind.prompt(&sub.skills))];
-            let mut initial = format!("Goal: {goal}\n");
+            let mut initial = match &worktree_note {
+                Some(note) => format!("{note}\nGoal: {goal}\n"),
+                None => format!("Goal: {goal}\n"),
+            };
             if let Some(files) = args.get("ctx_files").and_then(|f| f.as_array()) {
                 for f in files {
                     if let Some(path) = f.as_str() {
                         let cap = 20_000usize;
-                        match sub.jail.check_read(std::path::Path::new(path)) {
+                        match work_jail.check_read(std::path::Path::new(path)) {
                             Ok(resolved) => match std::fs::read_to_string(&resolved) {
                                 Ok(content) => {
                                     let mut shown: String =
@@ -606,7 +639,7 @@ impl AgentRun<'_> {
             history.push(ChatMessage::user(initial));
 
             let registry = SubagentKind::subagent_registry(
-                sub.jail.clone(),
+                work_jail,
                 &sub.skills,
                 &sub.mcp_tools,
                 kind,
@@ -644,13 +677,21 @@ impl AgentRun<'_> {
 
             // Cap the report entering the orchestrator transcript.
             const REPORT_CAP: usize = 16_000;
-            let report = if outcome.text.chars().count() > REPORT_CAP {
+            let mut report = if outcome.text.chars().count() > REPORT_CAP {
                 let mut t: String = outcome.text.chars().take(REPORT_CAP).collect();
                 t.push_str("\n[report truncated]");
                 t
             } else {
                 outcome.text
             };
+            // The orchestrator must know WHERE the work happened: worktree
+            // edits are not in the main checkout.
+            if let Some(b) = branch.as_deref() {
+                report.push_str(&format!(
+                    "\n[worktree: {} (branch '{b}') — changes are in the worktree, merge or review them from the sidebar]",
+                    work_root.display()
+                ));
+            }
             on_event(AgentEvent::SubagentFinished {
                 call_id: call_ref,
                 kind: kind.name().into(),
@@ -724,6 +765,7 @@ mod tests {
             call_id: "subagent-0".into(),
             kind: "coder".into(),
             goal: "add tests".into(),
+            branch: Some("feature-x".into()),
         };
         assert_eq!(serde_json::to_value(&ev).unwrap()["type"], "subagent_spawned");
     }
