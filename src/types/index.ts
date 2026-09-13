@@ -310,7 +310,7 @@ export interface AppConfig {
     worker: { ctx_size?: number | null; n_gpu_layers?: number | null };
   };
   /** Chat projects: contained working directories shown in the Chat sidebar. */
-  harness_projects: { id: string; name: string; path: string; created: number }[];
+  harness_projects: { id: string; name: string; path: string; extra_read?: string[]; created: number }[];
   /** Id of the project the Chat view currently has open. */
   harness_active_project: string | null;
 }

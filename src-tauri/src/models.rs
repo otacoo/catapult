@@ -328,7 +328,7 @@ struct GgufCacheEntry {
     is_reasoning: bool,
 }
 
-type GgufCache = HashMap<String, GgufCacheEntry>;
+pub(crate) type GgufCache = HashMap<String, GgufCacheEntry>;
 
 fn cache_path() -> Option<PathBuf> {
     let data_dir = dirs::data_dir()?;
@@ -602,6 +602,20 @@ fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Op
     best.map(|(p, _)| p)
 }
 
+/// Does a matching sibling mmproj sit next to this model file? Same pairing
+/// rule as the installed-models scan (no cache needed — filename detection
+/// suffices), so capability badges agree with the Models-page Eye tag.
+pub(crate) fn has_mmproj_sibling(path: &std::path::Path) -> bool {
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if filename.is_empty() {
+        return false;
+    }
+    find_mmproj(path, &filename, &GgufCache::new()).is_some()
+}
+
 struct CachedMeta {
     name: Option<String>,
     size_label: Option<String>,
@@ -611,7 +625,7 @@ struct CachedMeta {
     is_mmproj: bool,
 }
 
-fn is_vision_model(tags: &[String]) -> bool {
+pub(crate) fn is_vision_model(tags: &[String]) -> bool {
     tags.iter().any(|t| {
         let lower = t.to_lowercase();
         lower == "image-to-text" || lower == "image-text-to-text"

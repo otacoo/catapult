@@ -273,16 +273,38 @@ export default function OptionsPanel({ open, onClose }: {
 
   // Local draft so typing doesn't hammer config writes; null = pristine.
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  const [extraDraft, setExtraDraft] = useState<string | null>(null);
   // Built-in default, shown in the textarea when no override is stored.
   const [builtInPrompt, setBuiltInPrompt] = useState<string | null>(null);
   useEffect(() => {
-    if (open) setPromptDraft(null);
+    if (open) {
+      setPromptDraft(null);
+      setExtraDraft(null);
+    }
   }, [open ]);
 
   const setSystemPrompt = async (prompt: string | null) => {
     setAppConfig((c) => (c ? { ...c, harness_system_prompt: prompt } : c));
     try {
       await invoke("set_harness_system_prompt", { prompt: prompt ?? "" });
+    } catch {}
+  };
+
+  const setExtraRead = async (paths: string[]) => {
+    const id = appConfig?.harness_active_project;
+    if (!id) return;
+    setAppConfig((c) =>
+      c
+        ? {
+            ...c,
+            harness_projects: c.harness_projects.map((p) =>
+              p.id === id ? { ...p, extra_read: paths } : p,
+            ),
+          }
+        : c,
+    );
+    try {
+      await invoke("set_harness_project_extra_read", { paths });
     } catch {}
   };
 
@@ -419,6 +441,53 @@ export default function OptionsPanel({ open, onClose }: {
     </div>
   );
 
+  const activeProject = appConfig?.harness_projects.find(
+    (p) => p.id === appConfig?.harness_active_project,
+  ) ?? null;
+  const storedExtra = activeProject?.extra_read ?? [];
+  const extraDirty =
+    extraDraft !== null &&
+    extraDraft.split("\n").map((l) => l.trim()).filter((l) => l !== "").join("\n") !==
+      storedExtra.join("\n");
+
+  const allowlistCard = (
+    <div className="card">
+      <h2 className="section-title mb-1">Project read allowlist</h2>
+      <p className="section-desc">
+        {activeProject
+          ? `Extra read-only paths outside “${activeProject.name}” the agent may read. One absolute path per line. Never writable.`
+          : "Pick an active project in the Chat sidebar to allowlist extra read paths."}
+      </p>
+      <textarea
+        className="input w-full mt-3 font-mono text-xs leading-relaxed"
+        rows={3}
+        placeholder={activeProject ? "e.g. H:\\shared\\assets" : "No active project…"}
+        disabled={!activeProject}
+        value={extraDraft ?? storedExtra.join("\n")}
+        onChange={(e) => setExtraDraft(e.target.value)}
+      />
+      <div className="flex items-center gap-2 mt-2">
+        <button
+          className="btn-primary text-xs"
+          disabled={!extraDirty}
+          onClick={() => {
+            const paths = (extraDraft ?? "")
+              .split("\n")
+              .map((l) => l.trim())
+              .filter((l) => l !== "");
+            setExtraRead(paths);
+            setExtraDraft(null);
+          }}
+        >
+          Save
+        </button>
+        {!extraDirty && storedExtra.length > 0 && (
+          <span className="text-[11px] text-gray-500">{storedExtra.length} allowlisted path{storedExtra.length === 1 ? "" : "s"}</span>
+        )}
+      </div>
+    </div>
+  );
+
   const aboutCard = (
     <div className="card">
       <div className="flex justify-center mb-2">
@@ -501,6 +570,7 @@ export default function OptionsPanel({ open, onClose }: {
               <div className={`space-y-4 ${appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}`}>
                 {agentCard}
                 {systemPromptCard}
+                {allowlistCard}
               </div>
             </>
           )}

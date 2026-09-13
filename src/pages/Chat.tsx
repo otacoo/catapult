@@ -1431,10 +1431,10 @@ function HarnessChat() {
             {/* Capability badges + reasoning effort, stacked next to Send.
                 The effort control only appears for reasoning models, and only
                 offers levels the active model's template accepts. */}
-            <div className="flex flex-col items-center gap-1 shrink-0 pb-0.5">
+            <div className="flex flex-col items-start gap-1 shrink-0 pb-0.5">
               <div className="flex items-center gap-1.5 h-4" title="Model capabilities">
                 {caps?.vision && (
-                  <span title="Model supports vision (image input — attach support coming soon)">
+                  <span title="Model supports vision (image input)">
                     <Eye size={13} className="text-accent-blue" />
                   </span>
                 )}

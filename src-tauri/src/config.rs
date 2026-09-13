@@ -85,6 +85,10 @@ pub struct HarnessProject {
     pub name: String,
     /// Absolute path of the working directory.
     pub path: String,
+    /// Extra read-only paths outside the project the agent may read
+    /// (pre-declared allowlist; never writable).
+    #[serde(default)]
+    pub extra_read: Vec<String>,
     #[serde(default)]
     pub created: i64,
 }
