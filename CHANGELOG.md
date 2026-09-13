@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.5.2] - 2026-09-13
+
+### Added
+
+- Agent-managed skills via manage_skill tool
+- Remember tool with global and project memory
+- N CPU FFN option; exact CLI flags on Advanced options
+
+### Changed
+
+- Self-healing edit_file matcher
+- Collapsible sidebar sections; subagent working notice
+- Restore worktree sidebar; branch chip on subagent cards
+- Worktree-rooted subagent runs via branch arg
+- Estimate ring usage when servers omit it
+- Persist and restore reasoning traces
+- Kill process trees and MCP children on shutdown
+- Skills and MCP tools in subagent registries
+- Reject wrong-shell syntax with corrective hints
+- Restore tool cards from saved transcript
+- Reuse extended sessions; grant approved approval keys
+- Never load models from stats polling; validate role files
+- Quiet router poll spam; live slot fill and tolerant metrics
+- Adjust icon
+- Auto-attach speculative drafts and MTP heads
+- Hide auxiliary GGUFs from model list
+- Brighten icon mark for small sizes
+
 ## [0.5.1] - 2026-09-12
 
 ### Added
