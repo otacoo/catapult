@@ -588,6 +588,24 @@ fn active_project_path(config: &crate::config::AppConfig) -> Option<String> {
         .map(|p| p.path.clone())
 }
 
+/// Build the project jail including the active project's pre-declared
+/// extra read paths (missing entries are skipped, never fatal).
+fn project_jail(state: &AppState, root: &std::path::Path) -> Result<Arc<PathJail>, String> {
+    let extra: Vec<PathBuf> = {
+        let c = state.config.lock().unwrap();
+        let active = c.harness_active_project.as_deref();
+        c.harness_projects
+            .iter()
+            .find(|p| Some(p.id.as_str()) == active)
+            .map(|p| p.extra_read.clone())
+            .unwrap_or_default()
+    }
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|p| p.is_dir() || p.is_file())
+    .collect();
+    PathJail::new(root, &extra, &[]).map(Arc::new).map_err(|e| e.to_string())
+}
 /// Resolve the sandboxed project root: the active chat project is required.
 /// Chatting without a working directory is refused (the agent needs a jail).
 fn project_root(state: &AppState) -> Result<PathBuf, String> {
@@ -828,7 +846,7 @@ pub struct ToolListing {
 #[tauri::command]
 pub async fn harness_agent_tools(state: State<'_, AppState>) -> Result<Vec<ToolListing>, String> {
     let root = project_root(&state)?;
-    let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
+    let jail = project_jail(&state, &root)?;
     let (registry, _) = build_registry(jail, &state, &root);
     let registry = if state.config.lock().unwrap().harness_subagents_enabled {
         registry
@@ -924,7 +942,7 @@ pub async fn harness_agent_send(
     // Persisted grants follow the active project (global once per app run).
     ensure_permissions_loaded(&state);
     let project_id = state.config.lock().unwrap().harness_active_project.clone();
-    let jail = Arc::new(PathJail::new(&root, &[], &[]).map_err(|e| e.to_string())?);
+    let jail = project_jail(&state, &root)?;
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
 
@@ -1226,6 +1244,13 @@ pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<Ha
             .map(|m| m.capabilities.iter().any(|c| c.eq_ignore_ascii_case(want)))
             .unwrap_or(false)
     };
+    // Same vision rule as the installed-models scan: header tags, the
+    // capability string, or a paired sibling mmproj — otherwise models like
+    // Qwen3.5 GSQ-RCO (no header vision signal at all) lose their Eye badge.
+    let tags = meta.as_ref().map(|m| m.tags.as_slice()).unwrap_or(&[]);
+    let vision = has_cap("vision")
+        || crate::models::is_vision_model(tags)
+        || crate::models::has_mmproj_sibling(std::path::Path::new(&path));
     // Same template-aware detection as the reason-command above: a template
     // driving reasoning behavior counts even without a capability string.
     let reasoning = has_cap("reasoning")
@@ -1234,7 +1259,7 @@ pub async fn harness_agent_capabilities(state: State<'_, AppState>) -> Result<Ha
             .map(|m| crate::models::reasoning_support(m).0)
             .unwrap_or(false);
     Ok(HarnessCapabilities {
-        vision: has_cap("vision"),
+        vision,
         reasoning,
         context_length: meta.as_ref().and_then(|m| m.context_length),
     })
@@ -1477,6 +1502,7 @@ pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Re
             id: id.clone(),
             name,
             path: abs.to_string_lossy().to_string(),
+            extra_read: Vec::new(),
             created: now,
         });
         config.harness_active_project = Some(id);
@@ -1547,6 +1573,28 @@ pub async fn harness_project_active(id: Option<String>, state: State<'_, AppStat
         adopt_session(&state, s);
     }
     Ok(())
+}
+
+/// Replace the active project's extra read allowlist (one absolute path per
+/// entry; blanks dropped). Applies to the next run; never writable.
+#[tauri::command]
+pub async fn set_harness_project_extra_read(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    let Some(id) = config.harness_active_project.clone() else {
+        return Err("No active project".to_string());
+    };
+    let Some(project) = config.harness_projects.iter_mut().find(|p| p.id == id) else {
+        return Err("Unknown project".to_string());
+    };
+    project.extra_read = paths
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    config.save().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
