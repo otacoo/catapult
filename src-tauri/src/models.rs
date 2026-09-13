@@ -472,6 +472,11 @@ fn scan_gguf_recursive(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
+            // Auxiliary files (speculative drafts, MTP heads, imatrix) are
+            // companions, not loadable models — skip before header parsing.
+            if huggingface::is_auxiliary_file(&filename) {
+                continue;
+            }
             // Use std::fs::metadata to follow symlinks (e.g., HuggingFace cache links)
             // DirEntry::metadata() can return symlink metadata on some platforms
             let file_meta = match std::fs::metadata(&path) {
@@ -545,15 +550,11 @@ fn scan_gguf_recursive(
         }
     }
 }
-
-/// Find a compatible mmproj file in the same directory as the model.
-/// Detects mmproj files by filename ("mmproj" substring) or GGUF metadata
-/// (architecture == "clip"). Requires the mmproj to share name segments with
-/// the main model.
-fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Option<PathBuf> {
-    let dir = model_path.parent()?;
+/// Base-name segments for companion matching, e.g. "Qwen3.5-4B-Q4_K_M" →
+/// ["qwen3", "5", "4b"]. The trailing quant is stripped so files pair across
+/// quants (main Q8 with BF16 mmproj, …).
+fn companion_segments(model_filename: &str) -> Vec<String> {
     let stem = model_filename.trim_end_matches(".gguf");
-
     // Extract the "model name + params" prefix, e.g. "Qwen3.5-4B" from "Qwen3.5-4B-Q4_K_M"
     // Strip trailing quant pattern to get the base name
     let re = regex::Regex::new(r"[-_](?:MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)$").unwrap();
@@ -561,45 +562,90 @@ fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Op
 
     // Split base into segments for matching
     // e.g. "Qwen3.5-4B" → ["qwen3.5", "4b"]
-    let base_lower = base.to_lowercase();
-    let segments: Vec<&str> = base_lower.split(&['-', '_', '.'][..])
+    base.to_lowercase()
+        .split(&['-', '_', '.'][..])
         .filter(|s| !s.is_empty())
-        .collect();
+        .map(str::to_string)
+        .collect()
+}
 
-    let entries = std::fs::read_dir(dir).ok()?;
+/// Best directory sibling (a `.gguf` that is not the model itself) matching
+/// at least 2 base segments and satisfying `is_candidate`. Shared pairing
+/// rule for mmproj files and speculative-draft companions.
+fn best_sibling_match(
+    dir: &Path,
+    model_filename: &str,
+    segments: &[String],
+    is_candidate: impl Fn(&Path, &str) -> bool,
+) -> Option<PathBuf> {
     let mut best: Option<(PathBuf, usize)> = None;
-
-    for entry in entries.flatten() {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
         let fname = path.file_name()?.to_string_lossy().to_string();
+        if fname == model_filename {
+            continue;
+        }
         let fname_lower = fname.to_lowercase();
-        if !fname_lower.ends_with(".gguf") { continue; }
-        // Must not be the model itself
-        if fname == model_filename { continue; }
+        if !fname_lower.ends_with(".gguf") || !is_candidate(&path, &fname_lower) {
+            continue;
+        }
+        // Count how many base segments appear in the candidate filename
+        let matches = segments
+            .iter()
+            .filter(|seg| fname_lower.contains(seg.as_str()))
+            .count();
 
+        // Require at least 2 matching segments (name + params typically)
+        if matches >= 2 && best.as_ref().map_or(true, |(_, best_m)| matches > *best_m) {
+            best = Some((path, matches));
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// Find a compatible mmproj file in the same directory as the model.
+/// Detects mmproj files by filename ("mmproj" substring) or GGUF metadata
+/// (architecture == "clip"). Requires the mmproj to share name segments with
+/// the main model.
+fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Option<PathBuf> {
+    let dir = model_path.parent()?;
+    let segments = companion_segments(model_filename);
+    best_sibling_match(dir, model_filename, &segments, |path, fname_lower| {
         // Check if this file is an mmproj: by filename OR by cached GGUF metadata
         let is_mmproj_by_name = fname_lower.contains("mmproj");
         let cache_key = path.to_string_lossy().to_string();
         let is_mmproj_by_cache = cache.get(&cache_key).map_or(false, |e| e.is_mmproj);
-        if !is_mmproj_by_name && !is_mmproj_by_cache {
-            continue;
-        }
+        is_mmproj_by_name || is_mmproj_by_cache
+    })
+}
 
-        // Count how many base segments appear in the mmproj filename
-        let matches = segments.iter()
-            .filter(|seg| fname_lower.contains(*seg))
-            .count();
+/// Speculative-draft sibling kind: a purpose-built drafter, or a separate
+/// MTP head (which drafts via `--spec-type draft-mtp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecDraftKind {
+    Dspark,
+    MtpHead,
+}
 
-        // Require at least 2 matching segments (name + params typically)
-        if matches >= 2 {
-            if best.as_ref().map_or(true, |(_, best_m)| matches > *best_m) {
-                best = Some((path, matches));
-            }
-        }
+/// Find a speculative-draft sibling sharing name segments with the model:
+/// DSpark drafts preferred, separate MTP heads second. Filename-based, so no
+/// header cache is needed.
+pub fn find_spec_draft(model_path: &Path) -> Option<(PathBuf, SpecDraftKind)> {
+    let filename = model_path.file_name()?.to_string_lossy().to_string();
+    let dir = model_path.parent()?;
+    let segments = companion_segments(&filename);
+    if let Some(p) = best_sibling_match(dir, &filename, &segments, |_, f| {
+        crate::huggingface::is_dspark_file(f)
+    }) {
+        return Some((p, SpecDraftKind::Dspark));
     }
-
-    best.map(|(p, _)| p)
+    best_sibling_match(dir, &filename, &segments, |_, f| {
+        crate::huggingface::is_mtp_head_file(f)
+    })
+    .map(|p| (p, SpecDraftKind::MtpHead))
 }
 
 /// Does a matching sibling mmproj sit next to this model file? Same pairing
@@ -1168,7 +1214,7 @@ pub fn abort_download(filename: &str, config: &AppConfig) -> Result<()> {
 
 /// Delete a model and its companions. Removes the model file (or all split
 /// parts), then — when no other model GGUF remains in the folder — the
-/// companion files (mmproj / dspark drafts), and finally any now-empty
+/// companion files (mmproj / dspark drafts / MTP heads), and finally any now-empty
 /// folders up to (but not including) the configured models roots.
 pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -1189,13 +1235,15 @@ pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
         std::fs::remove_file(path)?;
     }
 
-    // 2. Companion files (mmproj / dspark): removed once no other model GGUF
-    // remains in the folder — earlier they would pair with surviving models.
+    // 2. Companion files (mmproj / dspark / MTP heads): removed once no
+    // other model GGUF remains in the folder — earlier they would pair with
+    // surviving models.
     if let Some(dir) = &parent {
         let is_model_gguf = |name_lower: &str| -> bool {
             name_lower.ends_with(".gguf")
                 && !name_lower.contains("mmproj")
                 && !name_lower.contains("dspark")
+                && !huggingface::is_mtp_head_file(name_lower)
                 && !name_lower.starts_with("__downloading__")
         };
         let mut models_remaining = false;
@@ -1215,7 +1263,9 @@ pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
                 }
                 let name_lower = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
                 if name_lower.ends_with(".gguf")
-                    && (name_lower.contains("mmproj") || name_lower.contains("dspark"))
+                    && (name_lower.contains("mmproj")
+                        || name_lower.contains("dspark")
+                        || huggingface::is_mtp_head_file(&name_lower))
                 {
                     std::fs::remove_file(&p)?;
                 }
@@ -1740,5 +1790,56 @@ mod tests {
         std::fs::write(dir.join(lone), []).unwrap();
         assert_eq!(find_mmproj(&dir.join(lone), lone, &cache), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_spec_draft_pairs_dspark_and_mtp_heads() {
+        // Real-world names: a Gemma-4 main quant pairs its mtp- head, a
+        // MiniCPM-style model pairs its DSpark draft. Detection is by
+        // filename, so empty files suffice.
+        let dir = std::env::temp_dir()
+            .join(format!("catapult-draft-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gemma = "gemma-4-26B-A4B-it-Q8_0.gguf";
+        let mtp = "mtp-gemma-4-26B-A4B-it.gguf";
+        let mini = "MiniCPM5-2.6B-Q4_K_M.gguf";
+        let dspark = "MiniCPM5-2.6B-DSpark.gguf";
+        for f in [gemma, mtp, mini, dspark] {
+            std::fs::write(dir.join(f), []).unwrap();
+        }
+        assert_eq!(
+            find_spec_draft(&dir.join(gemma)),
+            Some((dir.join(mtp), SpecDraftKind::MtpHead))
+        );
+        assert_eq!(
+            find_spec_draft(&dir.join(mini)),
+            Some((dir.join(dspark), SpecDraftKind::Dspark))
+        );
+        // Drafts never pair with themselves or each other.
+        assert_eq!(find_spec_draft(&dir.join(mtp)), None);
+        let lone = "LoneModel-7B-Q4_K_M.gguf";
+        std::fs::write(dir.join(lone), []).unwrap();
+        assert_eq!(find_spec_draft(&dir.join(lone)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auxiliary_files_skip_the_model_scan() {
+        // DSpark drafts, MTP heads, and imatrix files are companions, not
+        // loadable models — the scan must not list them.
+        for f in [
+            "MiniCPM5-2.6B-DSpark.gguf",
+            "mtp-gemma-4-26B-A4B-it.gguf",
+            "model.imatrix.gguf",
+        ] {
+            assert!(crate::huggingface::is_auxiliary_file(f), "{f} should be auxiliary");
+        }
+        for f in [
+            "gemma-4-26B-A4B-it-Q8_0.gguf",
+            "Qwen3.6-27B-MTP-Q4_K_M.gguf",
+        ] {
+            assert!(!crate::huggingface::is_auxiliary_file(f), "{f} should list as a model");
+        }
     }
 }

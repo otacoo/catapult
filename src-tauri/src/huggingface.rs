@@ -274,10 +274,39 @@ pub fn is_mmproj_file(filename: &str) -> bool {
 }
 
 /// Check if a filename is a dspark (DeepSeek V4 speculative-draft) file.
-/// DSpark drafters are auxiliary and shipped alongside the target checkpoint,
-/// so we hide them from the main model list and download picker.
+// DSpark drafters are auxiliary and shipped alongside the target checkpoint,
+// so we hide them from the main model list and download picker.
 pub fn is_dspark_file(filename: &str) -> bool {
     filename.to_lowercase().contains("dspark")
+}
+
+/// Check if a filename is a *separate* MTP-head sidecar (`mtp-<rest>.gguf`,
+/// e.g. Gemma-4). A full model with embedded MTP keeps `-MTP-` mid-name
+/// (e.g. `Qwen3.6-27B-MTP-Q4_K_M.gguf`) and stays listed — only the
+/// head-only sidecar is auxiliary.
+pub fn is_mtp_head_file(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    let stem = lower.strip_suffix(".gguf").unwrap_or(&lower);
+    stem.split(['-', '_', ' ', '.']).next() == Some("mtp")
+}
+
+/// Check if a main-model filename carries embedded MTP heads (`-MTP-`
+/// mid-name). These load standalone with `--spec-type draft-mtp`.
+pub fn has_embedded_mtp(filename: &str) -> bool {
+    if is_mtp_head_file(filename) {
+        return false;
+    }
+    let lower = filename.to_lowercase();
+    let stem = lower.strip_suffix(".gguf").unwrap_or(&lower);
+    let mut segs = stem.split(['-', '_', ' ', '.']);
+    segs.next(); // first segment belongs to is_mtp_head_file
+    segs.any(|s| s == "mtp")
+}
+
+/// Auxiliary GGUFs that must never list as loadable models: speculative
+/// drafts (DSpark), separate MTP heads, importance matrices.
+pub fn is_auxiliary_file(filename: &str) -> bool {
+    is_dspark_file(filename) || is_mtp_head_file(filename) || is_imatrix_file(filename)
 }
 
 /// Sanitize a single path component for the filesystem (Windows-safe).
@@ -523,6 +552,7 @@ fn convert_model(m: HfApiModel) -> HfModel {
         .filter(|f| f.rfilename.ends_with(".gguf"))
         .filter(|f| !is_imatrix_file(&f.rfilename))
         .filter(|f| !is_dspark_file(&f.rfilename))
+        .filter(|f| !is_mtp_head_file(&f.rfilename))
         .map(|f| {
             let quant = extract_quant(&f.rfilename);
             let download_url = format!(
@@ -715,6 +745,25 @@ mod tests {
         assert_eq!(extract_quant("model.gguf"), None);
         assert_eq!(extract_quant("README.md"), None);
         assert_eq!(extract_quant(""), None);
+    }
+
+    #[test]
+    fn auxiliary_file_detection() {
+        // Separate MTP-head sidecars hide from the model list…
+        assert!(is_mtp_head_file("mtp-gemma-4-26B-A4B-it.gguf"));
+        assert!(is_mtp_head_file("MTP-foo-BF16.GGUF"));
+        // …but full models with embedded MTP stay listed.
+        assert!(!is_mtp_head_file("Qwen3.6-27B-MTP-Q4_K_M.gguf"));
+        assert!(!is_mtp_head_file("gemma-4-26B-A4B-it-Q8_0.gguf"));
+        assert!(has_embedded_mtp("Qwen3.6-27B-MTP-Q4_K_M.gguf"));
+        assert!(!has_embedded_mtp("mtp-gemma-4-26B-A4B-it.gguf"));
+        assert!(!has_embedded_mtp("gemma-4-26B-A4B-it-Q8_0.gguf"));
+        // DSpark drafts and imatrix files are auxiliary too.
+        assert!(is_auxiliary_file("MiniCPM5-2.6B-DSpark.gguf"));
+        assert!(is_auxiliary_file("mtp-gemma-4-26B-A4B-it.gguf"));
+        assert!(is_auxiliary_file("model.imatrix.gguf"));
+        assert!(!is_auxiliary_file("gemma-4-26B-A4B-it-Q8_0.gguf"));
+        assert!(!is_auxiliary_file("Qwen3.6-27B-MTP-Q4_K_M.gguf"));
     }
 
     #[test]
