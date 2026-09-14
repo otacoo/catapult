@@ -109,15 +109,20 @@ Your final message is the only thing the orchestrator sees: state the answer dir
 
     /// Registry for one subagent run: native allowlist + `skill` loader for
     /// both kinds, MCP tools for the coder kind only (the researcher stays
-    /// read-only by construction). `spawn_subagent` is always stripped.
+    /// read-only by construction). `spawn_subagent` is always stripped, and
+    /// `exec` goes when the Tools page disables shell access.
     pub fn subagent_registry(
         jail: Arc<crate::sandbox::PathJail>,
         skills: &[crate::skills::Skill],
         mcp_tools: &[crate::mcp::McpTool],
         kind: SubagentKind,
+        exec_enabled: bool,
     ) -> Arc<ToolRegistry> {
         let mut registry =
             ToolRegistry::project_tools(jail).without(&["spawn_subagent"]);
+        if !exec_enabled {
+            registry = registry.without(&["exec"]);
+        }
         let mut allowed: Vec<String> =
             kind.allowed_tools().iter().map(|s| s.to_string()).collect();
         if !skills.is_empty() {
@@ -190,6 +195,9 @@ pub struct Subagents {
     /// MCP tools: coder kind only. The researcher stays read-only by
     /// construction (MCP actions can mutate the outside world).
     pub mcp_tools: Vec<crate::mcp::McpTool>,
+    /// Whether the shell tool is available (follows the Tools page Shell
+    /// Command toggle; off removes `exec` for every agent).
+    pub exec_enabled: bool,
     /// Attached images (`image_url` parts) forwarded into the isolated
     /// transcript so visual work can be delegated to a capable worker.
     pub images: Vec<serde_json::Value>,
@@ -400,8 +408,31 @@ impl AgentRun<'_> {
                         }
                     }
                 } else {
-                    self.execute_tool_call(&tool_name, &args_value, args_pretty, &call_id, &gate, &mut on_event)
-                        .await
+                    let (output, media) = self.execute_tool_call(&tool_name, &args_value, args_pretty, &call_id, &gate, &mut on_event)
+                        .await;
+                    history.push(ChatMessage {
+                        role: "tool".into(),
+                        content: Some(Value::String(output)),
+                        tool_calls: None,
+                        tool_call_id: Some(call_id),
+                    });
+                    // Vision payloads ride as a follow-up user message (tool
+                    // results are text-only): the model sees the pixels inline
+                    // right after reading them.
+                    if !media.is_empty() {
+                        let mut parts = vec![serde_json::json!({
+                            "type": "text",
+                            "text": "Visual context for the tool result above."
+                        })];
+                        parts.extend(media);
+                        history.push(ChatMessage {
+                            role: "user".into(),
+                            content: Some(Value::Array(parts)),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                    continue;
                 };
 
                 history.push(ChatMessage {
@@ -415,7 +446,8 @@ impl AgentRun<'_> {
     }
 
     /// Permission-gated execution of one non-spawn tool call. Returns the
-    /// text that goes back to the model as the tool result.
+    /// text that goes back to the model as the tool result, plus any
+    /// `image_url` parts for vision (read_file on images).
     async fn execute_tool_call(
         &self,
         tool_name: &str,
@@ -424,9 +456,9 @@ impl AgentRun<'_> {
         call_id: &str,
         gate: &Arc<dyn ApprovalGate>,
         on_event: &mut (dyn FnMut(AgentEvent) + Send),
-    ) -> String {
+    ) -> (String, Vec<Value>) {
         let Some(tool) = self.registry.get(tool_name) else {
-            return format!("error: unknown tool '{tool_name}'");
+            return (format!("error: unknown tool '{tool_name}'"), Vec::new());
         };
         // Permission check (read-only tools auto-allow).
         let project = self.project.as_deref();
@@ -444,7 +476,7 @@ impl AgentRun<'_> {
                     Approved::Denied => false,
                     scope => {
                         // Grant exactly what was approved (the approval key:
-                        // per MCP server, per shell head) — never the bare
+                        // per MCP server, tool-wide for shell) — never the bare
                         // registry name, which would never match a later check.
                         self.engine.grant(Grant {
                             tool: key.tool.clone(),
@@ -472,30 +504,30 @@ impl AgentRun<'_> {
                 ok: false,
                 output: "denied by user".into(),
             });
-            return "denied by user".to_string();
+            return ("denied by user".to_string(), Vec::new());
         }
         let res = self
             .registry
-            .spawn_execute(tool_name.to_string(), args_value.clone())
+            .spawn_execute_with_media(tool_name.to_string(), args_value.clone())
             .await
-            .unwrap_or_else(|e| Err(anyhow::Error::new(e)));
+            .unwrap_or_else(|e| (Err(anyhow::Error::new(e)), Vec::new()));
         match res {
-            Ok(out) => {
+            (Ok(out), media) => {
                 on_event(AgentEvent::ToolResult {
                     call_id: call_id.to_string(),
                     ok: true,
                     output: short_args(&out),
                 });
-                out
+                (out, media)
             }
-            Err(e) => {
+            (Err(e), _) => {
                 let msg = format!("error: {e:#}");
                 on_event(AgentEvent::ToolResult {
                     call_id: call_id.to_string(),
                     ok: false,
                     output: short_args(&msg),
                 });
-                msg
+                (msg, Vec::new())
             }
         }
     }
@@ -663,6 +695,7 @@ impl AgentRun<'_> {
                 &sub.skills,
                 &sub.mcp_tools,
                 kind,
+                sub.exec_enabled,
             );
             let run = AgentRun {
                 client: self.client,
@@ -845,12 +878,15 @@ mod tests {
             description: "Ship it".to_string(),
             path: dir.join("SKILL.md"),
         }];
-        let coder = SubagentKind::subagent_registry(jail.clone(), &skills, &[], SubagentKind::Coder);
+        let coder = SubagentKind::subagent_registry(jail.clone(), &skills, &[], SubagentKind::Coder, true);
         assert!(coder.get("skill").is_some(), "coder loads skills on demand");
         assert!(coder.get("spawn_subagent").is_none(), "recursion must be impossible");
         assert!(coder.get("write_file").is_some());
+        assert!(coder.get("exec").is_some(), "coder keeps shell by default");
+        let noexec = SubagentKind::subagent_registry(jail.clone(), &skills, &[], SubagentKind::Coder, false);
+        assert!(noexec.get("exec").is_none(), "Tools-page opt-out removes shell everywhere");
         let researcher =
-            SubagentKind::subagent_registry(jail, &skills, &[], SubagentKind::Researcher);
+            SubagentKind::subagent_registry(jail, &skills, &[], SubagentKind::Researcher, true);
         assert!(researcher.get("skill").is_some(), "researcher reads skills too");
         assert!(researcher.get("write_file").is_none(), "researcher must be read-only");
         assert!(researcher.get("spawn_subagent").is_none());

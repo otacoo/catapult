@@ -17,7 +17,7 @@ export const KNOWN_TOOLS: ToolDef[] = [
   { name: "get_info", label: "Get Info", hint: "Query file and folder metadata" },
   { name: "write_file", label: "Write File", hint: "Create or overwrite files" },
   { name: "edit_file", label: "Edit File", hint: "Apply line-range edits to files" },
-  { name: "exec_shell_command", label: "Shell Command", hint: "Run arbitrary shell commands", dangerous: true },
+  { name: "exec_shell_command", label: "Shell Command", hint: "Run arbitrary shell commands (also gates the agent harness shell)", dangerous: true },
 ];
 
 // Effective set of enabled tools. "all" expands to every known tool; names not

@@ -1228,7 +1228,7 @@ function HarnessChat() {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const decide = async (seq: number, grant: "once" | "session" | "project" | "global" | null) => {
+  const decide = async (seq: number, grant: "once" | "global" | null) => {
     setItems((prev) =>
       prev.map((it) =>
         it.kind === "approval" && it.seq === seq && !it.resolved
@@ -1421,14 +1421,8 @@ function HarnessChat() {
                       <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "once")}>
                         <Check size={11} /> Allow once
                       </button>
-                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "session")}>
-                        <Check size={11} /> Allow session (30 min)
-                      </button>
-                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "project")} title="Remember for this project (30 days)">
-                        <Check size={11} /> Allow project (30 days)
-                      </button>
-                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "global")} title="Remember for all projects (30 days)">
-                        <Check size={11} /> Allow global (30 days)
+                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "global")} title="Remember this approval (30 days, all projects)">
+                        <Check size={11} /> Allow always
                       </button>
                       <button className="btn-ghost py-1 px-2 text-accent-red" onClick={() => decide(it.seq, null)}>
                         <X size={11} /> Deny
@@ -1436,7 +1430,11 @@ function HarnessChat() {
                     </div>
                   ) : (
                     <p className="text-gray-600">
-                      {it.resolved === "denied" ? "Denied" : `Allowed (${it.resolved})`}
+                      {it.resolved === "denied"
+                        ? "Denied"
+                        : it.resolved === "global"
+                          ? "Allowed (always)"
+                          : `Allowed (${it.resolved})`}
                     </p>
                   )}
                 </div>

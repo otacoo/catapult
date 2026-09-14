@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use crate::permissions::{ApprovalKey, Decision, PermissionEngine};
 use crate::sandbox::PathJail;
+use base64::Engine as _;
 
 /// Max characters returned by file-reading tools before truncation.
 const READ_CAP: usize = 100_000;
@@ -39,6 +40,12 @@ pub trait Tool: Send + Sync {
     /// permission engine before executing.
     fn approval_key(&self, args: &Value) -> Option<ApprovalKey>;
     fn execute(&self, args: &Value) -> Result<String>;
+    /// Execute plus optional `image_url` parts for vision models (default:
+    /// none). `read_file` overrides this for image files: the text result
+    /// names the image while the pixels ride alongside for the model to see.
+    fn execute_with_media(&self, args: &Value) -> (Result<String>, Vec<Value>) {
+        (self.execute(args), Vec::new())
+    }
 }
 
 fn str_arg(args: &Value, key: &str) -> Result<String> {
@@ -131,6 +138,38 @@ impl LlmIgnore {
 
 // ── read_file ───────────────────────────────────────────────────────────────
 
+/// Image extensions readable for visual inspection (not as text).
+fn is_image_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(
+            e.to_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+        ))
+        .unwrap_or(false)
+}
+
+fn mime_for(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        _ => "application/octet-stream",
+    }
+}
+
+fn base64_engine() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::STANDARD
+}
+
 pub struct ReadFileTool {
     jail: Arc<PathJail>,
 }
@@ -140,7 +179,7 @@ impl Tool for ReadFileTool {
         "read_file".to_string()
     }
     fn description(&self) -> String {
-        "Read a text file inside the project. Large files are truncated.".to_string()
+        "Read a file inside the project. Text files return content (large files truncated); image files (png/jpg/webp/gif/bmp) are attached for visual inspection.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
@@ -155,6 +194,7 @@ impl Tool for ReadFileTool {
         None // read-only
     }
     fn execute(&self, args: &Value) -> Result<String> {
+        // Plain-text path (also what `execute_with_media` falls back to).
         let path = str_arg(args, "path")?;
         let resolved = self.jail.check_read(std::path::Path::new(&path))?;
         let text = std::fs::read_to_string(&resolved)
@@ -169,6 +209,48 @@ impl Tool for ReadFileTool {
         } else {
             Ok(text)
         }
+    }
+    fn execute_with_media(&self, args: &Value) -> (Result<String>, Vec<Value>) {
+        let path = match str_arg(args, "path") {
+            Ok(p) => p,
+            Err(e) => return (Err(e), Vec::new()),
+        };
+        let Ok(resolved) = self.jail.check_read(std::path::Path::new(&path)) else {
+            return (self.execute(args), Vec::new());
+        };
+        if !is_image_path(&resolved) {
+            return (self.execute(args), Vec::new());
+        }
+        const IMAGE_CAP: usize = 5_000_000;
+        let bytes = match std::fs::read(&resolved) {
+            Ok(b) => b,
+            Err(e) => return (Err(anyhow::anyhow!("Cannot read {}: {e}", resolved.display())), Vec::new()),
+        };
+        if bytes.len() > IMAGE_CAP {
+            return (
+                Err(anyhow::anyhow!(
+                    "Image {} is too large ({} bytes, 5 MB max) — attach a smaller version",
+                    resolved.display(),
+                    bytes.len()
+                )),
+                Vec::new(),
+            );
+        }
+        let mime = mime_for(&resolved);
+        let b64 = base64_engine().encode(&bytes);
+        let kb = bytes.len() / 1024;
+        let part = json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:{mime};base64,{b64}") }
+        });
+        let filename = resolved
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        (
+            Ok(format!("[image {filename} ({kb} KB) attached below for visual inspection]")),
+            vec![part],
+        )
     }
 }
 
@@ -642,16 +724,14 @@ impl Tool for ExecTool {
         })
     }
     fn approval_key(&self, args: &Value) -> Option<ApprovalKey> {
+        // Tool-wide grant: one approval covers the whole shell tool (the
+        // approval card names the tool; per-command scoping proved too naggy).
+        // The wrong-shell guard still rejects sh-isms before spawning.
         let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
         if command_is_readonly(command) {
             None
         } else {
-            let head = command
-                .split_whitespace()
-                .next()
-                .unwrap_or("unknown")
-                .to_lowercase();
-            Some(ApprovalKey { tool: "exec".into(), command: Some(head) })
+            Some(ApprovalKey { tool: "exec".into(), command: None })
         }
     }
     fn execute(&self, args: &Value) -> Result<String> {
@@ -891,12 +971,27 @@ impl ToolRegistry {
             }
         })
     }
+
+    /// Same, plus any `image_url` parts for vision (only `read_file` on
+    /// image files produces them today).
+    pub fn spawn_execute_with_media(
+        self: &Arc<Self>,
+        name: String,
+        args: Value,
+    ) -> tokio::task::JoinHandle<(Result<String>, Vec<Value>)> {
+        let registry = self.clone();
+        tokio::task::spawn_blocking(move || {
+            match registry.get(&name) {
+                Some(t) => t.execute_with_media(&args),
+                None => (Err(anyhow::anyhow!("Unknown tool '{name}'")), Vec::new()),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::PathJail;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("harness-tools-{}-{}", label, std::process::id()));
@@ -1068,14 +1163,19 @@ mod tests {
     }
 
     #[test]
-    fn exec_nonallowlisted_requires_approval_per_head() {
+    fn exec_nonallowlisted_requires_approval_tool_wide() {
         let root = temp_dir("exec-approval");
         let registry = registry_for(&root);
         let exec = registry.get("exec").unwrap();
-        let args = json!({"command": "npm install left-pad"});
-        let key = exec.approval_key(&args).expect("must need approval");
-        assert_eq!(key.tool, "exec");
-        assert_eq!(key.command.as_deref(), Some("npm"));
+        // One grant covers the whole shell tool (per-head scoping proved too
+        // naggy); the wrong-shell guard still filters before spawning.
+        for cmd in ["npm install left-pad", "cargo test", "Remove-Item foo"] {
+            let key = exec.approval_key(&json!({"command": cmd})).expect("must need approval");
+            assert_eq!(key.tool, "exec");
+            assert_eq!(key.command, None);
+        }
+        // Allowlisted read-only heads stay free.
+        assert!(exec.approval_key(&json!({"command": "git status"})).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1098,6 +1198,31 @@ mod tests {
         assert!(registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         // Consumed once-grant
         assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn read_file_attaches_images_for_vision() {
+        let root = temp_dir("img-read");
+        let registry = registry_for(&root);
+        // Minimal valid PNG (signature + IHDR + IEND).
+        let mut png = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend([0u8; 64]);
+        std::fs::write(root.join("art.png"), &png).unwrap();
+        std::fs::write(root.join("note.txt"), "hello").unwrap();
+        let read = registry.get("read_file").unwrap();
+        // Images: marker text plus one image part (not a text-decode error).
+        let (out, media) = read.execute_with_media(&json!({"path": "art.png"}));
+        let text = out.unwrap();
+        assert!(text.contains("attached below for visual inspection"), "{text}");
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0].get("type").and_then(|t| t.as_str()), Some("image_url"));
+        // Text files: unchanged behavior, no media.
+        let (out, media) = read.execute_with_media(&json!({"path": "note.txt"}));
+        assert_eq!(out.unwrap(), "hello");
+        assert!(media.is_empty());
+        // Missing files still fail.
+        assert!(read.execute_with_media(&json!({"path": "nope.png"})).0.is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

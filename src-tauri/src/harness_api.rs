@@ -632,6 +632,14 @@ fn collect_mcp_tools(state: &AppState) -> Vec<harness::mcp::McpTool> {
     out
 }
 
+/// Harness shell access follows the Tools page: deselecting Shell Command
+/// there removes `exec` from agent registries too. An empty selection means
+/// defaults (everything on), mirroring the server flag behavior.
+fn harness_exec_enabled(config: &crate::config::AppConfig) -> bool {
+    config.server_tools.is_empty()
+        || config.server_tools.iter().any(|t| t == "exec_shell_command")
+}
+
 /// Build the tool registry for a run: native sandboxed tools + the skill tool
 /// (when skills are discovered) + namespaced MCP tools (when servers connect).
 fn build_registry(
@@ -1108,12 +1116,20 @@ pub async fn harness_agent_send(
 
     // Tools: native sandboxed + skills + MCP (skills also extend the prompt).
     // Single-model mode strips delegation so the model never attempts it.
+    // A deselected Shell Command on the Tools page strips `exec` as well.
     let subagents_enabled = state.config.lock().unwrap().harness_subagents_enabled;
+    let exec_enabled =
+        harness_exec_enabled(&state.config.lock().unwrap());
     let (registry, skills) = build_registry(jail.clone(), &state, &root);
     let registry = if subagents_enabled {
         registry
     } else {
         registry.without(&["spawn_subagent"])
+    };
+    let registry = if exec_enabled {
+        registry
+    } else {
+        registry.without(&["exec"])
     };
 
     // ── Model roles (Phase 3) ──
@@ -1256,6 +1272,7 @@ pub async fn harness_agent_send(
                 mcp_tools: collect_mcp_tools(&state),
                 images: sub_images,
                 attachment_texts: sub_texts,
+                exec_enabled,
             })
         } else {
             None
