@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, Fragment } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, Fragment } from "react";
 import type { ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -986,8 +986,15 @@ function HarnessChat() {
     };
   }, []);
 
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  // Stay pinned to the newest message: layout effect (post-DOM, pre-paint)
+  // plus a rAF pass for late layout (images, code blocks) shifting height.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    const raf = requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [items, streamText, reasoningText]);
 
   // Slash-command autocomplete: a single-token "/" prefix filters SLASH_COMMANDS.

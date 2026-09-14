@@ -22,7 +22,14 @@ pub struct Worktree {
 
 /// Run `git` with the repo as CWD, with a timeout. Returns stdout on success.
 fn run_git(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String> {
-    let mut child = std::process::Command::new("git")
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new("git");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
         .args(args)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())

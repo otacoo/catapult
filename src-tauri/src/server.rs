@@ -517,10 +517,13 @@ pub async fn stop_server(state: &SharedServerState) -> Result<()> {
 
         // On Windows, kill the whole process tree: in router mode llama-server
         // spawns per-model children that TerminateProcess alone would orphan.
+        // taskkill is itself a console app — hide it too.
         #[cfg(not(unix))]
         if let Some(pid) = child.id() {
+            use std::os::windows::process::CommandExt as _;
             let _ = std::process::Command::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .creation_flags(0x08000000)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
@@ -770,11 +773,14 @@ pub fn kill_server_sync(state: &SharedServerState) {
         }
 
         // Windows: kill the whole tree (router children would otherwise
-        // survive app exit holding VRAM and ports).
+        // survive app exit holding VRAM and ports). taskkill is itself a
+        // console app — hide it too.
         #[cfg(not(unix))]
         if let Some(pid) = child.id() {
+            use std::os::windows::process::CommandExt as _;
             let _ = std::process::Command::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .creation_flags(0x08000000)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();

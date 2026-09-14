@@ -957,6 +957,15 @@ async fn resolve_roles(
                 .to_string(),
         );
     }
+    // A set-but-unresolvable worker must fail loudly: silently falling back
+    // to the orchestrator serves the wrong model (e.g. a vision task on a
+    // text-only orchestrator fails with a 500 about mmproj).
+    if worker_path.is_some() && worker_id.is_none() {
+        return Err(format!(
+            "Worker model is not in the router registry even after reload: {} — check the path in Settings → Chat, then restart the server",
+            worker_path.as_deref().unwrap_or("")
+        ));
+    }
 
     // Load the orchestrator eagerly. The worker loads lazily when the first
     // subagent actually needs it — loading both up front on a VRAM-tight
@@ -973,6 +982,33 @@ async fn resolve_roles(
     }
     if let Some(id) = &worker_id {
         log::info!("harness roles: worker '{id}' registered; loads lazily on first subagent use");
+    }
+
+    // A vision-capable role without a sibling mmproj will fail vision
+    // requests with a server 500 — warn every run until fixed (the file
+    // belongs next to the model; the preset attaches it automatically).
+    {
+        let cfg = state.config.lock().unwrap().clone();
+        let mut missing: Vec<String> = Vec::new();
+        for (label, path) in [("Orchestrator", roles.orchestrator.as_deref()), ("Worker", worker_path.as_deref())] {
+            if let Some(p) = path {
+                if installed_is_vision(&cfg, p)
+                    && !crate::models::has_mmproj_sibling(std::path::Path::new(p))
+                {
+                    missing.push(format!("{label} ({p})"));
+                }
+            }
+        }
+        if !missing.is_empty() {
+            let warn = format!(
+                "Vision-capable role without a sibling mmproj file (vision requests will fail): {}",
+                missing.join(", ")
+            );
+            loading_notice = Some(match loading_notice {
+                Some(n) => format!("{n} {warn}"),
+                None => warn,
+            });
+        }
     }
 
     // ── VRAM feasibility notice (heuristic: file size ≈ fully-offloaded VRAM) ──
