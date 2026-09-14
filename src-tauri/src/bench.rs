@@ -121,6 +121,10 @@ pub async fn run_quick_bench(
     let n = n_gen.unwrap_or(128);
 
     let mut cmd = Command::new(&bench_bin);
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     cmd.arg("-m").arg(&model_path);
     cmd.arg("-p").arg(p.to_string());
     cmd.arg("-n").arg(n.to_string());
