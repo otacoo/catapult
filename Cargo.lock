@@ -1670,6 +1670,7 @@ name = "harness"
 version = "0.4.3"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "futures",
  "glob",
  "regex",
