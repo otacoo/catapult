@@ -85,6 +85,8 @@ type Item =
       tokens?: number;
       reasoning?: string;
       attachments?: string[];
+      /** Image data URLs for multimodal turns (restored sessions, live sends). */
+      images?: string[];
       /** Local-only entries (/help) — never in backend history. */
       local?: boolean;
     }
@@ -891,7 +893,7 @@ function HarnessChat() {
       const res = await invoke<{
         messages: {
           role: string;
-          content?: string | null;
+          content?: unknown;
           tool_calls?: { id: string; function: { name: string; arguments: string } }[] | null;
           tool_call_id?: string | null;
         }[];
@@ -902,21 +904,50 @@ function HarnessChat() {
       const metaByIndex = new Map((res.meta ?? []).map((m) => [m.index, m]));
       const cap = (s: string, n: number) =>
         s.length > n ? `${s.slice(0, n)}\n[…truncated]` : s;
+      // Transcript content is a string for plain turns but a parts array for
+      // multimodal ones — normalize so renderers never receive an object.
+      const splitContent = (content: unknown): { text: string; images: string[] } => {
+        if (typeof content === "string") return { text: content, images: [] };
+        if (!Array.isArray(content)) return { text: "", images: [] };
+        const texts: string[] = [];
+        const images: string[] = [];
+        for (const p of content) {
+          if (typeof p !== "object" || p === null) continue;
+          const part = p as Record<string, unknown>;
+          if (part.type === "text" && typeof part.text === "string") {
+            texts.push(part.text);
+          } else if (part.type === "image_url") {
+            const url = (part.image_url as Record<string, unknown> | undefined)?.url;
+            if (typeof url === "string" && url) images.push(url);
+          }
+        }
+        return { text: texts.join("\n\n"), images };
+      };
       const restored: Item[] = [];
       res.messages.forEach((m, i) => {
         if (m.role === "user" && m.content) {
-          restored.push({ kind: "msg", role: "user", content: m.content });
+          const { text, images } = splitContent(m.content);
+          if (!text && images.length === 0) return;
+          restored.push({
+            kind: "msg",
+            role: "user",
+            content: text || "(attachments only)",
+            images: images.length > 0 ? images : undefined,
+          });
         } else if (m.role === "assistant" && m.content && !m.tool_calls) {
           const meta = metaByIndex.get(i);
+          const { text, images } = splitContent(m.content);
+          if (!text && images.length === 0) return;
           restored.push({
             kind: "msg",
             role: "assistant",
-            content: m.content,
+            content: text,
             model: meta?.model ?? undefined,
             tokps: meta?.tokens_per_sec ?? null,
             tokens: meta?.gen_tokens ?? undefined,
             elapsedMs: meta?.elapsed_ms ?? undefined,
             reasoning: meta?.reasoning ?? undefined,
+            images: images.length > 0 ? images : undefined,
           });
         } else if (m.role === "assistant" && m.tool_calls) {
           for (const tc of m.tool_calls) {
@@ -1041,6 +1072,9 @@ function HarnessChat() {
         content: text || "(attachments only)",
         time: Date.now(),
         attachments: attachments.map((a) => a.name),
+        images: attachments
+          .filter((a) => a.kind === "image" && a.preview)
+          .map((a) => a.preview as string),
       } as Item,
     ]);
     setInput("");
@@ -1376,6 +1410,13 @@ function HarnessChat() {
                     >
                       {isUser ? it.content : <Markdown content={it.content} />}
                     </div>
+                    {it.images && it.images.length > 0 && (
+                      <div className={`flex flex-wrap gap-1.5 mt-1.5 ${isUser ? "justify-end" : ""}`}>
+                        {it.images.map((src, k) => (
+                          <img key={k} src={src} alt="attached image" className="max-h-40 rounded border border-border object-contain" />
+                        ))}
+                      </div>
+                    )}
                     {isUser && it.attachments && it.attachments.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-1 mt-1">
                         {it.attachments.map((name) => (
