@@ -190,6 +190,11 @@ pub struct Subagents {
     /// MCP tools: coder kind only. The researcher stays read-only by
     /// construction (MCP actions can mutate the outside world).
     pub mcp_tools: Vec<crate::mcp::McpTool>,
+    /// Attached images (`image_url` parts) forwarded into the isolated
+    /// transcript so visual work can be delegated to a capable worker.
+    pub images: Vec<serde_json::Value>,
+    /// Fenced text blocks from text attachments, appended after the goal.
+    pub attachment_texts: Vec<String>,
 }
 
 /// What the UI answers when asked about a suspicious call.
@@ -615,6 +620,9 @@ impl AgentRun<'_> {
                 Some(note) => format!("{note}\nGoal: {goal}\n"),
                 None => format!("Goal: {goal}\n"),
             };
+            for block in &sub.attachment_texts {
+                initial.push_str(&format!("\n{block}\n"));
+            }
             if let Some(files) = args.get("ctx_files").and_then(|f| f.as_array()) {
                 for f in files {
                     if let Some(path) = f.as_str() {
@@ -636,7 +644,19 @@ impl AgentRun<'_> {
                     }
                 }
             }
-            history.push(ChatMessage::user(initial));
+            if sub.images.is_empty() {
+                history.push(ChatMessage::user(initial));
+            } else {
+                // Multimodal: goal/context text plus the forwarded image parts.
+                let mut parts = vec![serde_json::json!({ "type": "text", "text": initial })];
+                parts.extend(sub.images.clone());
+                history.push(ChatMessage {
+                    role: "user".into(),
+                    content: Some(serde_json::Value::Array(parts)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
 
             let registry = SubagentKind::subagent_registry(
                 work_jail,

@@ -101,6 +101,96 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
     }
 }
 
+/// Image `image_url` parts for the attachments (empty when no images).
+/// Subagent runs receive these so visual work can be delegated to a
+/// vision-capable worker.
+pub fn image_parts(attachments: &Option<Vec<Attachment>>) -> Vec<Value> {
+    let mut out = Vec::new();
+    for a in attachments.as_ref().map(|v| v.as_slice()).unwrap_or(&[]) {
+        if a.kind == "image" {
+            if let Some(b64) = &a.data_base64 {
+                out.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{};base64,{}", mime_for(&a.name), b64) }
+                }));
+            }
+        }
+    }
+    out
+}
+
+/// Fenced text blocks for text attachments (forwards file context the model
+/// can't re-read, e.g. into an isolated subagent transcript).
+pub fn fenced_texts(attachments: &Option<Vec<Attachment>>) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in attachments.as_ref().map(|v| v.as_slice()).unwrap_or(&[]) {
+        if a.kind != "image" {
+            if let Some(text) = &a.text {
+                const TEXT_CAP: usize = 50_000;
+                let shown = if text.chars().count() > TEXT_CAP {
+                    let mut t: String = text.chars().take(TEXT_CAP).collect();
+                    t.push_str("\n[truncated]");
+                    t
+                } else {
+                    text.clone()
+                };
+                out.push(format!("Attached file {}:\n```\n{}\n```", a.name, shown));
+            }
+        }
+    }
+    out
+}
+
+/// Strip `image_url` parts for a text-only model, leaving a delegation hint
+/// per image so it routes visual work to a capable worker instead of
+/// guessing. Text parts pass through untouched.
+pub fn strip_image_parts(msg: ChatMessage) -> ChatMessage {
+    let images: Vec<String> = match &msg.content {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| {
+                if p.get("type")?.as_str()? != "image_url" {
+                    return None;
+                }
+                let url = p.get("image_url")?.get("url")?.as_str().unwrap_or("");
+                // Data URLs carry no filename; the text part's [image: …]
+                // markers (if any) already name them.
+                Some(if url.len() > 60 { "[attached image]" } else { url }.to_string())
+            })
+            .collect(),
+        _ => return msg,
+    };
+    if images.is_empty() {
+        return msg;
+    }
+    let mut text = match &msg.content {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| {
+                if p.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    p.get("text")?.as_str()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => String::new(),
+    };
+    for (i, _) in images.iter().enumerate() {
+        text.push_str(&format!(
+            "\n\n[image {} omitted — you cannot process images; delegate visual work with spawn_subagent (the worker receives attached images)]",
+            i + 1
+        ));
+    }
+    ChatMessage {
+        role: msg.role,
+        content: Some(Value::String(text)),
+        tool_calls: msg.tool_calls,
+        tool_call_id: msg.tool_call_id,
+    }
+}
+
 /// Read an attachment for the Chat UI: images are returned as base64
 /// (frontend builds the data URL), text files as UTF-8 text.
 #[derive(Debug, Serialize)]
@@ -141,5 +231,54 @@ pub async fn harness_read_attachment(path: String) -> Result<AttachmentRead, Str
         let text = String::from_utf8(bytes)
             .map_err(|_| "Not a text file (binary content)".to_string())?;
         Ok(AttachmentRead { kind: "text".into(), name, data_base64: None, text: Some(text) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn img(name: &str) -> Attachment {
+        Attachment { name: name.to_string(), kind: "image".into(), data_base64: Some("QUJD".into()), text: None }
+    }
+
+    #[test]
+    fn image_parts_forward_and_strip_roundtrip() {
+        let atts = Some(vec![img("pic.png")]);
+        let parts = image_parts(&atts);
+        assert_eq!(parts.len(), 1);
+        let msg = build_user_message("describe this".to_string(), atts);
+        // Multimodal for capable models…
+        assert!(matches!(msg.content, Some(Value::Array(_))));
+        // …delegation hint for text-only ones.
+        let stripped = strip_image_parts(msg);
+        let content = stripped.content.and_then(|c| c.as_str().map(str::to_string)).unwrap();
+        assert!(content.contains("describe this"));
+        assert!(content.contains("spawn_subagent"));
+        assert!(!content.contains("QUJD"));
+    }
+
+    #[test]
+    fn strip_leaves_text_only_messages_alone() {
+        let msg = ChatMessage::user("hello".to_string());
+        let stripped = strip_image_parts(msg);
+        assert_eq!(
+            stripped.content.and_then(|c| c.as_str().map(str::to_string)).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn fenced_texts_format_text_attachments() {
+        let atts = Some(vec![Attachment {
+            name: "log.txt".into(),
+            kind: "text".into(),
+            data_base64: None,
+            text: Some("boom".into()),
+        }]);
+        let blocks = fenced_texts(&atts);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].contains("log.txt") && blocks[0].contains("boom"));
+        assert!(fenced_texts(&None).is_empty());
     }
 }

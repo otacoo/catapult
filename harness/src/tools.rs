@@ -760,7 +760,7 @@ impl Tool for SpawnSubagentTool {
         "spawn_subagent".to_string()
     }
     fn description(&self) -> String {
-        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small. Pass 'branch' to run it in a sibling git worktree (created on demand, reused if present) so parallel agents share the codebase without clashing — requires a git project; its edits land in the worktree, not the main checkout.".to_string()
+        "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small, and to parallelize independent workstreams (each may take an optional 'branch' for an isolated worktree). If a task needs a capability you lack — e.g. viewing attached images — delegate it: the worker receives attached images automatically, and reports what it saw.".to_string()
     }
     fn parameters(&self) -> Value {
         json!({

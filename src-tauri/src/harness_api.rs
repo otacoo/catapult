@@ -1123,6 +1123,21 @@ pub async fn harness_agent_send(
         resolve_roles(&state, &client).await?;
     // Take the history out (never hold the mutex across the async loop).
     let mut history = std::mem::take(&mut *state.harness.history.lock().unwrap());
+    // Role model paths + vision flags drive capability routing: a text-only
+    // orchestrator must not receive image parts it cannot process, and the
+    // worker's vision (if any) is stated explicitly so visual work is
+    // delegated instead of declined.
+    let app_config = state.config.lock().unwrap().clone();
+    let orch_path = app_config.harness_roles.orchestrator.clone();
+    let worker_path = app_config.harness_roles.worker.clone();
+    let orch_vision = orch_path
+        .as_deref()
+        .map(|p| installed_is_vision(&app_config, p))
+        .unwrap_or(true); // unknown server default: assume capable
+    let worker_vision = worker_path
+        .as_deref()
+        .map(|p| installed_is_vision(&app_config, p))
+        .unwrap_or(false);
     if !history.iter().any(|m| m.role == "system") {
         // Byte-stable per project → good prefix-cache behavior. A custom
         // prompt from Settings replaces the built-in text, but the project
@@ -1135,21 +1150,36 @@ pub async fn harness_agent_send(
                 .unwrap_or_else(system_prompt)
         };
         // Declarative memory (global + project MEMORY.md), capped and stable
-        // until the files change.
+        // until the files change. A vision-capable worker is stated outright
+        // so the orchestrator routes visual work instead of declining it.
         let global_memory = dirs::data_dir().map(|d| d.join("catapult").join("MEMORY.md"));
         let memory = harness::memory::load_block(global_memory.as_deref(), &root);
+        let worker_line = if worker_vision {
+            "\n\nWorker model supports vision: delegate visual tasks with spawn_subagent (attached images are forwarded to it)."
+        } else {
+            ""
+        };
         history.insert(
             0,
             ChatMessage::system(format!(
-                "{}\n\nProject directory: {}{}{}",
+                "{}\n\nProject directory: {}{}{}{}",
                 base,
                 root.display(),
                 memory,
+                worker_line,
                 harness::skills::system_prompt_listing(&skills)
             )),
         );
     }
-    history.push(crate::attachments::build_user_message(message, attachments));
+    // Attached images ride along for subagents; a text-only orchestrator gets
+    // the text with a delegation hint instead of pixels it cannot process.
+    let sub_images = crate::attachments::image_parts(&attachments);
+    let sub_texts = crate::attachments::fenced_texts(&attachments);
+    let mut user_msg = crate::attachments::build_user_message(message, attachments);
+    if !sub_images.is_empty() && !orch_vision {
+        user_msg = crate::attachments::strip_image_parts(user_msg);
+    }
+    history.push(user_msg);
 
     // Configurable turn budgets (clamped by the setter, clamped again here).
     let (max_turns, subagent_max_turns) = {
@@ -1224,6 +1254,8 @@ pub async fn harness_agent_send(
                 model: worker_id,
                 skills: skills.clone(),
                 mcp_tools: collect_mcp_tools(&state),
+                images: sub_images,
+                attachment_texts: sub_texts,
             })
         } else {
             None
@@ -1322,6 +1354,21 @@ pub struct HarnessCapabilities {
     pub reasoning: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u64>,
+}
+
+/// Whether the installed model at `path` is vision-capable (scan rule:
+/// tags, capabilities, or a paired sibling mmproj). Used for capability
+/// routing between orchestrator and worker.
+fn installed_is_vision(config: &crate::config::AppConfig, path: &str) -> bool {
+    crate::models::list_installed_models(config)
+        .map(|installed| {
+            installed
+                .iter()
+                .find(|m| m.path.to_string_lossy() == path)
+                .map(|m| m.is_vision)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 /// Path of the model chat should target: orchestrator role, else the single
