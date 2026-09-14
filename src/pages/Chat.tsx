@@ -90,7 +90,7 @@ type Item =
       /** Local-only entries (/help) — never in backend history. */
       local?: boolean;
     }
-  | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string } }
+  | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string; images?: string[] } }
   | {
       kind: "approval";
       seq: number;
@@ -576,7 +576,7 @@ function ResponseFooter({ model, tokps, elapsedMs, tokens, onCopy, onDelete }: {
 function ToolCard({ tool, args, output }: {
   tool: string;
   args: string;
-  output?: { ok: boolean; text: string };
+  output?: { ok: boolean; text: string; images?: string[] };
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -599,6 +599,13 @@ function ToolCard({ tool, args, output }: {
             <ChevronDown size={12} />
           </span>
         </button>
+        {output?.images && output.images.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-1.5">
+            {output.images.map((src, k) => (
+              <img key={k} src={src} alt="tool image" className="max-h-40 rounded border border-border object-contain" />
+            ))}
+          </div>
+        )}
         {open && (
           <>
             <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug mt-1.5 max-h-40 overflow-y-auto text-gray-500 select-text">
@@ -1128,15 +1135,19 @@ function HarnessChat() {
             } as Item,
           ]);
           break;
-        case "tool_result":
+        case "tool_result": {
+          const images = Array.isArray(ev.images)
+            ? (ev.images as unknown[]).filter((u): u is string => typeof u === "string")
+            : [];
           setItems((prev) =>
             prev.map((it): Item =>
               it.kind === "tool" && it.callId === ev.call_id && it.output === undefined
-                ? { ...it, output: { ok: !!ev.ok, text: String(ev.output ?? "") } }
+                ? { ...it, output: { ok: !!ev.ok, text: String(ev.output ?? ""), images } }
                 : it,
             ),
           );
           break;
+        }
         case "subagent_spawned":
           setStreamText(null);
           markSubSpawned();
