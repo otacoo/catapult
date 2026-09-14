@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { playNotificationSound } from "../utils/sounds";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -974,6 +975,7 @@ function HarnessChat() {
       const p = event.payload;
       approvalSeq.current += 1;
       const seq = approvalSeq.current;
+      void playNotificationSound("permissions");
       setItems((prev) => [
         ...prev,
         { kind: "approval", seq, tool: p.tool, command: p.command, args: p.args },
@@ -1157,6 +1159,7 @@ function HarnessChat() {
         } as Item,
       ]);
       setAttachments([]);
+      void playNotificationSound("agent");
     } catch (e) {
       const msg = String(e);
       const aborted = msg.includes("aborted");
@@ -1166,7 +1169,10 @@ function HarnessChat() {
           { kind: "msg", role: "assistant", content: acc + (aborted ? "  (stopped)" : "") },
         ]);
       }
-      if (!aborted) setError(msg);
+      if (!aborted) {
+        setError(msg);
+        void playNotificationSound("errors");
+      }
     } finally {
       setStreaming(false);
       setStreamText(null);

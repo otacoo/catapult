@@ -6,7 +6,6 @@ import {
   Info,
   MessageSquare,
   Palette,
-  RefreshCw,
   SlidersHorizontal,
   X,
 } from "lucide-react";
@@ -17,12 +16,11 @@ import AppUpdatesCard from "./AppUpdatesCard";
 import AppearanceCard from "./AppearanceCard";
 import { setQuickBenchEnabled } from "../utils/appSettings";
 
-type Section = "general" | "chat" | "updates" | "appearance" | "about";
+type Section = "general" | "chat" | "appearance" | "about";
 
 const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "chat", label: "Chat", icon: MessageSquare },
-  { id: "updates", label: "App Updates", icon: RefreshCw },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "about", label: "About", icon: Info },
 ];
@@ -309,6 +307,64 @@ export default function OptionsPanel({ open, onClose }: {
     </div>
   );
 
+  const setNotificationSounds = async (next: { agent: boolean; permissions: boolean; errors: boolean }) => {
+    setAppConfig((c) => (c ? { ...c, ...next } : c));
+    try {
+      await invoke("set_notification_sounds", next);
+    } catch {}
+  };
+
+  const notificationsCard = (
+    <div className="card">
+      <h2 className="section-title mb-1">Notifications</h2>
+      <p className="section-desc">Sound effects for agent activity.</p>
+      <div className="mt-3 divide-y divide-border/60">
+        <div className="py-2.5 first:pt-0 last:pb-0">
+          <Toggle
+            label="Agent"
+            hint="Play a sound when the agent finishes a prompt."
+            checked={appConfig?.sound_agent ?? true}
+            onChange={(v) =>
+              setNotificationSounds({
+                agent: v,
+                permissions: appConfig?.sound_permissions ?? true,
+                errors: appConfig?.sound_errors ?? true,
+              })
+            }
+          />
+        </div>
+        <div className="py-2.5 first:pt-0 last:pb-0">
+          <Toggle
+            label="Permissions"
+            hint="Play a sound when the agent needs your attention (permission grant)."
+            checked={appConfig?.sound_permissions ?? true}
+            onChange={(v) =>
+              setNotificationSounds({
+                agent: appConfig?.sound_agent ?? true,
+                permissions: v,
+                errors: appConfig?.sound_errors ?? true,
+              })
+            }
+          />
+        </div>
+        <div className="py-2.5 first:pt-0 last:pb-0">
+          <Toggle
+            label="Errors"
+            hint="Play a sound when an error occurs."
+            checked={appConfig?.sound_errors ?? true}
+            onChange={(v) =>
+              setNotificationSounds({
+                agent: appConfig?.sound_agent ?? true,
+                permissions: appConfig?.sound_permissions ?? true,
+                errors: v,
+              })
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+
   const chatEngineCard = (
     <div className="card">
       <h2 className="section-title mb-1">Catapult Chat</h2>
@@ -495,7 +551,13 @@ export default function OptionsPanel({ open, onClose }: {
       {/* Content pane */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl space-y-4">
-          {section === "general" && generalCard}
+          {section === "general" && (
+            <>
+              {generalCard}
+              {notificationsCard}
+              <AppUpdatesCard />
+            </>
+          )}
           {section === "chat" && (
             <>
               {chatEngineCard}
@@ -506,7 +568,6 @@ export default function OptionsPanel({ open, onClose }: {
               </div>
             </>
           )}
-          {section === "updates" && <AppUpdatesCard />}
           {section === "appearance" && <AppearanceCard />}
           {section === "about" && aboutCard}
         </div>

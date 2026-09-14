@@ -190,6 +190,13 @@ pub struct AppConfig {
     /// Enable the Quick Bench feature (Run header button/card and Bench tab).
     #[serde(default = "default_true")]
     pub enable_quick_bench: bool,
+    /// Notification sounds (Settings → General). All default on.
+    #[serde(default = "default_true")]
+    pub sound_agent: bool,
+    #[serde(default = "default_true")]
+    pub sound_permissions: bool,
+    #[serde(default = "default_true")]
+    pub sound_errors: bool,
     /// Model paths registered for llama-server router mode: when the Run page
     /// has no single model selected, the server starts without `--model` and
     /// these are exposed via a generated `--models-preset` INI, loadable on
