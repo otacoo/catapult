@@ -737,7 +737,8 @@ async fn get_server_info(state: State<'_, AppState>) -> Result<server::ServerInf
             _ => return Err("Server is not running".to_string()),
         }
     };
-    server::fetch_server_info(&state.http_client, port, config.as_ref())
+    let app_config = state.config.lock().unwrap().clone();
+    server::fetch_server_info(&state.http_client, port, config.as_ref(), Some(&app_config))
         .await
         .map_err(|e| e.to_string())
 }

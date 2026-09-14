@@ -554,6 +554,12 @@ pub async fn stop_server(state: &SharedServerState) -> Result<()> {
 /// Information about the currently running server, gathered from its HTTP
 /// endpoints plus the config Catapult started it with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterModelStatus {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     /// OpenAI-compatible base URL, e.g. http://127.0.0.1:8080/v1
     pub base_url: String,
@@ -566,15 +572,30 @@ pub struct ServerInfo {
     pub total_slots: u64,
     pub slots_idle: u64,
     pub api_key: Option<String>,
+    /// Router registry (id + load status); empty for single-model servers.
+    #[serde(default)]
+    pub models: Vec<RouterModelStatus>,
+    /// True when the server runs in router mode (no single model).
+    #[serde(default)]
+    pub router_mode: bool,
 }
 
-/// Fetch live info about the running server from its HTTP API.
+/// Fetch live info about the running server from its HTTP API. Router mode
+/// is handled explicitly: the registry is listed (no single model exists),
+/// and no per-slot or props queries are made (the router would proxy them
+/// to a child — or fail them — producing fake zeros).
 pub async fn fetch_server_info(
     client: &reqwest::Client,
     port: u16,
     config: Option<&ServerConfig>,
+    app_config: Option<&AppConfig>,
 ) -> Result<ServerInfo> {
     let base = format!("http://127.0.0.1:{}", port);
+    let router_mode = config.map(|c| c.model_path.is_empty()).unwrap_or(false);
+
+    if router_mode {
+        return fetch_router_info(client, &base, config, app_config).await;
+    }
 
     // /props — model path, alias, slot count
     let mut model_path = String::new();
@@ -633,6 +654,63 @@ pub async fn fetch_server_info(
         total_slots,
         slots_idle,
         api_key,
+        models: Vec::new(),
+        router_mode: false,
+    })
+}
+
+/// Router-mode info: the registry with load states, plus details for the
+/// currently loaded model (path + GGUF context). Nothing is proxied to
+/// children, so no model loads are triggered by looking.
+async fn fetch_router_info(
+    client: &reqwest::Client,
+    base: &str,
+    config: Option<&ServerConfig>,
+    app_config: Option<&AppConfig>,
+) -> Result<ServerInfo> {
+    let mut models: Vec<RouterModelStatus> = Vec::new();
+    if let Ok(resp) = client.get(format!("{}/models", base)).send().await {
+        if let Ok(text) = resp.text().await {
+            models = harness::client::parse_router_models(&text)
+                .into_iter()
+                .map(|m| RouterModelStatus { id: m.id, status: m.status })
+                .collect();
+        }
+    }
+    let loaded = models.iter().find(|m| m.status == "loaded");
+    // Resolve the loaded model to its local file for path + context. The
+    // router id is the file stem (same rule as preset registration).
+    let mut model_id = String::new();
+    let mut model_path = String::new();
+    let mut n_ctx: u64 = 0;
+    if let Some(active) = loaded {
+        model_id = active.id.clone();
+        if let Some(cfg) = app_config {
+            if let Ok(installed) = crate::models::list_installed_models(cfg) {
+                if let Some(m) = installed.iter().find(|m| {
+                    m.path.file_stem().and_then(|s| s.to_str()) == Some(active.id.as_str())
+                }) {
+                    model_path = m.path.to_string_lossy().to_string();
+                    n_ctx = m.context_length.unwrap_or(0);
+                }
+            }
+        }
+    }
+    let api_key = config
+        .and_then(|c| c.extra_params.get("api-key").map(|k| k.clone()))
+        .filter(|k| !k.is_empty());
+    Ok(ServerInfo {
+        base_url: format!("{}/v1", base),
+        model_id,
+        model_alias: String::new(),
+        model_path,
+        n_ctx,
+        n_predict: -1,
+        total_slots: models.len() as u64,
+        slots_idle: 0,
+        api_key,
+        models,
+        router_mode: true,
     })
 }
 

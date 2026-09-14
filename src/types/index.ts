@@ -247,6 +247,8 @@ export interface ServerInfo {
   total_slots: number;
   slots_idle: number;
   api_key: string | null;
+  models?: { id: string; status: string }[];
+  router_mode?: boolean;
 }
 
 // ── Downloads ─────────────────────────────────────────────────────────────────

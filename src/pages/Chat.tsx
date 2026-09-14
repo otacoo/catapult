@@ -95,7 +95,7 @@ type Item =
       tool: string;
       command: string | null;
       args: string;
-      resolved?: "denied" | "once" | "session" | "project" | "global";
+      resolved?: "denied" | "once" | "project";
     };
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -1228,7 +1228,7 @@ function HarnessChat() {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const decide = async (seq: number, grant: "once" | "global" | null) => {
+  const decide = async (seq: number, grant: "once" | "project" | null) => {
     setItems((prev) =>
       prev.map((it) =>
         it.kind === "approval" && it.seq === seq && !it.resolved
@@ -1421,7 +1421,7 @@ function HarnessChat() {
                       <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "once")}>
                         <Check size={11} /> Allow once
                       </button>
-                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "global")} title="Remember this approval (30 days, all projects)">
+                      <button className="btn-secondary py-1 px-2" onClick={() => decide(it.seq, "project")} title="Remember for this project only (30 days)">
                         <Check size={11} /> Allow always
                       </button>
                       <button className="btn-ghost py-1 px-2 text-accent-red" onClick={() => decide(it.seq, null)}>
@@ -1432,7 +1432,7 @@ function HarnessChat() {
                     <p className="text-gray-600">
                       {it.resolved === "denied"
                         ? "Denied"
-                        : it.resolved === "global"
+                        : it.resolved === "project"
                           ? "Allowed (always)"
                           : `Allowed (${it.resolved})`}
                     </p>

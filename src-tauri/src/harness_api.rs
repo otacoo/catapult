@@ -1529,9 +1529,9 @@ pub async fn harness_agent_abort(state: State<'_, AppState>) -> Result<(), Strin
 }
 
 /// User decision for the pending approval prompt. `grant` = None denies;
-/// "once" allows a single call; "session" grants the tool (or command head)
-/// for 30 minutes; "project" persists the grant for this project (30 days);
-/// "global" persists it app-wide (30 days).
+/// "once" allows a single call; "project" persists the grant for the active
+/// project (30 days) — the UI's "Allow always". (Session/global scopes remain
+/// accepted for engine compatibility.)
 #[tauri::command]
 pub async fn harness_agent_decide(
     grant: Option<String>,

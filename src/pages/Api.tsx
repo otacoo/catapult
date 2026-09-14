@@ -124,19 +124,54 @@ export default function Api() {
 
       {/* Loaded model */}
       <div className="card">
-        <h2 className="section-title">Loaded Model</h2>
+        <h2 className="section-title">
+          {info?.router_mode ? "Serving Model (router)" : "Loaded Model"}
+        </h2>
+        {info?.router_mode && !info.model_id && (
+          <p className="text-xs text-gray-500 mt-2">
+            No model loaded — the router loads on demand.
+          </p>
+        )}
         <div className="space-y-1.5 mt-3">
           <CopyRow label="Model ID" value={info?.model_id ?? ""} mono />
-          <CopyRow label="Alias" value={info?.model_alias ?? ""} mono />
+          {!info?.router_mode && (
+            <CopyRow label="Alias" value={info?.model_alias ?? ""} mono />
+          )}
           <CopyRow label="Path" value={info?.model_path ?? ""} mono />
           <CopyRow label="Context (n_ctx)" value={info ? String(info.n_ctx) : ""} mono />
-          <CopyRow label="Max tokens" value={info ? String(info.n_predict) : ""} mono />
-          <CopyRow
-            label="Slots"
-            value={info ? `${info.slots_idle} idle / ${info.total_slots} total` : ""}
-          />
+          {!info?.router_mode && (
+            <>
+              <CopyRow label="Max tokens" value={info ? String(info.n_predict) : ""} mono />
+              <CopyRow
+                label="Slots"
+                value={info ? `${info.slots_idle} idle / ${info.total_slots} total` : ""}
+              />
+            </>
+          )}
         </div>
       </div>
+
+      {/* Router registry */}
+      {info?.router_mode && (info.models ?? []).length > 0 && (
+        <div className="card">
+          <h2 className="section-title">Registered Models</h2>
+          <div className="space-y-1.5 mt-3">
+            {info.models!.map((m) => (
+              <div
+                key={m.id}
+                className="flex items-center gap-3 px-3 py-2 border border-border bg-surface-2"
+              >
+                <span className="flex-1 text-xs text-gray-200 font-mono truncate">{m.id}</span>
+                <span
+                  className={`text-[10px] shrink-0 ${m.status === "loaded" ? "text-accent-green" : "text-gray-500"}`}
+                >
+                  {m.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Client config */}
       {info && (
