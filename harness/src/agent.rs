@@ -171,7 +171,8 @@ pub enum AgentEvent {
     /// A tool call was issued (UI card with name + args).
     ToolCall { call_id: String, tool: String, args: String },
     /// Tool finished (output truncated for the orchestrator transcript).
-    ToolResult { call_id: String, ok: bool, output: String },
+    /// `images` carries data URLs read mid-run so the UI shows them live.
+    ToolResult { call_id: String, ok: bool, output: String, images: Vec<String> },
     /// A grant is required; the UI must show the approval prompt.
     ApprovalRequired { tool: String, command: Option<String>, args: String },
     /// A subagent started working (UI shows an inline activity card).
@@ -195,6 +196,9 @@ pub struct Subagents {
     /// MCP tools: coder kind only. The researcher stays read-only by
     /// construction (MCP actions can mutate the outside world).
     pub mcp_tools: Vec<crate::mcp::McpTool>,
+    /// Whether the subagent's (worker) model is vision-capable. Unset worker
+    /// inherits the orchestrator's value at send time.
+    pub vision: bool,
     /// Whether the shell tool is available (follows the Tools page Shell
     /// Command toggle; off removes `exec` for every agent).
     pub exec_enabled: bool,
@@ -248,6 +252,10 @@ pub struct AgentRun<'a> {
     /// subagent runs with a registry stripped of `spawn_subagent` and filtered
     /// to the kind's allowlist — recursion is impossible by construction.
     pub subagents: Option<Subagents>,
+    /// Whether THIS run's model is vision-capable. Image parts are only ever
+    /// sent to vision runs — a text-only runner gets a delegation hint
+    /// instead (sending pixels there fails the request server-side).
+    pub vision: bool,
 }
 
 /// Result of a full agent run: the final answer plus stream metrics for the
@@ -503,6 +511,7 @@ impl AgentRun<'_> {
                 call_id: call_id.to_string(),
                 ok: false,
                 output: "denied by user".into(),
+                images: Vec::new(),
             });
             return ("denied by user".to_string(), Vec::new());
         }
@@ -513,12 +522,31 @@ impl AgentRun<'_> {
             .unwrap_or_else(|e| (Err(anyhow::Error::new(e)), Vec::new()));
         match res {
             (Ok(out), media) => {
+                // Pixels only travel to vision-capable runners: sending
+                // image parts to a text-only model fails the whole request
+                // server-side (500, needs mmproj). Others get a nudge to
+                // delegate instead — the worker receives images automatically.
+                let (text, kept) = if media.is_empty() || self.vision {
+                    (out, media)
+                } else {
+                    (
+                        format!("{out}\n[not shown to you: this model has no vision — delegate visual work with spawn_subagent]"),
+                        Vec::new(),
+                    )
+                };
+                let images: Vec<String> = kept
+                    .iter()
+                    .filter_map(|p| {
+                        p.get("image_url")?.get("url")?.as_str().map(str::to_string)
+                    })
+                    .collect();
                 on_event(AgentEvent::ToolResult {
                     call_id: call_id.to_string(),
                     ok: true,
-                    output: short_args(&out),
+                    output: short_args(&text),
+                    images,
                 });
-                (out, media)
+                (text, kept)
             }
             (Err(e), _) => {
                 let msg = format!("error: {e:#}");
@@ -526,6 +554,7 @@ impl AgentRun<'_> {
                     call_id: call_id.to_string(),
                     ok: false,
                     output: short_args(&msg),
+                    images: Vec::new(),
                 });
                 (msg, Vec::new())
             }
@@ -706,6 +735,7 @@ impl AgentRun<'_> {
                 reasoning_effort: self.reasoning_effort.clone(),
                 max_turns: sub.max_turns,
                 subagents: None, // no recursion: the strip above is belt-and-braces
+                vision: sub.vision,
             };
             let mut nested = |ev: AgentEvent| {
                 let ev = match ev {
@@ -714,10 +744,11 @@ impl AgentRun<'_> {
                         tool,
                         args,
                     },
-                    AgentEvent::ToolResult { call_id, ok, output } => AgentEvent::ToolResult {
+                    AgentEvent::ToolResult { call_id, ok, output, images } => AgentEvent::ToolResult {
                         call_id: format!("sub:{call_id}"),
                         ok,
                         output,
+                        images,
                     },
                     other => other,
                 };
@@ -894,5 +925,60 @@ mod tests {
         assert!(SubagentKind::Coder.prompt(&skills).contains("acme-deploy"));
         assert!(!SubagentKind::Coder.prompt(&[]).contains("acme-deploy"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    struct DenyGate;
+    impl ApprovalGate for DenyGate {
+        fn decide(&self, _req: ApprovalRequest) -> Pin<Box<dyn Future<Output = Approved> + Send>> {
+            Box::pin(async { Approved::Denied })
+        }
+    }
+
+    fn test_run(jail: Arc<crate::sandbox::PathJail>, vision: bool) -> AgentRun<'static> {
+        // Leaked client: the run never touches the network (read_file is local).
+        let client: &'static LlmClient = Box::leak(Box::new(LlmClient::new("http://127.0.0.1:9")));
+        AgentRun {
+            client,
+            registry: Arc::new(ToolRegistry::project_tools(jail)),
+            engine: Arc::new(PermissionEngine::new()),
+            model: None,
+            project: Some("p".to_string()),
+            reasoning_effort: None,
+            max_turns: 5,
+            subagents: None,
+            vision,
+        }
+    }
+
+    #[test]
+    fn image_media_only_reaches_vision_runners() {
+        let dir = std::env::temp_dir().join(format!("harness-vision-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut png = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend([0u8; 64]);
+        std::fs::write(dir.join("art.png"), &png).unwrap();
+        let jail = Arc::new(crate::sandbox::PathJail::new(&dir, &[], &[]).unwrap());
+        let gate: Arc<dyn ApprovalGate> = Arc::new(DenyGate);
+        let args = serde_json::json!({"path": "art.png"});
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // Vision runner: pixels ride along.
+        let run = test_run(jail.clone(), true);
+        let (text, media) = rt.block_on(async {
+            let mut noop = |_ev: AgentEvent| {};
+            run.execute_tool_call("read_file", &args, String::new(), "c1", &gate, &mut noop).await
+        });
+        assert!(text.contains("read for visual inspection"), "{text}");
+        assert_eq!(media.len(), 1);
+        // Text-only runner: pixels withheld, delegation hint instead — the
+        // request would 500 server-side otherwise.
+        let run = test_run(jail, false);
+        let (text, media) = rt.block_on(async {
+            let mut noop = |_ev: AgentEvent| {};
+            run.execute_tool_call("read_file", &args, String::new(), "c1", &gate, &mut noop).await
+        });
+        assert!(text.contains("no vision"), "{text}");
+        assert!(media.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1180,16 +1180,17 @@ pub async fn harness_agent_send(
     // worker's vision (if any) is stated explicitly so visual work is
     // delegated instead of declined.
     let app_config = state.config.lock().unwrap().clone();
-    let orch_path = app_config.harness_roles.orchestrator.clone();
     let worker_path = app_config.harness_roles.worker.clone();
-    let orch_vision = orch_path
-        .as_deref()
-        .map(|p| installed_is_vision(&app_config, p))
-        .unwrap_or(true); // unknown server default: assume capable
+    // Runner vision: the orchestrator role, else the single loaded model,
+    // else assume capable (unknown server default). Drives pixel routing —
+    // image parts never go to a text-only runner.
+    let orch_vision = active_model_path(&state)
+        .map(|p| installed_is_vision(&app_config, &p))
+        .unwrap_or(true);
     let worker_vision = worker_path
         .as_deref()
         .map(|p| installed_is_vision(&app_config, p))
-        .unwrap_or(false);
+        .unwrap_or(orch_vision); // same-as-orchestrator inherits
     if !history.iter().any(|m| m.role == "system") {
         // Byte-stable per project → good prefix-cache behavior. A custom
         // prompt from Settings replaces the built-in text, but the project
@@ -1206,7 +1207,7 @@ pub async fn harness_agent_send(
         // so the orchestrator routes visual work instead of declining it.
         let global_memory = dirs::data_dir().map(|d| d.join("catapult").join("MEMORY.md"));
         let memory = harness::memory::load_block(global_memory.as_deref(), &root);
-        let worker_line = if worker_vision {
+        let worker_line = if worker_vision && worker_path.is_some() {
             "\n\nWorker model supports vision: delegate visual tasks with spawn_subagent (attached images are forwarded to it)."
         } else {
             ""
@@ -1297,6 +1298,7 @@ pub async fn harness_agent_send(
         engine: state.harness.engine.clone(),
         model: orchestrator_id.clone(),
         project: project_id,
+        vision: orch_vision,
         reasoning_effort: reasoning_effort.filter(|e| !e.is_empty() && e != "default"),
         max_turns: max_turns as usize,
         subagents: if subagents_enabled {
@@ -1309,6 +1311,7 @@ pub async fn harness_agent_send(
                 images: sub_images,
                 attachment_texts: sub_texts,
                 exec_enabled,
+                vision: worker_vision,
             })
         } else {
             None

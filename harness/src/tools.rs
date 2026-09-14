@@ -248,7 +248,7 @@ impl Tool for ReadFileTool {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
         (
-            Ok(format!("[image {filename} ({kb} KB) attached below for visual inspection]")),
+            Ok(format!("[image {filename} ({kb} KB) read for visual inspection]")),
             vec![part],
         )
     }
@@ -1214,7 +1214,7 @@ mod tests {
         // Images: marker text plus one image part (not a text-decode error).
         let (out, media) = read.execute_with_media(&json!({"path": "art.png"}));
         let text = out.unwrap();
-        assert!(text.contains("attached below for visual inspection"), "{text}");
+        assert!(text.contains("read for visual inspection"), "{text}");
         assert_eq!(media.len(), 1);
         assert_eq!(media[0].get("type").and_then(|t| t.as_str()), Some("image_url"));
         // Text files: unchanged behavior, no media.
