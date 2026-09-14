@@ -821,6 +821,14 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     // MTP heads (`-MTP-` in the model filename) enable draft-mtp directly.
     let mut spec_type: Option<&str> = None;
     let mut spec_draft: Option<String> = None;
+    if router_mode
+        && (config.extra_params.contains_key("spec-draft")
+            || config.extra_params.contains_key("spec-mtp"))
+    {
+        notes.push(
+            "speculative toggles apply to single-model servers only — ignored in router mode".to_string(),
+        );
+    }
     if !router_mode {
         if config.extra_params.contains_key("spec-draft") {
             match crate::models::find_spec_draft(std::path::Path::new(&config.model_path)) {

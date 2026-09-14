@@ -12,6 +12,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import type { AppConfig, ModelInfo } from "../types";
 import Toggle from "./Toggle";
+import { playNotificationSound } from "../utils/sounds";
 import AppUpdatesCard from "./AppUpdatesCard";
 import AppearanceCard from "./AppearanceCard";
 import { setQuickBenchEnabled } from "../utils/appSettings";
@@ -307,11 +308,23 @@ export default function OptionsPanel({ open, onClose }: {
     </div>
   );
 
-  const setNotificationSounds = async (next: { agent: boolean; permissions: boolean; errors: boolean }) => {
-    setAppConfig((c) => (c ? { ...c, ...next } : c));
+  const setSound = async (key: "agent" | "permissions" | "errors", v: boolean) => {
+    setAppConfig((c) =>
+      !c
+        ? c
+        : key === "agent"
+          ? { ...c, sound_agent: v }
+          : key === "permissions"
+            ? { ...c, sound_permissions: v }
+            : { ...c, sound_errors: v },
+    );
     try {
-      await invoke("set_notification_sounds", next);
+      await invoke(key === "agent" ? "set_sound_agent" : key === "permissions" ? "set_sound_permissions" : "set_sound_errors", {
+        enabled: v,
+      });
     } catch {}
+    // Preview when enabling (the click is a user gesture, so playback works).
+    if (v) void playNotificationSound(key);
   };
 
   const notificationsCard = (
@@ -324,13 +337,7 @@ export default function OptionsPanel({ open, onClose }: {
             label="Agent"
             hint="Play a sound when the agent finishes a prompt."
             checked={appConfig?.sound_agent ?? true}
-            onChange={(v) =>
-              setNotificationSounds({
-                agent: v,
-                permissions: appConfig?.sound_permissions ?? true,
-                errors: appConfig?.sound_errors ?? true,
-              })
-            }
+            onChange={(v) => setSound("agent", v)}
           />
         </div>
         <div className="py-2.5 first:pt-0 last:pb-0">
@@ -338,13 +345,7 @@ export default function OptionsPanel({ open, onClose }: {
             label="Permissions"
             hint="Play a sound when the agent needs your attention (permission grant)."
             checked={appConfig?.sound_permissions ?? true}
-            onChange={(v) =>
-              setNotificationSounds({
-                agent: appConfig?.sound_agent ?? true,
-                permissions: v,
-                errors: appConfig?.sound_errors ?? true,
-              })
-            }
+            onChange={(v) => setSound("permissions", v)}
           />
         </div>
         <div className="py-2.5 first:pt-0 last:pb-0">
@@ -352,13 +353,7 @@ export default function OptionsPanel({ open, onClose }: {
             label="Errors"
             hint="Play a sound when an error occurs."
             checked={appConfig?.sound_errors ?? true}
-            onChange={(v) =>
-              setNotificationSounds({
-                agent: appConfig?.sound_agent ?? true,
-                permissions: appConfig?.sound_permissions ?? true,
-                errors: v,
-              })
-            }
+            onChange={(v) => setSound("errors", v)}
           />
         </div>
       </div>

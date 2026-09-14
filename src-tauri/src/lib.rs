@@ -292,17 +292,26 @@ async fn set_enable_quick_bench(enabled: bool, state: State<'_, AppState>) -> Re
 }
 
 /// Notification sound toggles (Settings → General → Notifications).
+/// One command per sound so rapid toggles can't clobber each other through
+/// a stale full-config snapshot.
 #[tauri::command]
-async fn set_notification_sounds(
-    agent: bool,
-    permissions: bool,
-    errors: bool,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn set_sound_agent(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state.config.lock().unwrap();
-    config.sound_agent = agent;
-    config.sound_permissions = permissions;
-    config.sound_errors = errors;
+    config.sound_agent = enabled;
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_sound_permissions(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.sound_permissions = enabled;
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_sound_errors(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap();
+    config.sound_errors = enabled;
     config.save().map_err(|e| e.to_string())
 }
 
@@ -1143,7 +1152,9 @@ pub fn run() {
             set_auto_check_updates,
             set_close_to_tray,
             set_enable_quick_bench,
-            set_notification_sounds,
+            set_sound_agent,
+            set_sound_permissions,
+            set_sound_errors,
             set_router_models,
             set_harness_chat,
             set_harness_subagents_enabled,
