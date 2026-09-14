@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.5.3] - 2026-09-14
+
+### Added
+
+- Notification sounds with per-event toggles (Agent, Permissions, Errors) and previews
+- Image-aware file reads: project images attach for visual inspection
+- Attached images forwarded to subagents, with worker vision stated in the system prompt
+
+### Changed
+
+- Approval UI simplified to Allow once / Allow always (project-scoped) / Deny; exec grants are tool-wide
+- Shell Command toggle on the Tools page gates the harness shell everywhere
+- API tab is router-aware (served model plus registry list instead of the first entry)
+- Read images show live in tool cards; restored chats render image thumbnails
+- Image parts only go to vision-capable runners (text models get a delegation hint)
+- Chat always scrolls to the newest message
+- Speculative toggles log a note when skipped in router mode
+
+### Fixed
+
+- Blank window on chats containing attached images (multimodal restore crash)
+- Router stats polling loading unrequested models (proxy/ensure log spam)
+- Unresolvable worker model fails loudly instead of silently serving the orchestrator
+- Missing sibling mmproj for vision roles warned every run
+- Orphaned router children and MCP servers on shutdown; silent consoles for bench, git, and taskkill
+- Notification toggle races
+
 ## [0.5.2] - 2026-09-13
 
 ### Added
