@@ -246,6 +246,19 @@ pub fn migrate_extra_params(extra: &mut HashMap<String, String>) -> bool {
         // Never existed: the draft model shares the main context size.
         "spec-draft-ctx-size",
         "ctx-size-draft",
+        // Not llama-server flags (verified against b10964 `--help`: the
+        // binary rejects them with "invalid argument"). Sources:
+        // embd-separator/cls-separator belong to llama-embedding,
+        // model-vocoder/tts-use-guide-tokens to llama-tts, and
+        // profile/profile-output/verbose-prompt were removed upstream.
+        // Leftovers in old presets/sessions must go or launch fails.
+        "embd-separator",
+        "cls-separator",
+        "model-vocoder",
+        "tts-use-guide-tokens",
+        "profile",
+        "profile-output",
+        "verbose-prompt",
     ];
     // Old → canonical rename. Some are still recognized by llama.cpp as aliases,
     // but we normalise to the canonical form so the UI and saved presets stay
@@ -268,6 +281,8 @@ pub fn migrate_extra_params(extra: &mut HashMap<String, String>) -> bool {
         ("draft-cpu-moe", "spec-draft-cpu-moe"),
         ("n-cpu-moe-draft", "spec-draft-n-cpu-moe"),
         ("override-tensor-draft", "spec-draft-override-tensor"),
+        // Same setting, renamed upstream.
+        ("checkpoint-every-n-tokens", "checkpoint-min-step"),
         ("draft-p-min", "spec-draft-p-min"),
         ("draft-p-split", "spec-draft-p-split"),
         ("hf-repo-draft", "spec-draft-hf"),
@@ -826,6 +841,40 @@ pub fn build_args(config: &ServerConfig) -> Vec<String> {
 fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, Vec<String>) {
     let mut extra = config.extra_params.clone();
     let mut notes = Vec::new();
+
+    // Retired memory toggles → --load-mode values (b10917+ removed --mlock,
+    // --no-mmap, --direct-io; the binary rejects them). An explicit
+    // --load-mode always wins. Extra-map legacy keys (hand-edited presets)
+    // fold in first; the typed fields below take precedence over them.
+    let mut legacy_mode: Option<&str> = None;
+    if extra.remove("direct-io").is_some() {
+        legacy_mode = Some("dio");
+    }
+    if extra.remove("no-mmap").is_some() {
+        legacy_mode = Some("none");
+    } else {
+        // Bare --mmap was the default anyway; just drop it.
+        extra.remove("mmap");
+    }
+    if extra.remove("mlock").is_some() {
+        legacy_mode = Some("mmap+mlock");
+    }
+    if config.mlock {
+        legacy_mode = Some(if config.no_mmap { "mlock" } else { "mmap+mlock" });
+    } else if config.no_mmap {
+        legacy_mode = Some("none");
+    }
+    if let Some(mode) = legacy_mode {
+        if extra.contains_key("load-mode") {
+            notes.push(
+                "retired memory toggles ignored: explicit --load-mode wins".to_string(),
+            );
+        } else {
+            extra.insert("load-mode".to_string(), mode.to_string());
+            notes.push(format!("--load-mode {mode} (from retired memory toggles)"));
+        }
+    }
+
     if config.model_path.is_empty() {
         return (extra, notes);
     }
@@ -1035,13 +1084,9 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
         args.push("--no-cont-batching".to_string());
     }
 
-    if config.mlock {
-        args.push("--mlock".to_string());
-    }
-
-    if config.no_mmap {
-        args.push("--no-mmap".to_string());
-    }
+    // NOTE: --mlock/--no-mmap/--direct-io and --grp-attn-* were retired
+    // upstream; memory mode now flows through --load-mode (see sanitize),
+    // and grouped attention has no replacement (dropped with a note below).
 
     if let Some(seed) = config.seed {
         args.push("--seed".to_string());
@@ -1058,14 +1103,8 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
         args.push(format!("{:.1}", base));
     }
 
-    if let Some(n) = config.grp_attn_n {
-        args.push("--grp-attn-n".to_string());
-        args.push(n.to_string());
-    }
-
-    if let Some(w) = config.grp_attn_w {
-        args.push("--grp-attn-w".to_string());
-        args.push(w.to_string());
+    if config.grp_attn_n.is_some() || config.grp_attn_w.is_some() {
+        notes.push("--grp-attn-* retired upstream; ignored".to_string());
     }
 
     args.push("--parallel".to_string());
@@ -1623,6 +1662,66 @@ mod tests {
     }
 
     #[test]
+    fn build_args_maps_typed_mlock_to_load_mode() {
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            mlock: true,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--mlock".to_string()));
+        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
+        assert_eq!(args[idx + 1], "mmap+mlock");
+        assert!(notes.iter().any(|n| n.contains("--load-mode")));
+    }
+
+    #[test]
+    fn build_args_maps_typed_no_mmap_to_load_mode_none() {
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            no_mmap: true,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--no-mmap".to_string()));
+        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
+        assert_eq!(args[idx + 1], "none");
+    }
+
+    #[test]
+    fn build_args_maps_direct_io_to_load_mode_dio() {
+        let mut extra = HashMap::new();
+        extra.insert("direct-io".to_string(), String::new());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, notes) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--direct-io".to_string()));
+        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
+        assert_eq!(args[idx + 1], "dio");
+        assert!(notes.iter().any(|n| n.contains("--load-mode")));
+    }
+
+    #[test]
+    fn build_args_explicit_load_mode_beats_legacy_toggles() {
+        let mut extra = HashMap::new();
+        extra.insert("load-mode".to_string(), "mmap".to_string());
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            mlock: true,
+            extra_params: extra,
+            ..Default::default()
+        };
+        let (args, _) = build_args_with_notes(&config);
+        let modes: Vec<&String> = args.iter().filter(|a| *a == "--load-mode").collect();
+        assert_eq!(modes.len(), 1);
+        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
+        assert_eq!(args[idx + 1], "mmap");
+    }
+
+    #[test]
     fn build_args_no_load_mode_without_cpu_overrides() {
         let config = ServerConfig {
             model_path: "/m.gguf".to_string(),
@@ -2070,6 +2169,41 @@ mod tests {
         assert!(migrate_extra_params(&mut ep));
         assert!(!ep.contains_key("spec-draft-ctx-size"));
         assert_eq!(ep.get("spec-draft-n-max"), Some(&"7".to_string()));
+    }
+
+    #[test]
+    fn migrate_drops_non_server_flags() {
+        // Verified against b10964 `--help`: the binary rejects these with
+        // "invalid argument", so any leftover would brick the launch.
+        let mut ep = HashMap::new();
+        for k in [
+            "embd-separator",
+            "cls-separator",
+            "model-vocoder",
+            "tts-use-guide-tokens",
+            "profile",
+            "profile-output",
+            "verbose-prompt",
+        ] {
+            ep.insert(k.to_string(), "x".to_string());
+        }
+        ep.insert("kept".to_string(), "1".to_string());
+        assert!(migrate_extra_params(&mut ep));
+        assert_eq!(ep.len(), 1);
+        assert_eq!(ep.get("kept"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn migrate_renames_checkpoint_interval() {
+        let mut ep = HashMap::new();
+        ep.insert("checkpoint-every-n-tokens".to_string(), "100".to_string());
+        assert!(migrate_extra_params(&mut ep));
+        assert_eq!(ep.get("checkpoint-min-step"), Some(&"100".to_string()));
+        assert!(!ep.contains_key("checkpoint-every-n-tokens"));
+        // Explicit canonical value wins.
+        ep.insert("checkpoint-every-n-tokens".to_string(), "50".to_string());
+        assert!(migrate_extra_params(&mut ep));
+        assert_eq!(ep.get("checkpoint-min-step"), Some(&"100".to_string()));
     }
 
     #[test]
