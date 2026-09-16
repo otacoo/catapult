@@ -1283,7 +1283,7 @@ export default function Server() {
                   <div>
                     <label className="label">Context Size</label>
                     <div className="mt-1">
-                      <Toggle label="Override default"
+                      <Toggle label="Override default" flag="--ctx-size"
                         hint={overrideCtx ? undefined : "Auto (model default)"}
                         checked={overrideCtx}
                         onChange={(v) => setConfig((c) => ({ ...c, n_ctx: v ? maxCtx : 0 }))} />
@@ -1306,47 +1306,47 @@ export default function Server() {
               );
             })()}
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Max Tokens" hint="-1 = unlimited" value={config.n_predict} min={-1}
+              <NumberInput label="Max Tokens" flag="--n-predict" hint="-1 = unlimited" value={config.n_predict} min={-1}
                 onChange={(v) => setConfig((c) => ({ ...c, n_predict: v ?? -1 }))} />
-              <NumberInput label="Batch Size" hint="0 = omit (server default); Auto: 2048 (4096 if ≥16GB VRAM), ≥ ubatch" value={config.n_batch} min={0} max={16384} step={32}
+              <NumberInput label="Batch Size" flag="--batch-size" hint="0 = omit (server default); Auto: 2048 (4096 if ≥16GB VRAM), ≥ ubatch" value={config.n_batch} min={0} max={16384} step={32}
                 onChange={(v) => setConfig((c) => ({ ...c, n_batch: v ?? 0 }))} />
-              <NumberInput label="Micro-batch Size" hint="0 = omit (server default); Auto: 512 (1024 if ≥16GB VRAM)" value={config.n_ubatch} min={0} max={16384} step={32}
+              <NumberInput label="Micro-batch Size" flag="--ubatch-size" hint="0 = omit (server default); Auto: 512 (1024 if ≥16GB VRAM)" value={config.n_ubatch} min={0} max={16384} step={32}
                 onChange={(v) => setConfig((c) => ({ ...c, n_ubatch: v ?? 0 }))} />
-              <NumberInput label="Keep Tokens" hint="Tokens to keep from initial prompt (0=none, -1=all)" value={getEpNum("keep")}
+              <NumberInput label="Keep Tokens" flag="--keep" hint="Tokens to keep from initial prompt (0=none, -1=all)" value={getEpNum("keep")}
                 onChange={(v) => setEpNum("keep", v)} />
             </div>
 
             <Section title="Attention & KV Cache" />
             <div className="grid grid-cols-2 gap-3">
-              <SelectInput label="Flash Attention" value={config.flash_attn}
+              <SelectInput label="Flash Attention" flag="--flash-attn" value={config.flash_attn}
                 options={[{ value: "auto", label: "Auto" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setConfig((c) => ({ ...c, flash_attn: v }))} />
               <div /> {/* spacer */}
-              <SelectInput label="KV Cache Type (K)" hint="Default (f16) omits the flag" value={config.cache_type_k}
+              <SelectInput label="KV Cache Type (K)" flag="--cache-type-k" hint="Default (f16) omits the flag" value={config.cache_type_k}
                 options={[{ value: "", label: "Default" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]}
                 onChange={(v) => setConfig((c) => ({ ...c, cache_type_k: v }))} />
-              <SelectInput label="KV Cache Type (V)" hint="Default (f16) omits the flag" value={config.cache_type_v}
+              <SelectInput label="KV Cache Type (V)" flag="--cache-type-v" hint="Default (f16) omits the flag" value={config.cache_type_v}
                 options={[{ value: "", label: "Default" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]}
                 onChange={(v) => setConfig((c) => ({ ...c, cache_type_v: v }))} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="SWA Full" hint="Full-size SWA cache — only applies to SWA models (auto-dropped otherwise)" checked={hasFlag("swa-full")} onChange={(v) => setFlag("swa-full", v)} />
-              <Toggle label="KV Offload" hint="Offload KV cache to GPU (default: on)" checked={!hasFlag("no-kv-offload")} onChange={(v) => setFlag("no-kv-offload", !v)} />
-              <Toggle label="KV Unified" hint="Single unified KV buffer shared across sequences" checked={hasFlag("kv-unified") || (!hasFlag("no-kv-unified") && config.parallel <= 1)}
+              <Toggle label="SWA Full" flag="--swa-full" hint="Full-size SWA cache — only applies to SWA models (auto-dropped otherwise)" checked={hasFlag("swa-full")} onChange={(v) => setFlag("swa-full", v)} />
+              <Toggle label="KV Offload" flag="--no-kv-offload" hint="Offload KV cache to GPU (default: on)" checked={!hasFlag("no-kv-offload")} onChange={(v) => setFlag("no-kv-offload", !v)} />
+              <Toggle label="KV Unified" flag="--kv-unified" hint="Single unified KV buffer shared across sequences" checked={hasFlag("kv-unified") || (!hasFlag("no-kv-unified") && config.parallel <= 1)}
                 onChange={(v) => { setFlag("kv-unified", v); setFlag("no-kv-unified", !v); }} />
-              <Toggle label="Context Shift" hint="Shift context on infinite generation — not supported by SWA/hybrid models (auto-dropped)" checked={hasFlag("context-shift")} onChange={(v) => { setFlag("context-shift", v); setFlag("no-context-shift", !v); }} />
-              <Toggle label="Cache Prompt" hint="Enable prompt caching (default: on)" checked={!hasFlag("no-cache-prompt")} onChange={(v) => setFlag("no-cache-prompt", !v)} />
-              <Toggle label="Cache Idle Slots" hint="Save and clear idle slots on new task (default: on, requires KV unified + cache-ram)"
+              <Toggle label="Context Shift" flag="--context-shift" hint="Shift context on infinite generation — not supported by SWA/hybrid models (auto-dropped)" checked={hasFlag("context-shift")} onChange={(v) => { setFlag("context-shift", v); setFlag("no-context-shift", !v); }} />
+              <Toggle label="Cache Prompt" flag="--no-cache-prompt" hint="Enable prompt caching (default: on)" checked={!hasFlag("no-cache-prompt")} onChange={(v) => setFlag("no-cache-prompt", !v)} />
+              <Toggle label="Cache Idle Slots" flag="--no-cache-idle-slots" hint="Save and clear idle slots on new task (default: on, requires KV unified + cache-ram)"
                 checked={!hasFlag("no-cache-idle-slots")} onChange={(v) => setFlag("no-cache-idle-slots", !v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <NumberInput label="Cache Reuse" hint="Min chunk for KV shifting reuse (0=disabled)" value={getEpNum("cache-reuse")} min={0}
+              <NumberInput label="Cache Reuse" flag="--cache-reuse" hint="Min chunk for KV shifting reuse (0=disabled)" value={getEpNum("cache-reuse")} min={0}
                 onChange={(v) => setEpNum("cache-reuse", v)} />
-              <NumberInput label="Cache RAM (MiB)" hint="Max cache size (-1=no limit, 0=disabled, default: 8192)" value={getEpNum("cache-ram")}
+              <NumberInput label="Cache RAM (MiB)" flag="--cache-ram" hint="Max cache size (-1=no limit, 0=disabled, default: 8192)" value={getEpNum("cache-ram")}
                 onChange={(v) => setEpNum("cache-ram", v)} />
-              <NumberInput label="Context Checkpoints" hint="Max checkpoints per slot (default: 32)" value={getEpNum("ctx-checkpoints")} min={0}
+              <NumberInput label="Context Checkpoints" flag="--ctx-checkpoints" hint="Max checkpoints per slot (default: 32)" value={getEpNum("ctx-checkpoints")} min={0}
                 onChange={(v) => setEpNum("ctx-checkpoints", v)} />
-              <NumberInput label="Checkpoint Interval" hint="Checkpoint every N tokens (-1=disable, default: 8192)" value={getEpNum("checkpoint-every-n-tokens")}
+              <NumberInput label="Checkpoint Interval" flag="--checkpoint-every-n-tokens" hint="Checkpoint every N tokens (-1=disable, default: 8192)" value={getEpNum("checkpoint-every-n-tokens")}
                 onChange={(v) => setEpNum("checkpoint-every-n-tokens", v)} />
             </div>
           </div>
@@ -1355,65 +1355,65 @@ export default function Server() {
           <div data-tab="Hardware" className="space-y-4" style={{ display: activeTab === "Hardware" ? undefined : "none" }}>
             <Section title="GPU" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="GPU Layers" hint="-1 = all on GPU, 0 = CPU only" value={config.n_gpu_layers} min={-1}
+              <NumberInput label="GPU Layers" flag="--n-gpu-layers" hint="-1 = all on GPU, 0 = CPU only" value={config.n_gpu_layers} min={-1}
                 onChange={(v) => setConfig((c) => ({ ...c, n_gpu_layers: v ?? -1 }))} />
-              <SelectInput label="Split Mode" hint="Multi-GPU split strategy" value={getEp("split-mode") || "layer"}
+              <SelectInput label="Split Mode" flag="--split-mode" hint="Multi-GPU split strategy" value={getEp("split-mode") || "layer"}
                 options={[{ value: "none", label: "None (single GPU)" }, { value: "layer", label: "Layer (default)" }, { value: "row", label: "Row" }]}
                 onChange={(v) => setEp("split-mode", v === "layer" ? "" : v)} />
-              <TextInput label="Tensor Split" hint="GPU split ratios, e.g. 3,1" value={getEp("tensor-split")} placeholder="e.g. 3,1"
+              <TextInput label="Tensor Split" flag="--tensor-split" hint="GPU split ratios, e.g. 3,1" value={getEp("tensor-split")} placeholder="e.g. 3,1"
                 onChange={(v) => setEp("tensor-split", v)} />
-              <NumberInput label="Main GPU" hint="Primary GPU index (default: 0)" value={getEpNum("main-gpu")} min={0}
+              <NumberInput label="Main GPU" flag="--main-gpu" hint="Primary GPU index (default: 0)" value={getEpNum("main-gpu")} min={0}
                 onChange={(v) => setEpNum("main-gpu", v)} />
-              <TextInput label="Device" hint="Devices for offloading, comma-separated" value={getEp("device")}
+              <TextInput label="Device" flag="--device" hint="Devices for offloading, comma-separated" value={getEp("device")}
                 onChange={(v) => setEp("device", v)} />
-              <SelectInput label="Fit" hint="Auto-adjust context & GPU layers to fit device memory (default: on — leaves --ctx-size/--n-gpu-layers to llama-server)" value={getEp("fit") || "on"}
+              <SelectInput label="Fit" flag="--fit" hint="Auto-adjust context & GPU layers to fit device memory (default: on — leaves --ctx-size/--n-gpu-layers to llama-server)" value={getEp("fit") || "on"}
                 options={[{ value: "on", label: "On (default)" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setEp("fit", v === "on" ? "" : v)} />
-              <TextInput label="Fit Target (MiB)" hint="Target margin per device (default: 1024)" value={getEp("fit-target")} placeholder="1024"
+              <TextInput label="Fit Target (MiB)" flag="--fit-target" hint="Target margin per device (default: 1024)" value={getEp("fit-target")} placeholder="1024"
                 onChange={(v) => setEp("fit-target", v)} />
-              <NumberInput label="Fit Min Ctx" hint="Min context size for --fit (default: 4096)" value={getEpNum("fit-ctx")} min={0}
+              <NumberInput label="Fit Min Ctx" flag="--fit-ctx" hint="Min context size for --fit (default: 4096)" value={getEpNum("fit-ctx")} min={0}
                 onChange={(v) => setEpNum("fit-ctx", v)} />
             </div>
 
             <Section title="CPU" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Threads" hint="Auto: physical cores (e.g. 8) — Auto-estimate sets this" value={config.n_threads}
+              <NumberInput label="Threads" flag="--threads" hint="Auto: physical cores (e.g. 8) — Auto-estimate sets this" value={config.n_threads}
                 onChange={(v) => setConfig((c) => ({ ...c, n_threads: v }))} />
-              <NumberInput label="Threads Batch" hint="Auto: same as Threads" value={getEpNum("threads-batch")}
+              <NumberInput label="Threads Batch" flag="--threads-batch" hint="Auto: same as Threads" value={getEpNum("threads-batch")}
                 onChange={(v) => setEpNum("threads-batch", v)} />
-              <SelectInput label="NUMA" hint="NUMA optimizations" value={getEp("numa") || ""}
+              <SelectInput label="NUMA" flag="--numa" hint="NUMA optimizations" value={getEp("numa") || ""}
                 options={[{ value: "", label: "Disabled" }, { value: "distribute", label: "Distribute" }, { value: "isolate", label: "Isolate" }, { value: "numactl", label: "numactl" }]}
                 onChange={(v) => setEp("numa", v)} />
             </div>
 
             <Section title="Memory" />
             <div className="space-y-3">
-              <Toggle label="mlock" hint="Lock model in RAM (prevents swapping)" checked={config.mlock}
+              <Toggle label="mlock" flag="--mlock" hint="Lock model in RAM (prevents swapping)" checked={config.mlock}
                 onChange={(v) => setConfig((c) => ({ ...c, mlock: v }))} />
-              <Toggle label="Memory Map" hint="Memory-map model file (default: on)" checked={!config.no_mmap}
+              <Toggle label="Memory Map" flag="--no-mmap" hint="Memory-map model file (default: on)" checked={!config.no_mmap}
                 onChange={(v) => setConfig((c) => ({ ...c, no_mmap: !v }))} />
-              <Toggle label="Direct IO" hint="Use DirectIO if available" checked={hasFlag("direct-io")} onChange={(v) => setFlag("direct-io", v)} />
-              <Toggle label="CPU MoE" hint="Keep all MoE weights on CPU" checked={hasFlag("cpu-moe")} onChange={(v) => setFlag("cpu-moe", v)} />
-              <Toggle label="CPU MoE (Draft)" hint="Keep all MoE weights on CPU for draft model" checked={hasFlag("spec-draft-cpu-moe")} onChange={(v) => setFlag("spec-draft-cpu-moe", v)} />
-              <Toggle label="Repack" hint="Enable weight repacking (default: on)" checked={!hasFlag("no-repack")} onChange={(v) => setFlag("no-repack", !v)} />
-              <Toggle label="Op Offload" hint="Offload host tensor ops to device (default: on)" checked={!hasFlag("no-op-offload")} onChange={(v) => setFlag("no-op-offload", !v)} />
-              <Toggle label="No Host Buffer" hint="Bypass host buffer for extra device buffers" checked={hasFlag("no-host")} onChange={(v) => setFlag("no-host", v)} />
-              <Toggle label="Check Tensors" hint="Validate model tensor data on load" checked={hasFlag("check-tensors")} onChange={(v) => setFlag("check-tensors", v)} />
+              <Toggle label="Direct IO" flag="--direct-io" hint="Use DirectIO if available" checked={hasFlag("direct-io")} onChange={(v) => setFlag("direct-io", v)} />
+              <Toggle label="CPU MoE" flag="--cpu-moe" hint="Keep all MoE weights on CPU" checked={hasFlag("cpu-moe")} onChange={(v) => setFlag("cpu-moe", v)} />
+              <Toggle label="CPU MoE (Draft)" flag="--spec-draft-cpu-moe" hint="Keep all MoE weights on CPU for draft model" checked={hasFlag("spec-draft-cpu-moe")} onChange={(v) => setFlag("spec-draft-cpu-moe", v)} />
+              <Toggle label="Repack" flag="--no-repack" hint="Enable weight repacking (default: on)" checked={!hasFlag("no-repack")} onChange={(v) => setFlag("no-repack", !v)} />
+              <Toggle label="Op Offload" flag="--no-op-offload" hint="Offload host tensor ops to device (default: on)" checked={!hasFlag("no-op-offload")} onChange={(v) => setFlag("no-op-offload", !v)} />
+              <Toggle label="No Host Buffer" flag="--no-host" hint="Bypass host buffer for extra device buffers" checked={hasFlag("no-host")} onChange={(v) => setFlag("no-host", v)} />
+              <Toggle label="Check Tensors" flag="--check-tensors" hint="Validate model tensor data on load" checked={hasFlag("check-tensors")} onChange={(v) => setFlag("check-tensors", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <NumberInput label="N CPU MoE Layers" hint="Keep MoE experts on CPU — guide: 32 on 12GB (adds --load-mode none automatically)" value={getEpNum("n-cpu-moe")} min={0}
+              <NumberInput label="N CPU MoE Layers" flag="--n-cpu-moe" hint="Keep MoE experts on CPU — guide: 32 on 12GB (adds --load-mode none automatically)" value={getEpNum("n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("n-cpu-moe", v)} />
-              <NumberInput label="N CPU FFN Layers" hint="Keep dense FFN weights of first N layers on CPU (dense models; adds --load-mode none automatically)" value={getEpNum("n-cpu-ffn")} min={0}
+              <NumberInput label="N CPU FFN Layers" flag="--n-cpu-ffn" hint="Keep dense FFN weights of first N layers on CPU (dense models; adds --load-mode none automatically)" value={getEpNum("n-cpu-ffn")} min={0}
                 onChange={(v) => setEpNum("n-cpu-ffn", v)} />
-              <NumberInput label="N CPU MoE Layers (Draft)" hint="Keep MoE weights of first N layers on CPU for draft" value={getEpNum("spec-draft-n-cpu-moe")} min={0}
+              <NumberInput label="N CPU MoE Layers (Draft)" flag="--spec-draft-n-cpu-moe" hint="Keep MoE weights of first N layers on CPU for draft" value={getEpNum("spec-draft-n-cpu-moe")} min={0}
                 onChange={(v) => setEpNum("spec-draft-n-cpu-moe", v)} />
             </div>
 
             <Section title="Overrides" />
             <div className="grid grid-cols-1 gap-3">
-              <TextInput label="Override Tensor" hint="<pattern>=<buffer type>,... e.g. attn_v=cuda0" value={getEp("override-tensor")}
+              <TextInput label="Override Tensor" flag="--override-tensor" hint="<pattern>=<buffer type>,... e.g. attn_v=cuda0" value={getEp("override-tensor")}
                 onChange={(v) => setEp("override-tensor", v)} />
-              <TextInput label="Override Tensor (Draft)" hint="Tensor buffer type override for draft model: <pattern>=<type>,..." value={getEp("spec-draft-override-tensor")}
+              <TextInput label="Override Tensor (Draft)" flag="--spec-draft-override-tensor" hint="Tensor buffer type override for draft model: <pattern>=<type>,..." value={getEp("spec-draft-override-tensor")}
                 onChange={(v) => setEp("spec-draft-override-tensor", v)} />
               <TextInput label="Override KV" hint="KEY=TYPE:VALUE,... e.g. tokenizer.ggml.add_bos_token=bool:false" value={getEp("override-kv")}
                 onChange={(v) => setEp("override-kv", v)} />
@@ -1423,109 +1423,110 @@ export default function Server() {
           {/* ════════════════════════ SAMPLING ════════════════════════ */}
           <div data-tab="Sampling" className="space-y-4" style={{ display: activeTab === "Sampling" ? undefined : "none" }}>
             <div className="space-y-3">
-              <Toggle label="Pass sampling parameters"
+              <Toggle label="Pass sampling parameters" flag="(omits --temp/--top-k/--min-p/--top-p block)"
                 hint="Uncheck to omit them so the server or harness uses its own defaults."
                 checked={!config.disable_sampling}
                 onChange={(v) => setConfig((c) => ({ ...c, disable_sampling: !v }))} />
             </div>
             <div className={config.disable_sampling ? "space-y-4 opacity-50 pointer-events-none" : "space-y-4"}>
               <Section title="Basic" />
-              <Slider label="Temperature" hint="Higher = more creative" value={config.temperature} min={0} max={2} step={0.01}
+              <Slider label="Temperature" flag="--temp" hint="Higher = more creative" value={config.temperature} min={0} max={2} step={0.01}
                 onChange={(v) => setConfig((c) => ({ ...c, temperature: v }))} format={(v) => v.toFixed(2)} />
               <div className="grid grid-cols-2 gap-3">
-                <NumberInput label="Seed" hint="Empty or -1 = random" value={config.seed !== null ? config.seed : -1}
+                <NumberInput label="Seed" flag="--seed" hint="Empty or -1 = random" value={config.seed !== null ? config.seed : -1}
                   onChange={(v) => setConfig((c) => ({ ...c, seed: v !== null && v >= 0 ? v : null }))} />
-                <TextInput label="Samplers" hint="Sampler chain, semicolon-separated" value={getEp("samplers")}
+                <TextInput label="Samplers" flag="--samplers" hint="Sampler chain, semicolon-separated" value={getEp("samplers")}
                   placeholder="penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature"
                   onChange={(v) => setEp("samplers", v)} />
               </div>
 
               <Section title="Nucleus / Top-K / Min-P" />
-              <Slider label="Top-K" value={config.top_k} min={0} max={200} step={1}
+              <Slider label="Top-K" flag="--top-k" value={config.top_k} min={0} max={200} step={1}
                 onChange={(v) => setConfig((c) => ({ ...c, top_k: v }))} />
-              <Slider label="Top-P" value={config.top_p} min={0} max={1} step={0.01}
+              <Slider label="Top-P" flag="--top-p" value={config.top_p} min={0} max={1} step={0.01}
                 onChange={(v) => setConfig((c) => ({ ...c, top_p: v }))} format={(v) => v.toFixed(2)} />
-              <Slider label="Min-P" hint="Minimum probability relative to top token" value={config.min_p} min={0} max={1} step={0.001}
+              <Slider label="Min-P" flag="--min-p" hint="Minimum probability relative to top token" value={config.min_p} min={0} max={1} step={0.001}
                 onChange={(v) => setConfig((c) => ({ ...c, min_p: v }))} format={(v) => v.toFixed(3)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Top-N-Sigma" hint="-1 = disabled" value={getEpNum("top-n-sigma")}
+              <NumberInput label="Top-N-Sigma" flag="--top-n-sigma" hint="-1 = disabled" value={getEpNum("top-n-sigma")}
                 onChange={(v) => setEpNum("top-n-sigma", v)} />
-              <NumberInput label="Typical P" hint="1.0 = disabled (default)" value={getEpNum("typical")}
+              <NumberInput label="Typical P" flag="--typical" hint="1.0 = disabled (default)" value={getEpNum("typical")}
                 onChange={(v) => setEpNum("typical", v)} />
             </div>
 
             <Section title="Penalties" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Repeat Last N" hint="0=disabled, -1=ctx_size (default: 64)" value={getEpNum("repeat-last-n")}
+              <NumberInput label="Repeat Last N" flag="--repeat-last-n" hint="0=disabled, -1=ctx_size (default: 64)" value={getEpNum("repeat-last-n")}
                 onChange={(v) => setEpNum("repeat-last-n", v)} />
-              <NumberInput label="Repeat Penalty" hint="1.0 = disabled (default)" value={getEpNum("repeat-penalty")} step={0.01}
+              <NumberInput label="Repeat Penalty" flag="--repeat-penalty" hint="1.0 = disabled (default)" value={getEpNum("repeat-penalty")} step={0.01}
                 onChange={(v) => setEpNum("repeat-penalty", v)} />
-              <NumberInput label="Presence Penalty" hint="0.0 = disabled (default)" value={getEpNum("presence-penalty")} step={0.01}
+              <NumberInput label="Presence Penalty" flag="--presence-penalty" hint="0.0 = disabled (default)" value={getEpNum("presence-penalty")} step={0.01}
                 onChange={(v) => setEpNum("presence-penalty", v)} />
-              <NumberInput label="Frequency Penalty" hint="0.0 = disabled (default)" value={getEpNum("frequency-penalty")} step={0.01}
+              <NumberInput label="Frequency Penalty" flag="--frequency-penalty" hint="0.0 = disabled (default)" value={getEpNum("frequency-penalty")} step={0.01}
                 onChange={(v) => setEpNum("frequency-penalty", v)} />
             </div>
 
             <Section title="XTC" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="XTC Probability" hint="0.0 = disabled (default)" value={getEpNum("xtc-probability")} step={0.01}
+              <NumberInput label="XTC Probability" flag="--xtc-probability" hint="0.0 = disabled (default)" value={getEpNum("xtc-probability")} step={0.01}
                 onChange={(v) => setEpNum("xtc-probability", v)} />
-              <NumberInput label="XTC Threshold" hint="1.0 = disabled (default: 0.10)" value={getEpNum("xtc-threshold")} step={0.01}
+              <NumberInput label="XTC Threshold" flag="--xtc-threshold" hint="1.0 = disabled (default: 0.10)" value={getEpNum("xtc-threshold")} step={0.01}
                 onChange={(v) => setEpNum("xtc-threshold", v)} />
             </div>
 
             <Section title="DRY Sampling" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="DRY Multiplier" hint="0.0 = disabled (default)" value={getEpNum("dry-multiplier")} step={0.1}
+              <NumberInput label="DRY Multiplier" flag="--dry-multiplier" hint="0.0 = disabled (default)" value={getEpNum("dry-multiplier")} step={0.1}
                 onChange={(v) => setEpNum("dry-multiplier", v)} />
-              <NumberInput label="DRY Base" hint="Default: 1.75" value={getEpNum("dry-base")} step={0.05}
+              <NumberInput label="DRY Base" flag="--dry-base" hint="Default: 1.75" value={getEpNum("dry-base")} step={0.05}
                 onChange={(v) => setEpNum("dry-base", v)} />
-              <NumberInput label="DRY Allowed Length" hint="Default: 2" value={getEpNum("dry-allowed-length")} min={0}
+              <NumberInput label="DRY Allowed Length" flag="--dry-allowed-length" hint="Default: 2" value={getEpNum("dry-allowed-length")} min={0}
                 onChange={(v) => setEpNum("dry-allowed-length", v)} />
-              <NumberInput label="DRY Penalty Last N" hint="-1=ctx size, 0=disable" value={getEpNum("dry-penalty-last-n")}
+              <NumberInput label="DRY Penalty Last N" flag="--dry-penalty-last-n" hint="-1=ctx size, 0=disable" value={getEpNum("dry-penalty-last-n")}
                 onChange={(v) => setEpNum("dry-penalty-last-n", v)} />
             </div>
 
             <Section title="Adaptive Sampling" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Adaptive Target" hint="Target probability (negative=disabled, default: -1)" value={getEpNum("adaptive-target")} step={0.01}
+              <NumberInput label="Adaptive Target" flag="--adaptive-target" hint="Target probability (negative=disabled, default: -1)" value={getEpNum("adaptive-target")} step={0.01}
                 onChange={(v) => setEpNum("adaptive-target", v)} />
-              <NumberInput label="Adaptive Decay" hint="Decay rate (0.0-0.99, default: 0.90)" value={getEpNum("adaptive-decay")} step={0.01}
+              <NumberInput label="Adaptive Decay" flag="--adaptive-decay" hint="Decay rate (0.0-0.99, default: 0.90)" value={getEpNum("adaptive-decay")} step={0.01}
                 onChange={(v) => setEpNum("adaptive-decay", v)} />
             </div>
 
             <Section title="Dynamic Temperature" />
             <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Range" hint="0.0 = disabled (default)" value={getEpNum("dynatemp-range")} step={0.1}
+              <NumberInput label="Range" flag="--dynatemp-range" hint="0.0 = disabled (default)" value={getEpNum("dynatemp-range")} step={0.1}
                 onChange={(v) => setEpNum("dynatemp-range", v)} />
-              <NumberInput label="Exponent" hint="Default: 1.0" value={getEpNum("dynatemp-exp")} step={0.1}
+              <NumberInput label="Exponent" flag="--dynatemp-exp" hint="Default: 1.0" value={getEpNum("dynatemp-exp")} step={0.1}
                 onChange={(v) => setEpNum("dynatemp-exp", v)} />
             </div>
 
             <Section title="Mirostat" />
             <div className="grid grid-cols-2 gap-3">
-              <SelectInput label="Mode" value={getEp("mirostat") || "0"}
+              <SelectInput label="Mode" flag="--mirostat" value={getEp("mirostat") || "0"}
                 options={[{ value: "0", label: "Disabled" }, { value: "1", label: "Mirostat 1" }, { value: "2", label: "Mirostat 2" }]}
                 onChange={(v) => setEp("mirostat", v === "0" ? "" : v)} />
-              <NumberInput label="Learning Rate" hint="Default: 0.10" value={getEpNum("mirostat-lr")} step={0.01}
+              <NumberInput label="Learning Rate" flag="--mirostat-lr" hint="Default: 0.10" value={getEpNum("mirostat-lr")} step={0.01}
                 onChange={(v) => setEpNum("mirostat-lr", v)} />
-              <NumberInput label="Target Entropy" hint="Default: 5.00" value={getEpNum("mirostat-ent")} step={0.1}
+              <NumberInput label="Target Entropy" flag="--mirostat-ent" hint="Default: 5.00" value={getEpNum("mirostat-ent")} step={0.1}
                 onChange={(v) => setEpNum("mirostat-ent", v)} />
             </div>
 
             <Section title="Misc" />
             <div className="space-y-3">
-              <Toggle label="Ignore EOS" hint="Continue generating past end-of-stream" checked={hasFlag("ignore-eos")} onChange={(v) => setFlag("ignore-eos", v)} />
-              <Toggle label="Backend Sampling" hint="Experimental backend sampling" checked={hasFlag("backend-sampling")} onChange={(v) => setFlag("backend-sampling", v)} />
+              <Toggle label="Ignore EOS" flag="--ignore-eos" hint="Continue generating past end-of-stream" checked={hasFlag("ignore-eos")} onChange={(v) => setFlag("ignore-eos", v)} />
+              <Toggle label="Backend Sampling" flag="--backend-sampling" hint="Experimental backend sampling" checked={hasFlag("backend-sampling")} onChange={(v) => setFlag("backend-sampling", v)} />
             </div>
           </div>
 
           {/* ════════════════════════ SERVER ════════════════════════ */}
           <div data-tab="Server" className="space-y-4" style={{ display: activeTab === "Server" ? undefined : "none" }}>
             <Section title="Workload" />
-            <SelectInput
-              label="Profile"
+              <SelectInput
+                label="Profile"
+                flag="--parallel"
               hint="Presets parallel slots for common use-cases (like llama-optimize --use-case)"
               value={
                 config.parallel === 1 ? "single"
@@ -1546,31 +1547,31 @@ export default function Server() {
             />
             <Section title="Network" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="Host" value={config.host} onChange={(v) => setConfig((c) => ({ ...c, host: v }))} />
-              <NumberInput label="Port" value={config.port} min={1} max={65535}
+              <TextInput label="Host" flag="--host" value={config.host} onChange={(v) => setConfig((c) => ({ ...c, host: v }))} />
+              <NumberInput label="Port" flag="--port" value={config.port} min={1} max={65535}
                 onChange={(v) => setConfig((c) => ({ ...c, port: v ?? 8080 }))} />
-              <NumberInput label="Parallel Slots" hint="Concurrent slots; profile sets this" value={config.parallel} min={-1} max={128}
+              <NumberInput label="Parallel Slots" flag="--parallel" hint="Concurrent slots; profile sets this" value={config.parallel} min={-1} max={128}
                 onChange={(v) => setConfig((c) => ({ ...c, parallel: v ?? 1 }))} />
-              <NumberInput label="Timeout (s)" hint="Read/write timeout (default: 600)" value={getEpNum("timeout")} min={0}
+              <NumberInput label="Timeout (s)" flag="--timeout" hint="Read/write timeout (default: 600)" value={getEpNum("timeout")} min={0}
                 onChange={(v) => setEpNum("timeout", v)} />
-              <NumberInput label="HTTP Threads" hint="-1 = auto (default)" value={getEpNum("threads-http")}
+              <NumberInput label="HTTP Threads" flag="--threads-http" hint="-1 = auto (default)" value={getEpNum("threads-http")}
                 onChange={(v) => setEpNum("threads-http", v)} />
-              <NumberInput label="Sleep Idle (s)" hint="Sleep after N seconds idle (-1=disabled)" value={getEpNum("sleep-idle-seconds")}
+              <NumberInput label="Sleep Idle (s)" flag="--sleep-idle-seconds" hint="Sleep after N seconds idle (-1=disabled)" value={getEpNum("sleep-idle-seconds")}
                 onChange={(v) => setEpNum("sleep-idle-seconds", v)} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="Reuse Port" hint="Allow multiple sockets to bind to the same port" checked={hasFlag("reuse-port")} onChange={(v) => setFlag("reuse-port", v)} />
+              <Toggle label="Reuse Port" flag="--reuse-port" hint="Allow multiple sockets to bind to the same port" checked={hasFlag("reuse-port")} onChange={(v) => setFlag("reuse-port", v)} />
             </div>
 
             <Section title="API" />
             <div className="grid grid-cols-2 gap-3">
-              <TextInput label="API Key" hint="Comma-separated keys for auth" value={getEp("api-key")}
+              <TextInput label="API Key" flag="--api-key" hint="Comma-separated keys for auth" value={getEp("api-key")}
                 onChange={(v) => setEp("api-key", v)} />
-              <TextInput label="API Key File" hint="Path to file with API keys" value={getEp("api-key-file")}
+              <TextInput label="API Key File" flag="--api-key-file" hint="Path to file with API keys" value={getEp("api-key-file")}
                 onChange={(v) => setEp("api-key-file", v)} />
-              <TextInput label="Alias" hint="Model name aliases for API" value={getEp("alias")}
+              <TextInput label="Alias" flag="--alias" hint="Model name aliases for API" value={getEp("alias")}
                 onChange={(v) => setEp("alias", v)} />
-              <TextInput label="Tags" hint="Model tags (informational)" value={getEp("tags")}
+              <TextInput label="Tags" flag="--tags" hint="Model tags (informational)" value={getEp("tags")}
                 onChange={(v) => setEp("tags", v)} />
               <TextInput label="API Prefix" hint="URL prefix without trailing slash" value={getEp("api-prefix")}
                 onChange={(v) => setEp("api-prefix", v)} />
@@ -1582,14 +1583,14 @@ export default function Server() {
             <div className="space-y-3">
               <Toggle label="Continuous Batching" hint="Process multiple requests simultaneously (default: on)" checked={config.cont_batching}
                 onChange={(v) => setConfig((c) => ({ ...c, cont_batching: v }))} />
-              <Toggle label="WebUI" hint="Serve built-in web interface (default: on)" checked={!hasFlag("no-webui")} onChange={(v) => setFlag("no-webui", !v)} />
-              <Toggle label="WebUI MCP Proxy" hint="Experimental MCP CORS proxy" checked={hasFlag("webui-mcp-proxy")} onChange={(v) => setFlag("webui-mcp-proxy", v)} />
-              <Toggle label="Metrics" hint="Prometheus-compatible metrics endpoint" checked={hasFlag("metrics")} onChange={(v) => setFlag("metrics", v)} />
-              <Toggle label="Props" hint="Allow changing global properties via POST /props" checked={hasFlag("props")} onChange={(v) => setFlag("props", v)} />
-              <Toggle label="Slots Endpoint" hint="Expose slot monitoring (default: on)" checked={!hasFlag("no-slots")} onChange={(v) => setFlag("no-slots", !v)} />
-              <Toggle label="Embedding" hint="Restrict to embedding-only mode" checked={hasFlag("embedding")} onChange={(v) => setFlag("embedding", v)} />
-              <Toggle label="Reranking" hint="Enable reranking endpoint" checked={hasFlag("reranking")} onChange={(v) => setFlag("reranking", v)} />
-              <Toggle label="Warmup" hint="Perform warmup run on start (default: on)" checked={!hasFlag("no-warmup")} onChange={(v) => setFlag("no-warmup", !v)} />
+              <Toggle label="WebUI" flag="--no-webui" hint="Serve built-in web interface (default: on)" checked={!hasFlag("no-webui")} onChange={(v) => setFlag("no-webui", !v)} />
+              <Toggle label="WebUI MCP Proxy" flag="--webui-mcp-proxy" hint="Experimental MCP CORS proxy" checked={hasFlag("webui-mcp-proxy")} onChange={(v) => setFlag("webui-mcp-proxy", v)} />
+              <Toggle label="Metrics" flag="--metrics" hint="Prometheus-compatible metrics endpoint" checked={hasFlag("metrics")} onChange={(v) => setFlag("metrics", v)} />
+              <Toggle label="Props" flag="--props" hint="Allow changing global properties via POST /props" checked={hasFlag("props")} onChange={(v) => setFlag("props", v)} />
+              <Toggle label="Slots Endpoint" flag="--no-slots" hint="Expose slot monitoring (default: on)" checked={!hasFlag("no-slots")} onChange={(v) => setFlag("no-slots", !v)} />
+              <Toggle label="Embedding" flag="--embedding" hint="Restrict to embedding-only mode" checked={hasFlag("embedding")} onChange={(v) => setFlag("embedding", v)} />
+              <Toggle label="Reranking" flag="--reranking" hint="Enable reranking endpoint" checked={hasFlag("reranking")} onChange={(v) => setFlag("reranking", v)} />
+              <Toggle label="Warmup" flag="--no-warmup" hint="Perform warmup run on start (default: on)" checked={!hasFlag("no-warmup")} onChange={(v) => setFlag("no-warmup", !v)} />
               <Toggle label="Speculative draft" hint="Auto-attach a sibling DSpark/MTP draft file next to the model (single-model servers)" checked={hasFlag("spec-draft")} onChange={(v) => setFlag("spec-draft", v)} />
               <Toggle label="MTP heads" hint="Enable embedded MTP heads (-MTP- models; forces parallel=1; single-model servers)" checked={hasFlag("spec-mtp")} onChange={(v) => setFlag("spec-mtp", v)} />
             </div>
@@ -1624,47 +1625,47 @@ export default function Server() {
           <div data-tab="Chat" className="space-y-4" style={{ display: activeTab === "Chat" ? undefined : "none" }}>
             <Section title="Chat Template" />
             <div className="grid grid-cols-1 gap-3">
-              <TextInput label="Chat Template" hint="Jinja template name or inline template" value={getEp("chat-template")}
+              <TextInput label="Chat Template" flag="--chat-template" hint="Jinja template name or inline template" value={getEp("chat-template")}
                 onChange={(v) => setEp("chat-template", v)} />
-              <TextInput label="Chat Template File" hint="Path to Jinja template file" value={getEp("chat-template-file")}
+              <TextInput label="Chat Template File" flag="--chat-template-file" hint="Path to Jinja template file" value={getEp("chat-template-file")}
                 onChange={(v) => setEp("chat-template-file", v)} />
-              <TextInput label="Chat Template Kwargs" hint="JSON object for template params" value={getEp("chat-template-kwargs")}
+              <TextInput label="Chat Template Kwargs" flag="--chat-template-kwargs" hint="JSON object for template params" value={getEp("chat-template-kwargs")}
                 placeholder='{"key":"value"}' onChange={(v) => setEp("chat-template-kwargs", v)} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="Jinja" hint="Use Jinja template engine (default: on)" checked={!hasFlag("no-jinja")} onChange={(v) => setFlag("no-jinja", !v)} />
-              <Toggle label="Prefill Assistant" hint="Prefill assistant response if last message is assistant (default: on)"
+              <Toggle label="Jinja" flag="--no-jinja" hint="Use Jinja template engine (default: on)" checked={!hasFlag("no-jinja")} onChange={(v) => setFlag("no-jinja", !v)} />
+              <Toggle label="Prefill Assistant" flag="--no-prefill-assistant" hint="Prefill assistant response if last message is assistant (default: on)"
                 checked={!hasFlag("no-prefill-assistant")} onChange={(v) => setFlag("no-prefill-assistant", !v)} />
-              <Toggle label="Skip Chat Parsing" hint="Force pure content parser, skip tool/reasoning extraction"
+              <Toggle label="Skip Chat Parsing" flag="--skip-chat-parsing" hint="Force pure content parser, skip tool/reasoning extraction"
                 checked={hasFlag("skip-chat-parsing")} onChange={(v) => setFlag("skip-chat-parsing", v)} />
             </div>
 
             <Section title="Reasoning" />
             <div className="space-y-3">
-              <Toggle label="Preserve Reasoning" hint="Keep reasoning content when using tools (recommended)" checked={hasFlag("reasoning-preserve")} onChange={(v) => setFlag("reasoning-preserve", v)} />
+              <Toggle label="Preserve Reasoning" flag="--reasoning-preserve" hint="Keep reasoning content when using tools (recommended)" checked={hasFlag("reasoning-preserve")} onChange={(v) => setFlag("reasoning-preserve", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <SelectInput label="Reasoning" hint="Enable thinking" value={getEp("reasoning") || "auto"}
+              <SelectInput label="Reasoning" flag="--reasoning" hint="Enable thinking" value={getEp("reasoning") || "auto"}
                 options={[{ value: "auto", label: "Auto (default)" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]}
                 onChange={(v) => setEp("reasoning", v === "auto" ? "" : v)} />
-              <SelectInput label="Reasoning Format" value={getEp("reasoning-format") || "auto"}
+              <SelectInput label="Reasoning Format" flag="--reasoning-format" value={getEp("reasoning-format") || "auto"}
                 options={[{ value: "auto", label: "Auto (default)" }, { value: "none", label: "None" }, { value: "deepseek", label: "DeepSeek" }, { value: "deepseek-legacy", label: "DeepSeek Legacy" }]}
                 onChange={(v) => setEp("reasoning-format", v === "auto" ? "" : v)} />
-              <NumberInput label="Reasoning Budget" hint="-1=unrestricted (default), 0=immediate end" value={getEpNum("reasoning-budget")}
+              <NumberInput label="Reasoning Budget" flag="--reasoning-budget" hint="-1=unrestricted (default), 0=immediate end" value={getEpNum("reasoning-budget")}
                 onChange={(v) => setEpNum("reasoning-budget", v)} />
-              <TextInput label="Budget Message" hint="Message injected when budget exhausted" value={getEp("reasoning-budget-message")}
+              <TextInput label="Budget Message" flag="--reasoning-budget-message" hint="Message injected when budget exhausted" value={getEp("reasoning-budget-message")}
                 onChange={(v) => setEp("reasoning-budget-message", v)} />
             </div>
 
             <Section title="Output" />
             <div className="space-y-3">
-              <Toggle label="Escape Sequences" hint="Process \\n, \\t etc (default: on)" checked={!hasFlag("no-escape")} onChange={(v) => setFlag("no-escape", !v)} />
-              <Toggle label="Special Tokens" hint="Output special tokens" checked={hasFlag("special")} onChange={(v) => setFlag("special", v)} />
-              <Toggle label="Verbose Prompt" hint="Print verbose prompt before generation" checked={hasFlag("verbose-prompt")} onChange={(v) => setFlag("verbose-prompt", v)} />
-              <Toggle label="SPM Infill" hint="Use Suffix/Prefix/Middle infill pattern" checked={hasFlag("spm-infill")} onChange={(v) => setFlag("spm-infill", v)} />
+              <Toggle label="Escape Sequences" flag="--no-escape" hint="Process \\n, \\t etc (default: on)" checked={!hasFlag("no-escape")} onChange={(v) => setFlag("no-escape", !v)} />
+              <Toggle label="Special Tokens" flag="--special" hint="Output special tokens" checked={hasFlag("special")} onChange={(v) => setFlag("special", v)} />
+              <Toggle label="Verbose Prompt" flag="--verbose-prompt" hint="Print verbose prompt before generation" checked={hasFlag("verbose-prompt")} onChange={(v) => setFlag("verbose-prompt", v)} />
+              <Toggle label="SPM Infill" flag="--spm-infill" hint="Use Suffix/Prefix/Middle infill pattern" checked={hasFlag("spm-infill")} onChange={(v) => setFlag("spm-infill", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <SelectInput label="Pooling" hint="Embedding pooling type" value={getEp("pooling") || ""}
+              <SelectInput label="Pooling" flag="--pooling" hint="Embedding pooling type" value={getEp("pooling") || ""}
                 options={[{ value: "", label: "Model default" }, { value: "none", label: "None" }, { value: "mean", label: "Mean" }, { value: "cls", label: "CLS" }, { value: "last", label: "Last" }, { value: "rank", label: "Rank" }]}
                 onChange={(v) => setEp("pooling", v)} />
             </div>
