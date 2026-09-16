@@ -2089,7 +2089,6 @@ mod tests {
     fn migrate_canonicalises_draft_aliases() {
         let mut ep = HashMap::new();
         ep.insert("model-draft".to_string(), "/p/d.gguf".to_string());
-        ep.insert("ctx-size-draft".to_string(), "4096".to_string());
         ep.insert("n-gpu-layers-draft".to_string(), "99".to_string());
         ep.insert("threads-draft".to_string(), "4".to_string());
         ep.insert("device-draft".to_string(), "cuda0".to_string());
@@ -2097,12 +2096,15 @@ mod tests {
 
         assert!(migrate_extra_params(&mut ep));
         assert_eq!(ep.get("spec-draft-model"), Some(&"/p/d.gguf".to_string()));
-        assert_eq!(ep.get("spec-draft-ctx-size"), Some(&"4096".to_string()));
         assert_eq!(ep.get("spec-draft-ngl"), Some(&"99".to_string()));
         assert_eq!(ep.get("spec-draft-threads"), Some(&"4".to_string()));
         assert_eq!(ep.get("spec-draft-device"), Some(&"cuda0".to_string()));
         assert_eq!(ep.get("spec-draft-cpu-moe"), Some(&String::new()));
         assert!(!ep.contains_key("model-draft"));
+        // ctx-size-draft never existed as a flag — dropped, not renamed.
+        ep.insert("ctx-size-draft".to_string(), "4096".to_string());
+        assert!(migrate_extra_params(&mut ep));
+        assert!(!ep.contains_key("ctx-size-draft"));
     }
 
     #[test]
