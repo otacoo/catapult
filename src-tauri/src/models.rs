@@ -556,8 +556,10 @@ fn scan_gguf_recursive(
 fn companion_segments(model_filename: &str) -> Vec<String> {
     let stem = model_filename.trim_end_matches(".gguf");
     // Extract the "model name + params" prefix, e.g. "Qwen3.5-4B" from "Qwen3.5-4B-Q4_K_M"
-    // Strip trailing quant pattern to get the base name
-    let re = regex::Regex::new(r"[-_](?:MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)$").unwrap();
+    // Strip trailing quant pattern to get the base name (case-insensitive:
+    // quants ship as Q4_K_M, q4_k_m, .f16, … — the dot covers compound
+    // extensions like `.f16.gguf`)
+    let re = regex::Regex::new(r"(?i)[-._](?:MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)$").unwrap();
     let base = re.replace(stem, "").to_string();
 
     // Split base into segments for matching
@@ -570,12 +572,15 @@ fn companion_segments(model_filename: &str) -> Vec<String> {
 }
 
 /// Best directory sibling (a `.gguf` that is not the model itself) matching
-/// at least 2 base segments and satisfying `is_candidate`. Shared pairing
-/// rule for mmproj files and speculative-draft companions.
+/// at least `min_matches` base segments and satisfying `is_candidate`.
+/// Draft companions use 1: sidecars ship short names that share only the
+/// family token (e.g. `MiniCPM5-2B-…` ↔ `MiniCPM5-2.6B-DSpark`), and sharing
+/// a directory already makes coincidence unlikely. mmproj files keep 2.
 fn best_sibling_match(
     dir: &Path,
     model_filename: &str,
     segments: &[String],
+    min_matches: usize,
     is_candidate: impl Fn(&Path, &str) -> bool,
 ) -> Option<PathBuf> {
     let mut best: Option<(PathBuf, usize)> = None;
@@ -598,8 +603,9 @@ fn best_sibling_match(
             .filter(|seg| fname_lower.contains(seg.as_str()))
             .count();
 
-        // Require at least 2 matching segments (name + params typically)
-        if matches >= 2 && best.as_ref().map_or(true, |(_, best_m)| matches > *best_m) {
+        // Best score wins; a same-directory sidecar with even one shared
+        // family token beats nothing (llama.cpp fails loudly on mismatch).
+        if matches >= min_matches && best.as_ref().map_or(true, |(_, best_m)| matches > *best_m) {
             best = Some((path, matches));
         }
     }
@@ -613,7 +619,7 @@ fn best_sibling_match(
 fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Option<PathBuf> {
     let dir = model_path.parent()?;
     let segments = companion_segments(model_filename);
-    best_sibling_match(dir, model_filename, &segments, |path, fname_lower| {
+    best_sibling_match(dir, model_filename, &segments, 2, |path, fname_lower| {
         // Check if this file is an mmproj: by filename OR by cached GGUF metadata
         let is_mmproj_by_name = fname_lower.contains("mmproj");
         let cache_key = path.to_string_lossy().to_string();
@@ -637,12 +643,12 @@ pub fn find_spec_draft(model_path: &Path) -> Option<(PathBuf, SpecDraftKind)> {
     let filename = model_path.file_name()?.to_string_lossy().to_string();
     let dir = model_path.parent()?;
     let segments = companion_segments(&filename);
-    if let Some(p) = best_sibling_match(dir, &filename, &segments, |_, f| {
+    if let Some(p) = best_sibling_match(dir, &filename, &segments, 1, |_, f| {
         crate::huggingface::is_dspark_file(f)
     }) {
         return Some((p, SpecDraftKind::Dspark));
     }
-    best_sibling_match(dir, &filename, &segments, |_, f| {
+    best_sibling_match(dir, &filename, &segments, 1, |_, f| {
         crate::huggingface::is_mtp_head_file(f)
     })
     .map(|p| (p, SpecDraftKind::MtpHead))
@@ -1822,6 +1828,37 @@ mod tests {
         std::fs::write(dir.join(lone), []).unwrap();
         assert_eq!(find_spec_draft(&dir.join(lone)), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_spec_draft_pairs_short_sidecar_names() {
+        // Real-world regression: the main quant and its draft share only the
+        // family token (2B vs 2.6B), and the quant suffix is lowercase.
+        let dir = std::env::temp_dir()
+            .join(format!("catapult-draft-short-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = "MiniCPM5-2B-Abliterated-Uncensored-Safetensors.f16.gguf";
+        let draft = "MiniCPM5-2.6B-DSpark.gguf";
+        std::fs::write(dir.join(main), []).unwrap();
+        std::fs::write(dir.join(draft), []).unwrap();
+        assert_eq!(
+            find_spec_draft(&dir.join(main)),
+            Some((dir.join(draft), SpecDraftKind::Dspark))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn companion_segments_strips_any_case_quant() {
+        assert_eq!(
+            companion_segments("MiniCPM5-2B-Abliterated-Uncensored-Safetensors.f16.gguf"),
+            vec!["minicpm5", "2b", "abliterated", "uncensored", "safetensors"]
+        );
+        assert_eq!(
+            companion_segments("model-q4_k_m.gguf"),
+            vec!["model"]
+        );
     }
 
     #[test]
