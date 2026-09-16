@@ -247,7 +247,23 @@ let benchSession: BenchSession = { loading: false, result: null, error: null };
 
 // Mirror of server::migrate_extra_params. Renames/drops flags removed in
 // newer llama.cpp builds so old session state and imported presets keep working.
-const REMOVED_EP_KEYS = ["spec-ngram-size-n", "spec-ngram-size-m", "spec-ngram-min-hits"] as const;
+const REMOVED_EP_KEYS = [
+  "spec-ngram-size-n",
+  "spec-ngram-size-m",
+  "spec-ngram-min-hits",
+  // Never existed: the draft model shares the main context size.
+  "spec-draft-ctx-size",
+  "ctx-size-draft",
+  // Not llama-server flags (b10964 `--help` rejects them): llama-embedding /
+  // llama-tts options and removed upstream flags. They would abort startup.
+  "embd-separator",
+  "cls-separator",
+  "model-vocoder",
+  "tts-use-guide-tokens",
+  "profile",
+  "profile-output",
+  "verbose-prompt",
+] as const;
 const RENAMED_EP_KEYS: Record<string, string> = {
   "draft": "spec-draft-n-max",
   "draft-max": "spec-draft-n-max",
@@ -255,7 +271,7 @@ const RENAMED_EP_KEYS: Record<string, string> = {
   "draft-min": "spec-draft-n-min",
   "draft-n-min": "spec-draft-n-min",
   "model-draft": "spec-draft-model",
-  "ctx-size-draft": "spec-draft-ctx-size",
+  "checkpoint-every-n-tokens": "checkpoint-min-step",
   "n-gpu-layers-draft": "spec-draft-ngl",
   "gpu-layers-draft": "spec-draft-ngl",
   "device-draft": "spec-draft-device",
@@ -1346,8 +1362,10 @@ export default function Server() {
                 onChange={(v) => setEpNum("cache-ram", v)} />
               <NumberInput label="Context Checkpoints" flag="--ctx-checkpoints" hint="Max checkpoints per slot (default: 32)" value={getEpNum("ctx-checkpoints")} min={0}
                 onChange={(v) => setEpNum("ctx-checkpoints", v)} />
-              <NumberInput label="Checkpoint Interval" flag="--checkpoint-every-n-tokens" hint="Checkpoint every N tokens (-1=disable, default: 8192)" value={getEpNum("checkpoint-every-n-tokens")}
-                onChange={(v) => setEpNum("checkpoint-every-n-tokens", v)} />
+              <NumberInput label="Checkpoint Interval" flag="--checkpoint-min-step" hint="Min spacing between checkpoints in tokens (0=no minimum, default: 8192)" value={getEpNum("checkpoint-min-step")}
+                onChange={(v) => setEpNum("checkpoint-min-step", v)} />
+              <NumberInput label="KV Per Slot" flag="--kv-unified-per-slot" hint="Context limit per parallel slot (empty = server default)" value={getEpNum("kv-unified-per-slot")} min={0}
+                onChange={(v) => setEpNum("kv-unified-per-slot", v)} />
             </div>
           </div>
 
@@ -1358,7 +1376,7 @@ export default function Server() {
               <NumberInput label="GPU Layers" flag="--n-gpu-layers" hint="-1 = all on GPU, 0 = CPU only" value={config.n_gpu_layers} min={-1}
                 onChange={(v) => setConfig((c) => ({ ...c, n_gpu_layers: v ?? -1 }))} />
               <SelectInput label="Split Mode" flag="--split-mode" hint="Multi-GPU split strategy" value={getEp("split-mode") || "layer"}
-                options={[{ value: "none", label: "None (single GPU)" }, { value: "layer", label: "Layer (default)" }, { value: "row", label: "Row" }]}
+                options={[{ value: "none", label: "None (single GPU)" }, { value: "layer", label: "Layer (default)" }, { value: "row", label: "Row" }, { value: "tensor", label: "Tensor (experimental)" }]}
                 onChange={(v) => setEp("split-mode", v === "layer" ? "" : v)} />
               <TextInput label="Tensor Split" flag="--tensor-split" hint="GPU split ratios, e.g. 3,1" value={getEp("tensor-split")} placeholder="e.g. 3,1"
                 onChange={(v) => setEp("tensor-split", v)} />
@@ -1387,12 +1405,20 @@ export default function Server() {
             </div>
 
             <Section title="Memory" />
-            <div className="space-y-3">
-              <Toggle label="mlock" flag="--mlock" hint="Lock model in RAM (prevents swapping)" checked={config.mlock}
+            <div className="grid grid-cols-2 gap-3">
+              <SelectInput label="Load Mode" flag="--load-mode" hint="How the model file is loaded (default: auto = mmap)" value={getEp("load-mode") || "auto"}
+                options={[{ value: "auto", label: "Auto (default)" }, { value: "none", label: "None" }, { value: "mmap", label: "mmap" }, { value: "mlock", label: "mlock" }, { value: "mmap+mlock", label: "mmap+mlock" }, { value: "dio", label: "DirectIO" }]}
+                onChange={(v) => setEp("load-mode", v === "auto" ? "" : v)} />
+              <SelectInput label="Lazy Mode" flag="--lazy-mode" hint="On-demand tensor reads, e.g. large embeddings (default: auto)" value={getEp("lazy-mode") || "auto"}
+                options={[{ value: "auto", label: "Auto (default)" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]}
+                onChange={(v) => setEp("lazy-mode", v === "auto" ? "" : v)} />
+            </div>
+            <div className="space-y-3 mt-2">
+              <Toggle label="mlock" flag="--load-mode" hint="Retired upstream — mapped to --load-mode mmap+mlock (explicit Load Mode wins)" checked={config.mlock}
                 onChange={(v) => setConfig((c) => ({ ...c, mlock: v }))} />
-              <Toggle label="Memory Map" flag="--no-mmap" hint="Memory-map model file (default: on)" checked={!config.no_mmap}
+              <Toggle label="Memory Map" flag="--load-mode" hint="Retired upstream — disabling maps to --load-mode none (explicit Load Mode wins)" checked={!config.no_mmap}
                 onChange={(v) => setConfig((c) => ({ ...c, no_mmap: !v }))} />
-              <Toggle label="Direct IO" flag="--direct-io" hint="Use DirectIO if available" checked={hasFlag("direct-io")} onChange={(v) => setFlag("direct-io", v)} />
+              <Toggle label="Direct IO" flag="--load-mode" hint="Retired upstream — mapped to --load-mode dio (explicit Load Mode wins)" checked={hasFlag("direct-io")} onChange={(v) => setFlag("direct-io", v)} />
               <Toggle label="CPU MoE" flag="--cpu-moe" hint="Keep all MoE weights on CPU" checked={hasFlag("cpu-moe")} onChange={(v) => setFlag("cpu-moe", v)} />
               <Toggle label="CPU MoE (Draft)" flag="--spec-draft-cpu-moe" hint="Keep all MoE weights on CPU for draft model" checked={hasFlag("spec-draft-cpu-moe")} onChange={(v) => setFlag("spec-draft-cpu-moe", v)} />
               <Toggle label="Repack" flag="--no-repack" hint="Enable weight repacking (default: on)" checked={!hasFlag("no-repack")} onChange={(v) => setFlag("no-repack", !v)} />
@@ -1415,7 +1441,7 @@ export default function Server() {
                 onChange={(v) => setEp("override-tensor", v)} />
               <TextInput label="Override Tensor (Draft)" flag="--spec-draft-override-tensor" hint="Tensor buffer type override for draft model: <pattern>=<type>,..." value={getEp("spec-draft-override-tensor")}
                 onChange={(v) => setEp("spec-draft-override-tensor", v)} />
-              <TextInput label="Override KV" hint="KEY=TYPE:VALUE,... e.g. tokenizer.ggml.add_bos_token=bool:false" value={getEp("override-kv")}
+              <TextInput label="Override KV" flag="--override-kv" hint="KEY=TYPE:VALUE,... e.g. tokenizer.ggml.add_bos_token=bool:false" value={getEp("override-kv")}
                 onChange={(v) => setEp("override-kv", v)} />
             </div>
           </div>
@@ -1552,12 +1578,14 @@ export default function Server() {
                 onChange={(v) => setConfig((c) => ({ ...c, port: v ?? 8080 }))} />
               <NumberInput label="Parallel Slots" flag="--parallel" hint="Concurrent slots; profile sets this" value={config.parallel} min={-1} max={128}
                 onChange={(v) => setConfig((c) => ({ ...c, parallel: v ?? 1 }))} />
-              <NumberInput label="Timeout (s)" flag="--timeout" hint="Read/write timeout (default: 600)" value={getEpNum("timeout")} min={0}
+              <NumberInput label="Timeout (s)" flag="--timeout" hint="Read/write timeout (default: 3600)" value={getEpNum("timeout")} min={0}
                 onChange={(v) => setEpNum("timeout", v)} />
               <NumberInput label="HTTP Threads" flag="--threads-http" hint="-1 = auto (default)" value={getEpNum("threads-http")}
                 onChange={(v) => setEpNum("threads-http", v)} />
               <NumberInput label="Sleep Idle (s)" flag="--sleep-idle-seconds" hint="Sleep after N seconds idle (-1=disabled)" value={getEpNum("sleep-idle-seconds")}
                 onChange={(v) => setEpNum("sleep-idle-seconds", v)} />
+              <NumberInput label="SSE Ping (s)" flag="--sse-ping-interval" hint="Server SSE ping interval (-1=disabled, default: 30)" value={getEpNum("sse-ping-interval")}
+                onChange={(v) => setEpNum("sse-ping-interval", v)} />
             </div>
             <div className="space-y-3 mt-2">
               <Toggle label="Reuse Port" flag="--reuse-port" hint="Allow multiple sockets to bind to the same port" checked={hasFlag("reuse-port")} onChange={(v) => setFlag("reuse-port", v)} />
@@ -1573,9 +1601,9 @@ export default function Server() {
                 onChange={(v) => setEp("alias", v)} />
               <TextInput label="Tags" flag="--tags" hint="Model tags (informational)" value={getEp("tags")}
                 onChange={(v) => setEp("tags", v)} />
-              <TextInput label="API Prefix" hint="URL prefix without trailing slash" value={getEp("api-prefix")}
+              <TextInput label="API Prefix" flag="--api-prefix" hint="URL prefix without trailing slash" value={getEp("api-prefix")}
                 onChange={(v) => setEp("api-prefix", v)} />
-              <NumberInput label="Slot Prompt Similarity" hint="Min prompt match for slot reuse (0=disabled, default: 0.10)" value={getEpNum("slot-prompt-similarity")} step={0.01}
+              <NumberInput label="Slot Prompt Similarity" flag="--slot-prompt-similarity" hint="Min prompt match for slot reuse (0=disabled, default: 0.10)" value={getEpNum("slot-prompt-similarity")} step={0.01}
                 onChange={(v) => setEpNum("slot-prompt-similarity", v)} />
             </div>
 
@@ -1595,10 +1623,8 @@ export default function Server() {
               <Toggle label="MTP heads" hint="Enable embedded MTP heads (-MTP- models; forces parallel=1; single-model servers)" checked={hasFlag("spec-mtp")} onChange={(v) => setFlag("spec-mtp", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
-              <TextInput label="Embedding Separator" hint="Separator between embeddings (default: \\n)" value={getEp("embd-separator")}
-                onChange={(v) => setEp("embd-separator", v)} />
-              <TextInput label="Classification Separator" hint="Separator for classification sequences (default: \\t)" value={getEp("cls-separator")}
-                onChange={(v) => setEp("cls-separator", v)} />
+              <NumberInput label="Embedding Normalization" flag="--embd-normalize" hint="Embedding norm (-1=none, 0=max-int16, 1=taxicab, 2=euclidean, default: 2)" value={getEpNum("embd-normalize")} min={-1}
+                onChange={(v) => setEpNum("embd-normalize", v)} />
             </div>
 
             <Section title="SSL" />
@@ -1655,13 +1681,15 @@ export default function Server() {
                 onChange={(v) => setEpNum("reasoning-budget", v)} />
               <TextInput label="Budget Message" flag="--reasoning-budget-message" hint="Message injected when budget exhausted" value={getEp("reasoning-budget-message")}
                 onChange={(v) => setEp("reasoning-budget-message", v)} />
+              <SelectInput label="Reasoning Effort" flag="--reasoning-effort" hint="Effort level for the chat template (default: template default)" value={getEp("reasoning-effort") || "default"}
+                options={[{ value: "default", label: "Default" }, { value: "minimal", label: "Minimal" }, { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }, { value: "xhigh", label: "XHigh" }, { value: "max", label: "Max" }]}
+                onChange={(v) => setEp("reasoning-effort", v === "default" ? "" : v)} />
             </div>
 
             <Section title="Output" />
             <div className="space-y-3">
               <Toggle label="Escape Sequences" flag="--no-escape" hint="Process \\n, \\t etc (default: on)" checked={!hasFlag("no-escape")} onChange={(v) => setFlag("no-escape", !v)} />
               <Toggle label="Special Tokens" flag="--special" hint="Output special tokens" checked={hasFlag("special")} onChange={(v) => setFlag("special", v)} />
-              <Toggle label="Verbose Prompt" flag="--verbose-prompt" hint="Print verbose prompt before generation" checked={hasFlag("verbose-prompt")} onChange={(v) => setFlag("verbose-prompt", v)} />
               <Toggle label="SPM Infill" flag="--spm-infill" hint="Use Suffix/Prefix/Middle infill pattern" checked={hasFlag("spm-infill")} onChange={(v) => setFlag("spm-infill", v)} />
             </div>
             <div className="grid grid-cols-2 gap-3 mt-2">
@@ -1715,7 +1743,7 @@ export default function Server() {
               <SelectInput label="Spec Type" flag="--spec-type" hint="draft-* types use the draft model; ngram-* types do not" value={getEp("spec-type") || ""}
                 options={[{ value: "", label: "None" },
                   { value: "draft-simple", label: "Draft Simple" }, { value: "draft-eagle3", label: "Draft EAGLE3" },
-                  { value: "draft-mtp", label: "Draft MTP" }, { value: "draft-dspark", label: "Draft DSpark (DeepSeek V4)" },
+                  { value: "draft-mtp", label: "Draft MTP" }, { value: "draft-dflash", label: "Draft DFlash" }, { value: "draft-dspark", label: "Draft DSpark (DeepSeek V4)" },
                   { value: "ngram-cache", label: "N-gram Cache" }, { value: "ngram-simple", label: "N-gram Simple" },
                   { value: "ngram-map-k", label: "N-gram Map K" }, { value: "ngram-map-k4v", label: "N-gram Map K4V" }, { value: "ngram-mod", label: "N-gram Mod" }]}
                 onChange={(v) => setEp("spec-type", v)} />
@@ -1806,6 +1834,8 @@ export default function Server() {
                 onChange={(v) => setEp("control-vector", v)} />
               <TextInput label="Control Vector Scaled" flag="--control-vector-scaled" hint="FNAME:SCALE,... format" value={getEp("control-vector-scaled")}
                 onChange={(v) => setEp("control-vector-scaled", v)} />
+              <TextInput label="Control Vector Layer Range" flag="--control-vector-layer-range" hint="START END, e.g. 0 16" value={getEp("control-vector-layer-range")}
+                onChange={(v) => setEp("control-vector-layer-range", v)} />
             </div>
             <Toggle label="LoRA Init Without Apply" flag="--lora-init-without-apply" hint="Load adapters without applying (use POST /lora-adapters later)"
               checked={hasFlag("lora-init-without-apply")} onChange={(v) => setFlag("lora-init-without-apply", v)} />
@@ -1814,25 +1844,20 @@ export default function Server() {
             <div className="grid grid-cols-2 gap-3">
               <TextInput label="mmproj Path" flag="--mmproj" hint="Local path to projector file" value={config.mmproj_path ?? ""}
                 onChange={(v) => setConfig((c) => ({ ...c, mmproj_path: v || null }))} />
+              <TextInput label="mmproj Device" flag="--mmproj-device" hint="Device for the projector (default: follows --device)" value={getEp("mmproj-device")}
+                onChange={(v) => setEp("mmproj-device", v)} />
               <NumberInput label="Image Min Tokens" flag="--image-min-tokens" value={getEpNum("image-min-tokens")} min={0}
                 onChange={(v) => setEpNum("image-min-tokens", v)} />
               <NumberInput label="Image Max Tokens" flag="--image-max-tokens" value={getEpNum("image-max-tokens")} min={0}
                 onChange={(v) => setEpNum("image-max-tokens", v)} />
+              <NumberInput label="Image Batch Tokens" flag="--mtmd-batch-max-tokens" hint="Max image tokens per batch (default: 1024)" value={getEpNum("mtmd-batch-max-tokens")} min={0}
+                onChange={(v) => setEpNum("mtmd-batch-max-tokens", v)} />
             </div>
             <div className="space-y-3 mt-2">
               <Toggle label="mmproj Offload" flag="--no-mmproj-offload" hint="GPU offload for multimodal projector (default: on)"
                 checked={!hasFlag("no-mmproj-offload")} onChange={(v) => setFlag("no-mmproj-offload", !v)} />
               <Toggle label="mmproj Auto" hint="Auto-select projector when switching models (default: on)"
                 checked={autoMmproj} onChange={(v) => { setAutoMmproj(v); if (!v) setConfig((c) => ({ ...c, mmproj_path: null })); }} />
-            </div>
-
-            <Section title="TTS / Audio" />
-            <div className="grid grid-cols-2 gap-3">
-              <TextInput label="Vocoder Model" flag="--model-vocoder" hint="Path to vocoder model for audio/TTS generation" value={getEp("model-vocoder")}
-                onChange={(v) => setEp("model-vocoder", v)} />
-            </div>
-            <div className="space-y-3 mt-2">
-              <Toggle label="TTS Guide Tokens" flag="--tts-use-guide-tokens" hint="Use guide tokens to improve TTS word recall" checked={hasFlag("tts-use-guide-tokens")} onChange={(v) => setFlag("tts-use-guide-tokens", v)} />
             </div>
 
             <Section title="CPU Affinity" />
@@ -1865,11 +1890,6 @@ export default function Server() {
               <Toggle label="Log Prefix" flag="--log-prefix" hint="Add prefix to log messages" checked={hasFlag("log-prefix")} onChange={(v) => setFlag("log-prefix", v)} />
               <Toggle label="Log Timestamps" flag="--log-timestamps" hint="Add timestamps to log messages" checked={hasFlag("log-timestamps")} onChange={(v) => setFlag("log-timestamps", v)} />
               <Toggle label="Offline" flag="--offline" hint="Prevent network access, use cache only" checked={hasFlag("offline")} onChange={(v) => setFlag("offline", v)} />
-              <Toggle label="Profile" flag="--profile" hint="Enable cross-backend profiling (CPU, BLAS, CUDA)" checked={hasFlag("profile")} onChange={(v) => setFlag("profile", v)} />
-            </div>
-            <div className="grid grid-cols-2 gap-3 mt-2">
-              <TextInput label="Profile Output" flag="--profile-output" hint="Write profiling JSON to file (default: stdout)" value={getEp("profile-output")}
-                onChange={(v) => setEp("profile-output", v)} />
             </div>
 
             <Section title="Files & Tools" />
