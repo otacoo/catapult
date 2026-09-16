@@ -243,6 +243,9 @@ pub fn migrate_extra_params(extra: &mut HashMap<String, String>) -> bool {
         "spec-ngram-size-n",
         "spec-ngram-size-m",
         "spec-ngram-min-hits",
+        // Never existed: the draft model shares the main context size.
+        "spec-draft-ctx-size",
+        "ctx-size-draft",
     ];
     // Old → canonical rename. Some are still recognized by llama.cpp as aliases,
     // but we normalise to the canonical form so the UI and saved presets stay
@@ -256,7 +259,6 @@ pub fn migrate_extra_params(extra: &mut HashMap<String, String>) -> bool {
         ("draft-n-min", "spec-draft-n-min"),
         // Still accepted as aliases — normalise to canonical
         ("model-draft", "spec-draft-model"),
-        ("ctx-size-draft", "spec-draft-ctx-size"),
         ("n-gpu-layers-draft", "spec-draft-ngl"),
         ("gpu-layers-draft", "spec-draft-ngl"),
         ("device-draft", "spec-draft-device"),
@@ -2056,6 +2058,18 @@ mod tests {
         assert!(!ep.contains_key("spec-ngram-size-m"));
         assert!(!ep.contains_key("spec-ngram-min-hits"));
         assert_eq!(ep.get("kept"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn migrate_drops_bogus_draft_ctx_size() {
+        // spec-draft-ctx-size never existed (the draft shares the main
+        // context); a stale value bricks launches and must go.
+        let mut ep = HashMap::new();
+        ep.insert("spec-draft-ctx-size".to_string(), "4096".to_string());
+        ep.insert("spec-draft-n-max".to_string(), "7".to_string());
+        assert!(migrate_extra_params(&mut ep));
+        assert!(!ep.contains_key("spec-draft-ctx-size"));
+        assert_eq!(ep.get("spec-draft-n-max"), Some(&"7".to_string()));
     }
 
     #[test]

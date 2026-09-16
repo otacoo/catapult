@@ -1733,8 +1733,6 @@ export default function Server() {
                 onChange={(v) => setEpNum("spec-draft-p-min", v)} />
               <NumberInput label="Draft P Split" flag="--spec-draft-p-split" hint="Speculative split probability" value={getEpNum("spec-draft-p-split")} step={0.01}
                 onChange={(v) => setEpNum("spec-draft-p-split", v)} />
-              <NumberInput label="Draft Ctx Size" flag="--spec-draft-ctx-size" hint="0 = from model" value={getEpNum("spec-draft-ctx-size")} min={0}
-                onChange={(v) => setEpNum("spec-draft-ctx-size", v)} />
               <NumberInput label="Draft GPU Layers" flag="--spec-draft-ngl" value={getEpNum("spec-draft-ngl")}
                 onChange={(v) => setEpNum("spec-draft-ngl", v)} />
               <NumberInput label="Draft Threads" flag="--spec-draft-threads" hint="CPU threads for draft model generation" value={getEpNum("spec-draft-threads")}
