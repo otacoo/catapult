@@ -806,6 +806,8 @@ function HarnessChat() {
   const [streamText, setStreamText] = useState<string | null>(null);
   const [reasoningText, setReasoningText] = useState<string | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
+  // Reasoning deltas are still arriving (drives the "Thinking…" block label).
+  const [reasoningLive, setReasoningLive] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState("");
   // Reasoning levels come from the model's template — others 500. Hidden for
   // non-reasoning models.
@@ -1071,6 +1073,7 @@ function HarnessChat() {
     setStreamText("");
     setReasoningText(null);
     setReasoningOpen(false);
+    setReasoningLive(false);
     liveSubs.current = 0;
     setRunStatus("thinking");
     setError(null);
@@ -1095,16 +1098,19 @@ function HarnessChat() {
           if (!contentStarted) {
             contentStarted = true;
             setReasoningOpen(false);
+            setReasoningLive(false);
           }
           setRunStatus("thinking");
           break;
         case "reasoning_delta":
           reasoningAcc += ev.text ?? "";
           setReasoningText(reasoningAcc);
+          setReasoningLive(true);
           break;
         case "tool_call":
           setStreamText(null);
           setReasoningOpen(false);
+          setReasoningLive(false);
           setRunStatus("thinking");
           setItems((prev) => [
             ...prev,
@@ -1209,6 +1215,8 @@ function HarnessChat() {
     } finally {
       setStreaming(false);
       setStreamText(null);
+      setReasoningText(null);
+      setReasoningLive(false);
       setAttachments([]);
       liveSubs.current = 0;
       setRunStatus(null);
@@ -1483,7 +1491,7 @@ function HarnessChat() {
             <div className="max-w-[80%] w-full">
               <ReasoningBlock
                 text={reasoningText}
-                streaming
+                streaming={reasoningLive}
                 open={reasoningOpen}
                 onToggle={() => setReasoningOpen((v) => !v)}
               />
