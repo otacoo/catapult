@@ -147,7 +147,6 @@ export default function Models() {
     }
   };
 
-  // Re-run search when sort changes (but only if results already exist)
   useEffect(() => {
     if (searchResults.length > 0 && (searchQuery.trim() || selectedOwner)) {
       doSearch();
@@ -175,7 +174,6 @@ export default function Models() {
     file: HfFile,
     companionModel?: string
   ) => {
-    // Clear any paused state for this file
     setDownloads((prev) => {
       const { [file.filename]: _, ...rest } = prev;
       return rest;
@@ -190,7 +188,7 @@ export default function Models() {
         companionModel: companionModel ?? null,
       });
     } catch (e) {
-      // Expected when retries exhausted, paused, or cancelled by the user.
+      // Pauses/cancels/retries are expected — only surface real failures.
       const msg = String(e);
       if (!msg.includes("failed after") && !msg.includes("cancelled") && !msg.includes("paused")) {
         setError(msg);
@@ -203,7 +201,6 @@ export default function Models() {
     const mmprojFiles = files.filter((f) => f.is_mmproj);
     const dsparkFiles = files.filter((f) => f.is_dspark);
     if (file.is_mmproj || file.is_dspark) {
-      // The clicked file IS a companion; just download it.
       startDownload(repoId, file);
     } else if (mmprojFiles.length > 0 || dsparkFiles.length > 0) {
       setMmProjPicker({ repoId, file, mmprojFiles, dsparkFiles });
@@ -331,13 +328,11 @@ export default function Models() {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      {/* Header */}
       <div className="px-6 pt-6 pb-4 border-b border-border">
         <h1 className="text-2xl font-bold text-gray-100">Models</h1>
         <p className="text-gray-500 text-sm mt-1">
           Download and manage GGUF models
         </p>
-        {/* Tabs */}
         <div className="flex gap-1 mt-4">
           {tabs.map((t) => (
             <button
@@ -429,7 +424,6 @@ export default function Models() {
             .filter((m) => !quantFilter || (m.quant ?? "").toLowerCase().includes(quantFilter.toLowerCase()));
 
           const sorted = [...filtered].sort((a, b) => {
-            // Favorites first when no explicit column sort
             if (!explicitSort) {
               const aFav = favorites.includes(a.id) ? 0 : 1;
               const bFav = favorites.includes(b.id) ? 0 : 1;
@@ -475,7 +469,6 @@ export default function Models() {
                 </div>
               ) : (
                 <>
-                  {/* Filter row */}
                   <div className="flex items-center gap-3 mb-3">
                     <div className="flex items-center gap-1.5 flex-1">
                       <Filter size={12} className="text-gray-500" />
@@ -487,7 +480,6 @@ export default function Models() {
                     <span className="text-xs text-gray-500">{sorted.length} model{sorted.length !== 1 ? "s" : ""}</span>
                   </div>
 
-                  {/* Table header */}
                   <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-[10px] font-semibold text-gray-500 uppercase tracking-wider select-none">
                     <button className="w-6 flex justify-center" title="Reset to favorites-first"
                       onClick={() => { setSortCol("name"); setSortDir("asc"); setExplicitSort(false); }}>
@@ -511,7 +503,6 @@ export default function Models() {
                     <span className="w-8" />
                   </div>
 
-                  {/* Table rows */}
                   <div>
                     {sorted.map((m) => {
                       const isFav = favorites.includes(m.id);
@@ -700,7 +691,6 @@ export default function Models() {
         {/* ── Browse tab ── */}
         {tab === "browse" && (
           <div className="space-y-4">
-            {/* Search bar */}
             <div className="flex gap-2">
               <div className="flex-1 relative">
                 <Search
@@ -745,7 +735,6 @@ export default function Models() {
               </button>
             </div>
 
-            {/* Results */}
             {searchResults.length > 0 ? (
               <div className="space-y-2">
                 {searchResults.map((model) => {
@@ -939,7 +928,6 @@ export default function Models() {
         {/* ── Settings tab ── */}
         {tab === "settings" && (
           <div className="space-y-6">
-            {/* Download directory */}
             <div className="card">
               <h2 className="section-title">Download Directory</h2>
               <p className="text-xs text-gray-500 mb-3">
@@ -955,7 +943,6 @@ export default function Models() {
               </div>
             </div>
 
-            {/* Scan directories */}
             <div className="card">
               <div className="flex items-center justify-between mb-3">
                 <div>
@@ -1014,7 +1001,6 @@ export default function Models() {
               </div>
             </div>
 
-            {/* Preferred quant sources */}
             <div className="card">
               <h2 className="section-title">Preferred Quant Sources</h2>
               <p className="text-xs text-gray-500 mb-3">
@@ -1029,7 +1015,6 @@ export default function Models() {
         )}
       </div>
 
-      {/* Companion files picker (mmproj / dspark) */}
       {mmProjPicker && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"

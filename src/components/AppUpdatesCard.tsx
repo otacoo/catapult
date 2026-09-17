@@ -45,7 +45,6 @@ export default function AppUpdatesCard() {
       setUpdateVersion(update?.version ?? null);
       setPendingUpdate(update);
     } catch {
-      // noop
     } finally {
       setCheckingUpdate(false);
       setCheckedUpdate(true);

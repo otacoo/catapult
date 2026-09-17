@@ -42,7 +42,6 @@ export default function Tools() {
   const selectedRef = useRef<Set<string>>(new Set());
   const saveTimer = useRef<number | null>(null);
 
-  // MCP editor state
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState<McpServerEntry>(emptyEntry());
@@ -50,7 +49,7 @@ export default function Tools() {
   const [envText, setEnvText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Live server tools probe (what the running server actually advertises at /tools)
+  // Live probe of what the running server advertises at /tools.
   const [liveTools, setLiveTools] = useState<ServerToolInfo[] | null>(null);
   const [liveToolsError, setLiveToolsError] = useState<string | null>(null);
   const [liveToolsLoading, setLiveToolsLoading] = useState(false);
@@ -216,7 +215,6 @@ export default function Tools() {
         </div>
       )}
 
-      {/* Live server tools probe */}
       <div className="card">
         <div className="flex items-center justify-between mb-1">
           <h2 className="section-title mb-0">Live Server Tools</h2>
@@ -263,7 +261,6 @@ export default function Tools() {
         ) : null}
       </div>
 
-      {/* Built-in tools */}
       <div className="card">
         <h2 className="section-title mb-1">Built-in Tools</h2>
         <p className="section-desc">
@@ -297,7 +294,6 @@ export default function Tools() {
         </div>
       </div>
 
-      {/* MCP servers */}
       <div className="card">
         <div className="flex items-center justify-between mb-1">
           <h2 className="section-title mb-0">MCP Servers</h2>

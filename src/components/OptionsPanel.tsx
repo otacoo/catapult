@@ -272,7 +272,6 @@ export default function OptionsPanel({ open, onClose }: {
 
   // Local draft so typing doesn't hammer config writes; null = pristine.
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
-  // Built-in default, shown in the textarea when no override is stored.
   const [builtInPrompt, setBuiltInPrompt] = useState<string | null>(null);
   useEffect(() => {
     if (open) {
@@ -418,7 +417,6 @@ export default function OptionsPanel({ open, onClose }: {
   );
 
   const storedPrompt = appConfig?.harness_system_prompt ?? "";
-  // What the textarea shows: the override, or the built-in default.
   const shownBase = storedPrompt !== "" ? storedPrompt : builtInPrompt ?? "";
   const promptDirty =
     promptDraft !== null && promptDraft.trim() !== shownBase.trim();
@@ -513,7 +511,6 @@ export default function OptionsPanel({ open, onClose }: {
       style={{ display: open ? undefined : "none" }}
       className="absolute inset-x-0 bottom-0 top-11 z-40 flex bg-surface-0"
     >
-      {/* Category sidebar */}
       <aside className="w-52 shrink-0 border-r border-border bg-surface-1 p-3 overflow-y-auto">
         <div className="flex items-center justify-between px-2 pb-3 pt-1">
           <span className="text-sm font-semibold text-gray-200">Settings</span>
@@ -543,7 +540,6 @@ export default function OptionsPanel({ open, onClose }: {
         </div>
       </aside>
 
-      {/* Content pane */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl space-y-4">
           {section === "general" && (

@@ -63,7 +63,6 @@ export default function Api() {
     return () => clearInterval(id);
   }, []);
 
-  // Refresh endpoint info when the server transitions to running
   useEffect(() => {
     if (status.type === "running") {
       loadInfo();
@@ -109,7 +108,6 @@ export default function Api() {
         </div>
       )}
 
-      {/* Endpoints */}
       <div className="card">
         <h2 className="section-title">Endpoints</h2>
         <div className="space-y-1.5 mt-3">
@@ -122,7 +120,6 @@ export default function Api() {
         </div>
       </div>
 
-      {/* Loaded model */}
       <div className="card">
         <h2 className="section-title">
           {info?.router_mode ? "Serving Model (router)" : "Loaded Model"}
@@ -151,7 +148,6 @@ export default function Api() {
         </div>
       </div>
 
-      {/* Router registry */}
       {info?.router_mode && (info.models ?? []).length > 0 && (
         <div className="card">
           <h2 className="section-title">Registered Models</h2>
@@ -173,7 +169,6 @@ export default function Api() {
         </div>
       )}
 
-      {/* Client config */}
       {info && (
         <div className="card">
           <h2 className="section-title">Client Configuration</h2>

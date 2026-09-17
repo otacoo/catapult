@@ -129,8 +129,6 @@ function formatTime(ts: number): string {
 
 // ── Sidebar: projects + sessions ────────────────────────────────────────────
 
-// ── Sidebar: projects + sessions ────────────────────────────────────────────
-
 function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   onProjectChanged: () => void;
   onSessionPicked: () => void;
@@ -292,7 +290,6 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
 
   return (
     <aside className="w-60 shrink-0 border-r border-border bg-surface-1 flex flex-col overflow-y-auto">
-      {/* Projects */}
       <div className="p-3 border-b border-border">
         <div className="flex items-center justify-between px-1 mb-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Projects</span>
@@ -333,7 +330,6 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
         </div>
       </div>
 
-      {/* Worktrees — shown when the active project is a git repo */}
       {active && isGitRepo && (
         <div className="p-3 border-b border-border">
           <button
@@ -398,7 +394,6 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
         </div>
       )}
 
-      {/* Read allowlist — extra read-only paths outside the active project */}
       {active && (
         <div className="p-3 border-b border-border">
           <button
@@ -458,7 +453,6 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
         </div>
       )}
 
-      {/* Chat sessions — only with a project selected */}
       {active && (
       <div className="flex-1 overflow-y-auto p-3">
         <button
@@ -530,7 +524,6 @@ function ResponseFooter({ model, tokps, elapsedMs, tokens, onCopy, onDelete }: {
   onDelete?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  // Metadata segments joined with a small dot separator.
   const parts: { key: string; node: ReactNode }[] = [];
   if (model) parts.push({ key: "model", node: <span className="font-mono truncate max-w-[200px]">{model}</span> });
   if (tokps != null && tokps > 0) parts.push({ key: "tokps", node: <span className="tabular-nums">{tokps.toFixed(1)} t/s</span> });
@@ -809,16 +802,13 @@ function HarnessChat() {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  // Slash-command autocomplete popup, dismissed with Escape until the input changes.
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [streamText, setStreamText] = useState<string | null>(null);
-  // Reasoning buffer for the in-flight run (shown as a collapsible block).
   const [reasoningText, setReasoningText] = useState<string | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState("");
-  // Reasoning support comes from the model's own chat template (levels only
-  // the server accepts — sending anything else 500s). The control stays
-  // hidden for non-reasoning models.
+  // Reasoning levels come from the model's template — others 500. Hidden for
+  // non-reasoning models.
   const [reasoningOpts, setReasoningOpts] = useState<{ supported: boolean; levels: string[] } | null>(null);
   const [caps, setCaps] = useState<HarnessCapabilities | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -829,8 +819,6 @@ function HarnessChat() {
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeProject, setActiveProject] = useState<string | null>(null);
-  // Run status shown under the input: the model is warming up/loading vs. the
-  // agent is actively reasoning over the request vs. a subagent is working.
   const [runStatus, setRunStatus] = useState<"thinking" | "loading" | "working" | null>(null);
   // Live subagent count (ref: updated from stream events, no re-render needed
   // beyond the status line it drives).
@@ -892,9 +880,6 @@ function HarnessChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Rebuild the visible transcript from the backend (after a session load,
-  // project switch, or reset). User + plain assistant turns are restored;
-  // tool-call detail lives server-side.
   const restoreFromBackend = async () => {
     try {
       const res = await invoke<{
@@ -984,7 +969,6 @@ function HarnessChat() {
     } catch {}
   };
 
-  // Average generation speed across the current session's assistant turns.
   const avgTokps = (() => {
     const vals = items.flatMap((it) =>
       it.kind === "msg" && it.role === "assistant" && it.tokps != null && it.tokps > 0 ? [it.tokps as number] : [],
@@ -992,7 +976,6 @@ function HarnessChat() {
     return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
   })();
 
-  // Latest assistant turn, for the context-ring details.
   const lastAssistant = (() => {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -1035,7 +1018,6 @@ function HarnessChat() {
     return () => cancelAnimationFrame(raf);
   }, [items, streamText, reasoningText]);
 
-  // Slash-command autocomplete: a single-token "/" prefix filters SLASH_COMMANDS.
   const slashMatches = !slashDismissed && input.startsWith("/") && !/\s/.test(input)
     ? SLASH_COMMANDS.filter((c) => c.name.startsWith(input.toLowerCase()))
     : [];
@@ -1119,7 +1101,6 @@ function HarnessChat() {
         case "reasoning":
           reasoningAcc += ev.text ?? "";
           setReasoningText(reasoningAcc);
-          // Collapsed by default ("Thinking…" label) — expandable via chevron.
           break;
         case "tool_call":
           setStreamText(null);
@@ -1353,7 +1334,6 @@ function HarnessChat() {
       )}
 
       <div className="flex-1 flex flex-col min-h-0 min-w-0">
-        {/* Header */}
         <div className="flex items-center justify-between px-4 py-1.5 border-b border-border">
           <button
             className="text-xs text-gray-500 hover:text-gray-300"
@@ -1372,7 +1352,6 @@ function HarnessChat() {
           </button>
         </div>
 
-        {/* Availability banners */}
         {!serverRunning && (
           <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border text-[11px] text-gray-500">
             <RefreshCw size={11} className={status.type === "starting" ? "animate-spin" : ""} />
@@ -1463,7 +1442,6 @@ function HarnessChat() {
                 />
               );
             }
-            // Approval card
             return (
               <div key={i} className="flex justify-start">
                 <div className="max-w-[85%] rounded border border-accent-yellow/40 bg-accent-yellow/5 px-3 py-2 text-xs">
@@ -1533,7 +1511,6 @@ function HarnessChat() {
             </div>
           )}
 
-          {/* Run status: loading (model warming up) / thinking (agent reasoning) / working (subagent active) */}
           {streaming && (
             <div className="px-6 pb-1 flex items-center gap-1.5 text-[11px] text-gray-500 select-none">
               {runStatus === "loading" ? (
@@ -1555,7 +1532,6 @@ function HarnessChat() {
             </div>
           )}
 
-          {/* Input */}
         <div className="border-t border-border p-3">
           {slashMatches.length > 0 && (
             <div className="mb-2 rounded border border-border bg-surface-2 py-1">
@@ -1641,9 +1617,7 @@ function HarnessChat() {
                 }
               }}
             />
-            {/* Capability badges + reasoning effort, stacked next to Send.
-                The effort control only appears for reasoning models, and only
-                offers levels the active model's template accepts. */}
+            {/* Reasoning effort offers only levels the model's template accepts. */}
             <div className="flex flex-col items-start gap-1 shrink-0 pb-0.5">
               <div className="flex items-center gap-1.5 h-4" title="Model capabilities">
                 {caps?.vision && (

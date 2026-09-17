@@ -7,9 +7,7 @@ export interface ToolDef {
   dangerous?: boolean;
 }
 
-// Only tools available across llama.cpp builds are listed here — some builds
-// add extra tools (apply_diff, get_datetime) which are *not* offered because
-// enabling an unknown tool makes the server fail to start.
+// Only cross-build tools are listed — unknown names fail server startup.
 export const KNOWN_TOOLS: ToolDef[] = [
   { name: "read_file", label: "Read File", hint: "Read text files (16 KB max per read)" },
   { name: "grep_search", label: "Grep Search", hint: "Search file contents with regex" },
@@ -20,9 +18,7 @@ export const KNOWN_TOOLS: ToolDef[] = [
   { name: "exec_shell_command", label: "Shell Command", hint: "Run arbitrary shell commands (also gates the agent harness shell)", dangerous: true },
 ];
 
-// Effective set of enabled tools. "all" expands to every known tool; names not
-// in KNOWN_TOOLS are dropped because passing an unknown tool name makes the
-// server fail to start.
+// "all" expands to every known tool; unknown names are dropped (they fail startup).
 export function effectiveTools(value: string): Set<string> {
   const sel = new Set<string>();
   if (!value) return sel;
@@ -37,8 +33,6 @@ export function effectiveTools(value: string): Set<string> {
   return sel;
 }
 
-// Canonical --tools argument for a value: "" (off), "all", or a sorted
-// comma-separated list.
 export function toolsArgValue(value: string): string {
   const sel = effectiveTools(value);
   if (sel.size === 0) return "";

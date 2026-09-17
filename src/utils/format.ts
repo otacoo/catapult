@@ -1,4 +1,3 @@
-/** "Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz" → "i7-9700K" */
 export function shortCpuName(raw: string): string {
   const clean = raw.replace(/\(R\)|\(TM\)/g, "").replace(/\s+/g, " ");
   const m =
@@ -11,7 +10,6 @@ export function shortCpuName(raw: string): string {
   return m ? m[0] : clean.replace(/\s+CPU.*/, "").trim();
 }
 
-/** "NVIDIA GeForce RTX 3080" → "RTX 3080" */
 export function shortGpuName(raw: string): string {
   const m =
     raw.match(/RTX \w+(\s*Ti)?(\s*SUPER)?/) ||

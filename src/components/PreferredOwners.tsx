@@ -82,14 +82,12 @@ export default function PreferredOwners({ owners, onChange }: Props) {
 
   return (
     <div>
-      {/* Owner list */}
       <div className="space-y-1">
         {owners.map((owner, i) => (
           <div
             key={`${owner}-${i}`}
             className="flex items-center gap-1.5 px-2 py-1.5 border border-border hover:border-border-strong transition-colors group"
           >
-            {/* Reorder buttons */}
             <div className="flex flex-col gap-0.5">
               <button
                 className="text-gray-600 hover:text-gray-300 disabled:opacity-20 disabled:cursor-default"
@@ -133,7 +131,6 @@ export default function PreferredOwners({ owners, onChange }: Props) {
         )}
       </div>
 
-      {/* Add input */}
       <div className="mt-3 flex gap-2 items-start">
         <div className="flex-1">
           <div className="flex gap-2">
@@ -170,7 +167,6 @@ export default function PreferredOwners({ owners, onChange }: Props) {
         </div>
       </div>
 
-      {/* Reset to defaults */}
       {!isDefault && (
         <button
           className="btn-ghost text-xs mt-3"

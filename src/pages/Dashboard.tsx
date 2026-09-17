@@ -100,9 +100,7 @@ export default function Dashboard() {
         const merged = { ...suggested, ...defaults, model_path: suggested.model_path, mmproj_path: suggested.mmproj_path };
         if (merged.extra_params) merged.extra_params = sanitizeTools({ ...merged.extra_params });
         config = merged;
-      } catch {
-        // No saved defaults — use suggested config as-is
-      }
+      } catch {}
       await invoke("start_server", { config });
     } catch (e) {
       setError(String(e));
@@ -187,7 +185,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* System info cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div className="card flex items-start gap-3">
           <div className="w-8 h-8 bg-accent-blue/15 flex items-center justify-center shrink-0">
@@ -264,7 +261,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Quick launch bar */}
       <div className="card">
         <div className="flex items-center gap-4">
           <div className="flex-1 min-w-0">
@@ -334,7 +330,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Status row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <button
           className="card text-left hover:border-border-strong transition-colors group"
@@ -436,7 +431,6 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Quick start */}
       {(!runtime?.installed || models.length === 0) && (
         <div className="card border-accent-yellow/30 bg-accent-yellow/5">
           <div className="flex items-start gap-3">
@@ -483,7 +477,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Favorite models */}
       {favoriteModels.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-gray-300 mb-3">
@@ -504,7 +497,6 @@ export default function Dashboard() {
                       : "border-border"
                   }`}
                 >
-                  {/* Favorite toggle */}
                   <button
                     className="shrink-0"
                     onClick={() => toggleFavorite(m.id)}
@@ -520,7 +512,6 @@ export default function Dashboard() {
                     />
                   </button>
 
-                  {/* Model info */}
                   <HardDrive size={14} className="text-gray-500 shrink-0" />
                   <span className="flex-1 text-sm text-gray-300 truncate">
                     {m.name}
@@ -538,7 +529,6 @@ export default function Dashboard() {
                     {(m.size_bytes / (1024 ** 3)).toFixed(1)} GB
                   </span>
 
-                  {/* Deploy button */}
                   <button
                     className="shrink-0"
                     onClick={() => selectForServer(m.path)}
@@ -554,7 +544,6 @@ export default function Dashboard() {
                     />
                   </button>
 
-                  {/* Delete */}
                   {isDeleting ? (
                     <div className="flex items-center gap-1">
                       <button

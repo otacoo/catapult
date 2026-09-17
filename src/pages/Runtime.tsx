@@ -108,7 +108,6 @@ export default function Runtime() {
   };
 
   const startUpdate = async () => {
-    // Use already-fetched release info; pick the best asset
     let rel = release;
     if (!rel) {
       try {
@@ -152,7 +151,6 @@ export default function Runtime() {
         setCustomBuilds(null);
         setError("No llama-server binary found in the selected directory.");
       } else if (result.is_source_distribution) {
-        // llama.cpp source tree: add all builds as custom runtimes
         await invoke("add_all_custom_runtime_binaries", {
           builds: result.builds,
         });
@@ -240,7 +238,6 @@ export default function Runtime() {
   const latestBuild = release?.build;
   const updateAvailable = activeBuild != null && latestBuild != null && latestBuild > activeBuild;
 
-  // Split managed runtimes: archived = older than latest release
   const archivedMr = latestBuild != null
     ? managed.filter((r) => r.build < latestBuild)
     : [];
@@ -386,7 +383,6 @@ export default function Runtime() {
           <p className="text-sm text-gray-500">No managed runtimes installed. Download one from GitHub releases.</p>
         ) : (
           <>
-            {/* Current managed runtimes */}
             <div className="space-y-1.5">
               {currentMr.map((r) => {
                 const isActive = r.build === activeBuild && r.backend_id === activeBackendId;
@@ -420,7 +416,6 @@ export default function Runtime() {
               })}
             </div>
 
-            {/* Archived runtimes (older than latest release) */}
             {archivedMr.length > 0 && (
               <>
                 <button className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 mt-2"

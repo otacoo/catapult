@@ -89,7 +89,6 @@ export default function Wizard() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
 
-  // Step 1 state
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [release, setRelease] = useState<ReleaseInfo | null>(null);
@@ -102,7 +101,6 @@ export default function Wizard() {
   const [checkingBuilds, setCheckingBuilds] = useState(false);
   const [checkedBuilds, setCheckedBuilds] = useState(false);
 
-  // Step 2 state
   const [recommended, setRecommended] = useState<RecommendedModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [modelProgress, setModelProgress] = useState<Record<string, DownloadProgress>>({});
@@ -110,10 +108,9 @@ export default function Wizard() {
   const [modelsError, setModelsError] = useState<Record<string, string>>({});
   const [downloading, setDownloading] = useState(false);
 
-  // Step 3 state
   const [theme, setTheme] = useState<AppTheme>("system");
 
-  // Load local info on mount (no network calls)
+  // Local-only lookup; network checks happen on demand.
   useEffect(() => {
     const load = async () => {
       const [sys, rt, cfg] = await Promise.all([
@@ -142,13 +139,11 @@ export default function Wizard() {
         if (p.status === "done") {
           setRuntimeDone(true);
           setRuntimeProgress(null);
-          // Reload runtime info
           invoke<RuntimeInfo>("get_runtime_info")
             .then((rt) => setRuntime(rt))
             .catch(() => {});
         }
       } else {
-        // Model download
         if (p.status === "done") {
           setModelsDone((prev) => new Set(prev).add(p.id));
           setModelProgress((prev) => {
@@ -300,7 +295,7 @@ export default function Wizard() {
           setModelsError((prev) => ({ ...prev, [m.filename]: "File not found in repo" }));
           continue;
         }
-        // Fire and forget — progress comes via events
+        // Progress arrives via events so no await here.
         invoke("download_model", {
           repoId: m.repo_id,
           filename: m.filename,
@@ -321,7 +316,7 @@ export default function Wizard() {
       (f) => modelsDone.has(f) || recommended.find((m) => m.filename === f)?.installed
     );
 
-  // Filter and sort models: fits first, then by size
+  // Best-fit models first, then smallest.
   const sortedModels = [...recommended].sort((a, b) => {
     const fitOrder: Record<FitLevel, number> = { vram: 0, mixed: 1, tight: 2, no: 3 };
     const aFit = modelFit(a.estimated_size_mb, totalVram, totalRam);
@@ -334,9 +329,7 @@ export default function Wizard() {
 
   return (
     <div className="h-full flex flex-col bg-surface-0">
-      {/* Header / Title bar */}
       <div className="relative flex items-center justify-between px-8 h-14 border-b border-border shrink-0 bg-surface-0">
-        {/* Drag region */}
         <div
           className="absolute inset-0"
           onMouseDown={(e) => {
@@ -376,7 +369,6 @@ export default function Wizard() {
         </div>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-6">
         {step === 1 ? (
           <div className="max-w-2xl mx-auto space-y-6">
@@ -405,7 +397,6 @@ export default function Wizard() {
               </div>
             )}
 
-            {/* System summary */}
             {system && (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <div className="card flex items-center gap-2">
@@ -449,7 +440,6 @@ export default function Wizard() {
               </div>
             )}
 
-            {/* Runtime already installed */}
             {runtimeDone && runtime?.installed && (
               <div className="card border-accent-green/30 bg-accent-green/5">
                 <div className="flex items-center gap-2">
@@ -471,7 +461,6 @@ export default function Wizard() {
               </div>
             )}
 
-            {/* Custom build picker */}
             {customBuilds && customBuilds.length > 1 && (
               <div className="card">
                 <h3 className="text-sm font-semibold text-gray-200 mb-2">
@@ -494,7 +483,6 @@ export default function Wizard() {
               </div>
             )}
 
-            {/* Download progress */}
             {runtimeProgress && runtimeProgress.status !== "done" && (
               <div className="card">
                 <div className="flex items-center justify-between mb-2">
@@ -516,7 +504,6 @@ export default function Wizard() {
               </div>
             )}
 
-            {/* Asset selection (only if runtime not yet installed) */}
             {!runtimeDone && !runtimeProgress && (
               <>
                 {!checkedBuilds ? (
@@ -764,7 +751,6 @@ export default function Wizard() {
         )}
       </div>
 
-      {/* Footer */}
       <div className="flex items-center justify-between px-8 py-4 border-t border-border">
         <div>
           {step > 1 && (

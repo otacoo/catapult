@@ -1,10 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 
-// Tiny store for app-wide settings that multiple views react to live (nav
-// items, Run header buttons). The source of truth is AppConfig; this mirrors
-// the values in memory so toggling in the settings window updates instantly.
-
+// Mirrors AppConfig in memory so settings-window toggles update views instantly.
 let quickBenchEnabled = true;
 const listeners = new Set<(v: boolean) => void>();
 
@@ -23,7 +20,6 @@ export function subscribeQuickBench(cb: (v: boolean) => void): () => void {
   return () => listeners.delete(cb);
 }
 
-/** Load the persisted value once (call from Layout on mount). */
 export function loadQuickBenchEnabled(): void {
   invoke<{ enable_quick_bench: boolean }>("get_config")
     .then((c) => setQuickBenchEnabled(c.enable_quick_bench))
@@ -54,7 +50,6 @@ export function subscribeUpdateState(cb: (s: UpdateState) => void): () => void {
   return () => updateListeners.delete(cb);
 }
 
-/** Runs when "check for updates on app start" is enabled (Layout mount). */
 export function checkForAppUpdateOnStartup(): void {
   invoke<{ auto_check_updates: boolean }>("get_config")
     .then((c) => {

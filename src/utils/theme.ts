@@ -15,14 +15,12 @@ export const THEME_OPTIONS: {
 
 let currentPref: AppTheme = "catapult";
 
-/** Map a preference to the concrete appearance to render. */
 export function resolvePref(pref: AppTheme): ResolvedTheme {
   if (pref === "light") return "light";
   if (pref === "dark" || pref === "catapult") return "dark";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-/** Apply a preference immediately: `data-theme` drives the CSS token palettes. */
 export function applyPref(pref: AppTheme): void {
   const el = document.documentElement;
   const resolved = resolvePref(pref);
@@ -30,16 +28,12 @@ export function applyPref(pref: AppTheme): void {
   el.style.colorScheme = resolved;
 }
 
-/** Set the preference and persist the live state (used by the UI). */
 export function setThemePreference(pref: AppTheme): void {
   currentPref = pref;
   applyPref(pref);
 }
 
-/**
- * Boot-time init: apply the stored preference and keep "system" in sync with
- * the OS when it changes while the app is running.
- */
+/** Boot init: apply stored pref; keep "system" in sync with OS changes. */
 export function initTheme(pref: AppTheme): void {
   currentPref = pref;
   applyPref(pref);

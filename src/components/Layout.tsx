@@ -76,8 +76,7 @@ export default function Layout() {
     };
   }, []);
 
-  // Close the options panel when clicking outside of it (gear button included,
-  // so its click toggles rather than re-opens).
+  // Close on outside click; gear button toggles so exclude it.
   useEffect(() => {
     if (!optionsOpen) return;
     const onDocMouseDown = (e: MouseEvent) => {
@@ -96,11 +95,10 @@ export default function Layout() {
 
   return (
     <div className="relative flex flex-col h-full bg-surface-0">
-      {/* Title bar — custom, replaces OS decorations */}
       <div
         className="relative flex items-center h-11 px-3 border-b border-primary/25 shrink-0 bg-primary/8"
       >
-        {/* Drag region — fills entire title bar behind interactive elements */}
+        {/* Drag region fills the bar behind buttons so empty areas still drag. */}
         <div
           className="absolute inset-0"
           onMouseDown={(e) => {
@@ -109,7 +107,6 @@ export default function Layout() {
           onDoubleClick={() => getCurrentWindow().toggleMaximize()}
         />
 
-        {/* Logo / home */}
         <button
           onClick={() => navigate("/dashboard")}
           disabled={onDashboard}
@@ -126,13 +123,10 @@ export default function Layout() {
           </span>
         </button>
 
-        {/* Version + update indicator */}
         <VersionInfo />
 
-        {/* Separator */}
         <div className="relative z-10 w-px h-5 bg-primary/20 mx-3" />
 
-        {/* Nav */}
         <nav className="relative z-10 flex items-center gap-0.5">
           {navItems
             .filter((item) => !item.quickBench || quickBench)
@@ -155,7 +149,6 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Options + window controls */}
         <div className="relative z-10 ml-auto flex items-center">
           <button
             ref={optionsBtnRef}
@@ -177,12 +170,11 @@ export default function Layout() {
         </div>
       </div>
 
-      {/* Options panel — stays mounted so update checks keep running */}
+      {/* Stays mounted so update checks keep running. */}
       <div data-options-panel>
         <OptionsPanel open={optionsOpen} onClose={() => setOptionsOpen(false)} />
       </div>
 
-      {/* Main */}
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
         <div style={{ display: location.pathname === "/chat" ? "none" : "flex", flex: 1, overflow: "hidden", flexDirection: "column", minWidth: 0 }}>
           <Outlet />

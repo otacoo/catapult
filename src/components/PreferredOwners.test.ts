@@ -32,7 +32,6 @@ describe("DEFAULT_PREFERRED_OWNERS", () => {
   });
 });
 
-// Test the pure array manipulation logic used by the component
 describe("preferred owners list operations", () => {
   const initial = ["ggml-org", "bartowski", "unsloth"];
 
