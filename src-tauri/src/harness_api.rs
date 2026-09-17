@@ -24,6 +24,9 @@ File tools are rooted at that directory; relative paths resolve there. \
 Prefer the native file tools (read_file, find_files, search_content) over shell listing/searching. \
 Read-only operations run automatically; writes and shell commands may require user approval — \
 if denied, adapt instead of retrying the same call. \
+Learn across sessions: when the user states a durable preference or corrects you, save it with the \
+remember tool (project scope unless it is about the user themselves); when you work out a reusable \
+procedure worth repeating, save it as a skill with the manage_skill tool. Keep memories short. \
 Work step by step: read before editing, make small exact edits, verify results, \
 and give a concise summary when done.",
         harness::agent::os_shell_snippet()
@@ -1045,6 +1048,95 @@ pub async fn set_harness_max_turns(
     config.harness_max_turns = orchestrator.clamp(1, 500);
     config.harness_subagent_max_turns = subagent.clamp(1, 200);
     config.save().map_err(|e| e.to_string())
+}
+
+// ── Memory (MEMORY.md) settings ─────────────────────────────────────────────
+
+/// One editable memory file: where it lives and what it says.
+#[derive(Debug, Serialize)]
+pub struct MemoryFile {
+    pub scope: String,
+    pub path: String,
+    pub exists: bool,
+    pub text: String,
+}
+
+fn global_memory_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_default()
+        .join("catapult")
+        .join("MEMORY.md")
+}
+
+fn memory_file(scope: &str, state: &AppState) -> Result<MemoryFile, String> {
+    match scope {
+        "global" => {
+            let path = global_memory_path();
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            Ok(MemoryFile { scope: scope.into(), path: path.to_string_lossy().to_string(), exists: path.exists(), text })
+        }
+        "project" => {
+            let root = project_root(state)?;
+            let path = harness::memory::project_memory_path(&root);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            Ok(MemoryFile { scope: scope.into(), path: path.to_string_lossy().to_string(), exists: path.exists(), text })
+        }
+        _ => Err("Unknown memory scope".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn harness_memory_get(scope: String, state: State<'_, AppState>) -> Result<MemoryFile, String> {
+    memory_file(&scope, &state)
+}
+
+#[tauri::command]
+pub async fn harness_memory_set(scope: String, text: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = memory_file(&scope, &state)?.path;
+    if text.len() > harness::memory::MEMORY_FILE_CAP {
+        return Err(format!(
+            "Memory file too large ({} KiB max) — trim it first",
+            harness::memory::MEMORY_FILE_CAP / 1024
+        ));
+    }
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
+// ── Skills settings ─────────────────────────────────────────────────────────
+
+/// One discovered skill with its scope (project beats global on name conflicts).
+#[derive(Debug, Serialize)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub scope: String,
+    /// Folder containing SKILL.md.
+    pub dir: String,
+}
+
+#[tauri::command]
+pub async fn harness_skills_list(state: State<'_, AppState>) -> Result<Vec<SkillEntry>, String> {
+    let mut out: Vec<SkillEntry> = Vec::new();
+    let project_root = project_root(&state).ok();
+    let global_root = dirs::data_dir().map(|d| d.join("catapult").join("skills"));
+    // Discover per scope, project last so it overrides on conflict.
+    for (scope, root) in [("global", global_root), ("project", project_root.map(|r| r.join(".catapult").join("skills")))] {
+        let Some(root) = root else { continue };
+        for s in harness::skills::discover(&[root.clone()]) {
+            out.retain(|e| e.name != s.name);
+            out.push(SkillEntry {
+                name: s.name,
+                description: s.description,
+                scope: scope.into(),
+                dir: s.path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 /// Override the agent system prompt (empty string resets to the built-in
