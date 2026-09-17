@@ -1,9 +1,6 @@
 // ── Notification area (system tray) ─────────────────────────────────────────
 //
-// Optional tray icon enabling "close to tray": closing the main window hides
-// it instead of quitting, and the tray menu restores or exits the app. The
-// icon only exists while `AppConfig.close_to_tray` is enabled; `sync_tray`
-// creates/removes it to match the setting (also applied on startup).
+// Close-to-tray hides the window; the icon exists only while enabled.
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -21,7 +18,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Catapult")
         .menu(&menu)
-        // Left click restores the window; the menu opens on right click.
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
@@ -54,8 +50,7 @@ pub fn show_main_window(app: &AppHandle) {
     }
 }
 
-/// Make tray presence match `close_to_tray`: create the icon on first enable,
-/// remove it on disable, and keep visibility in sync otherwise.
+/// Sync tray icon presence with `close_to_tray`.
 pub fn sync_tray(app: &AppHandle) -> tauri::Result<()> {
     let enabled = app
         .state::<crate::AppState>()

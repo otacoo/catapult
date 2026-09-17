@@ -1,15 +1,5 @@
-//! Path jail: the hard sandbox boundary for all file-accessing tools.
-//!
-//! Every tool that takes a path (`read_file`, `write_file`, `edit_file`,
-//! `find_files`, `search_content`, attachments) resolves its arguments through
-//! a `PathJail` rooted at the project's working directory. Anything that does
-//! not resolve *inside* the jail is rejected — including `..` traversal and
-//! symlink/junction escapes, because resolution is canonical before the check.
-//!
-//! Escape policy: approvals control *whether/when* a tool runs, never *where*
-//! it may touch. Escapes must be pre-declared in the per-project allowlist:
-//! `extra_read` entries are readable but never writable; `extra_write` allows
-//! writes. (Decision recorded in `plan.md` §5.7.)
+//! Path jail: the hard sandbox boundary; every path resolves canonically inside it (`..` and symlink escapes rejected).
+//! Approvals gate *whether/when* a tool runs, never *where*; escapes must be pre-declared (`extra_read`/`extra_write`).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -24,13 +14,10 @@ pub enum PathScope {
     ExtraRead,
     /// Pre-declared writable path outside the project root.
     ExtraWrite,
-    /// Outside every allowed scope.
     Denied,
 }
 
-/// Normalize a canonical path for comparison: strip the Windows verbatim
-/// prefix (`\\?\`) that `canonicalize` produces, and (on Windows) lowercase
-/// so comparisons are case-insensitive like the filesystem itself.
+/// Normalize for comparison: strip Windows verbatim prefix; lowercase on Windows for case-insensitive fs.
 fn normalize(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
@@ -41,16 +28,13 @@ fn normalize(path: &Path) -> PathBuf {
     }
 }
 
-/// Canonicalize `path` for a write target. The target may not exist; resolve
-/// the *deepest existing ancestor* canonically and re-attach the remaining
-/// (lexical) components. Suffix components cannot contain symlinks (they
-/// don't exist), so the canonical ancestor check is sufficient.
+/// Canonicalize a maybe-missing target via the deepest existing ancestor.
+/// Suffix components cannot contain symlinks, so the ancestor check stays airtight.
 fn canonicalize_target(path: &Path) -> Result<PathBuf> {
     match std::fs::canonicalize(path) {
         Ok(p) => Ok(p),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let lex = lexical_normalize(path);
-            // Walk up to the deepest existing ancestor.
             let mut probe: &Path = lex.as_path();
             let mut suffix_rev: Vec<std::ffi::OsString> = Vec::new();
             loop {
@@ -85,9 +69,7 @@ fn starts_with_dir(dir: &Path, path: &Path) -> bool {
     path.strip_prefix(dir).is_ok()
 }
 
-/// Collapse `.`/`..` lexically without touching the filesystem. Used for the
-/// *user-visible* form of a rejected path; safety checks always run on the
-/// canonicalized (symlink-resolved) form.
+/// Collapse `.`/`..` lexically for user-visible paths; safety checks always run on the canonical form.
 fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {
@@ -177,17 +159,12 @@ impl PathJail {
         PathScope::Denied
     }
 
-    /// Anchor a tool-supplied path: relative paths are relative to the jail
-    /// root (models must not — and cannot — resolve against the app's CWD).
-    /// A bare leading root (`/Assets/...`, Windows `\Assets\...`) also
-    /// addresses the project root — models habitually emit root-anchored
-    /// paths. Fully qualified paths (with a volume/drive prefix) and `..`
-    /// escapes keep exact semantics; the canonical boundary check below still
-    /// applies to every form, so remapping can never escape the jail.
+    /// Anchor tool paths: relative and bare-rooted (`/Assets/...`) resolve inside the jail (models emit root-anchored paths).
+    /// Fully-qualified paths and `..` keep exact semantics; the canonical check below still applies so remapping can't escape.
     fn anchored(&self, path: &Path) -> PathBuf {
         let mut comps = path.components().peekable();
         if matches!(comps.peek(), Some(Component::RootDir)) {
-            comps.next(); // strip the bare `/`
+            comps.next();
         }
         let rel: PathBuf = comps.collect();
         if rel.is_absolute() {
@@ -197,7 +174,6 @@ impl PathJail {
         }
     }
 
-    /// Validate a read target. Returns the canonical, resolved path.
     pub fn check_read(&self, path: &Path) -> Result<PathBuf> {
         let canonical = canonicalize_target(&self.anchored(path))?;
         match self.scope(&canonical) {
@@ -209,11 +185,8 @@ impl PathJail {
         }
     }
 
-    /// Validate a write target. Returns the canonical, resolved path. The
-    /// target and intermediate directories may not exist yet; the deepest
-    /// existing ancestor is canonicalized (symlinks cannot exist in missing
-    /// components, so the check stays airtight). Extra-read roots are
-    /// read-only by definition and never writable.
+    /// Validate a write target via the deepest existing ancestor (airtight: missing components can't hide symlinks).
+    /// Extra-read roots are never writable.
     pub fn check_write(&self, path: &Path) -> Result<PathBuf> {
         let canonical = canonicalize_target(&self.anchored(path))?;
         match self.scope(&canonical) {
@@ -290,8 +263,6 @@ mod tests {
     fn missing_parents_resolve_within_jail() {
         let root = temp_dir("missing-parent");
         let jail = jail_from(&root);
-        // Missing intermediate directories still resolve inside the jail
-        // (the deepest existing ancestor is checked; the tool layer mkdirs).
         assert!(jail.check_write(&root.join("no").join("such.txt")).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -300,7 +271,6 @@ mod tests {
     fn deep_prefix_lookalike_does_not_match() {
         let root = temp_dir("prefix");
         let jail = jail_from(&root);
-        // Sibling directory that shares a string prefix with the root name.
         let sibling = root.parent().unwrap().join(format!(
             "{}x",
             root.file_name().unwrap().to_string_lossy()
@@ -342,7 +312,6 @@ mod tests {
         let root = temp_dir("case");
         let jail = jail_from(&root);
         let upper: PathBuf = if cfg!(windows) {
-            // Flip the case of the first directory component.
             let name = root.file_name().unwrap().to_string_lossy().to_uppercase();
             root.with_file_name(name)
         } else {

@@ -6,12 +6,8 @@ use std::path::PathBuf;
 
 // ── MCP server configuration ────────────────────────────────────────────────
 //
-// llama.cpp reads a Cursor-compatible JSON file (`--mcp-servers-config`) that
-// maps a server name to `{ command, args, env, cwd, timeout_ms }`. We persist
-// that exact shape to `{data_dir}/catapult/mcp.json` so it passes through to
-// the server unchanged.
+// llama.cpp reads Cursor-compatible `{ command, args, env, cwd, timeout_ms }`; persisted as-is to mcp.json.
 
-/// A single MCP server in the on-disk Cursor-compatible shape.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpServer {
     pub command: String,
@@ -25,7 +21,6 @@ pub struct McpServer {
     pub timeout_ms: Option<u64>,
 }
 
-/// Frontend-facing entry: the server name plus its config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerEntry {
     pub name: String,
@@ -38,9 +33,7 @@ pub struct McpServerEntry {
     pub cwd: Option<String>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    /// App-side toggle. Never persisted to mcp.json (Cursor-compatible) —
-    /// disabled names live in `AppConfig.mcp_disabled` and are filtered out
-    /// before `--mcp-servers-config` is built.
+    /// App-side toggle only (in AppConfig, filtered before launch).
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -55,8 +48,6 @@ pub struct McpConfig {
     pub servers: BTreeMap<String, McpServer>,
 }
 
-/// Everything the Tools page needs: the servers and the file path shown to the
-/// user (useful for hand-editing).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpInfo {
     pub path: String,
@@ -135,8 +126,7 @@ pub fn entries_from_config(cfg: &McpConfig) -> Vec<McpServerEntry> {
         .collect()
 }
 
-/// Pre-configured defaults seeded into `mcp.json` on first run. All keyless
-/// and start enabled.
+/// Keyless defaults seeded on first run.
 pub fn default_entries() -> Vec<McpServerEntry> {
     vec![
         McpServerEntry {
@@ -164,8 +154,7 @@ pub fn default_entries() -> Vec<McpServerEntry> {
     ]
 }
 
-/// Seed the default MCP servers on first run. Only fires when mcp.json is
-/// missing, so user deletions are respected.
+/// Seed defaults only when mcp.json is missing (respects deletions).
 pub fn ensure_defaults() -> Result<()> {
     let path = mcp_config_path()?;
     if !path.exists() {
@@ -174,7 +163,6 @@ pub fn ensure_defaults() -> Result<()> {
     Ok(())
 }
 
-/// Drop disabled servers from a config before handing it to llama-server.
 pub fn filter_disabled(cfg: &McpConfig, disabled: &[String]) -> McpConfig {
     let mut out = cfg.clone();
     out.servers.retain(|name, _| !disabled.iter().any(|d| d == name));
@@ -183,12 +171,7 @@ pub fn filter_disabled(cfg: &McpConfig, disabled: &[String]) -> McpConfig {
 
 // ── Windows `.cmd`/`.bat` shim wrapping ──────────────────────────────────────
 //
-// llama.cpp spawns MCP servers with CreateProcess (sheredom subprocess.h),
-// which cannot launch `.cmd`/`.bat` scripts — package managers like `npx` (and
-// `uvx`, `pipx`, `yarn`, ...) ship as `.cmd` shims on Windows, so a bare
-// `command: "npx"` fails with "failed to spawn". On Windows we wrap those
-// commands as `cmd /c <command> <args>` in an *effective* runtime config; the
-// persisted `mcp.json` keeps the portable form.
+// CreateProcess can't spawn `.cmd`/`.bat` shims (npx, uvx…); wrap as `cmd /c`, keep mcp.json portable.
 
 #[allow(dead_code)]
 const PATHEXT_DEFAULT: [&str; 4] = [".COM", ".EXE", ".BAT", ".CMD"];
@@ -201,8 +184,7 @@ fn file_exists_case_insensitive(path: &std::path::Path) -> bool {
     if path.is_file() {
         return true;
     }
-    // On case-sensitive filesystems (Linux CI), mimic Windows case-insensitivity
-    // for PATHEXT probing by scanning the parent directory.
+    // Mimic Windows case-insensitivity on case-sensitive filesystems (Linux CI).
     if let Some(parent) = path.parent() {
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
             if let Ok(entries) = std::fs::read_dir(parent) {
@@ -222,15 +204,7 @@ fn file_exists_case_insensitive(path: &std::path::Path) -> bool {
     false
 }
 
-/// True when Windows `CreateProcess` could not launch `command` directly and
-/// it must be run through `cmd.exe /c`. Mirrors `SearchPathW`: a bare name is
-/// resolved against `current_dir` then the `dirs` (PATH) directories, trying
-/// each PATHEXT extension in order; paths with a separator are probed as-is.
-///
-/// Resolution gaps are conservative: a bare name that resolves to a `.cmd`/
-/// `.bat` is wrapped, and one that resolves to *nothing* on PATH is wrapped too
-/// (an unresolvable bare command is most likely a shim the calling process
-/// cannot see, and `cmd /c` is no worse for a genuinely missing binary).
+/// True when `command` needs `cmd /c`; mirrors SearchPathW over PATH with PATHEXT.
 pub fn needs_cmd_wrapper(
     command: &str,
     exts: &[String],
@@ -264,9 +238,7 @@ pub fn needs_cmd_wrapper(
     search.extend(dirs.iter().map(|d| d.as_path()));
     for dir in search {
         let base = dir.join(command);
-        // Bare files without an extension (e.g. `C:\Program Files\nodejs\npx`)
-        // exist on some Node installs but are not directly executable via
-        // CreateProcess. Only PATHEXT-resolved probes determine wrapping.
+        // Bare extensionless files (e.g. Node's `npx`) aren't CreateProcess-executable.
         for ext in exts {
             let mut os = base.as_os_str().to_os_string();
             os.push(ext);
@@ -275,11 +247,10 @@ pub fn needs_cmd_wrapper(
             }
         }
     }
-    // Bare name, no path separator, not found anywhere: wrap defensively.
+    // Bare name not found anywhere: wrap defensively.
     true
 }
 
-/// Rewrite a server that needs the wrapper into `cmd /c <command> <args>`.
 #[cfg(any(target_os = "windows", test))]
 fn wrap_server(s: &McpServer) -> McpServer {
     let mut args = Vec::with_capacity(s.args.len() + 2);
@@ -295,8 +266,7 @@ fn wrap_server(s: &McpServer) -> McpServer {
     }
 }
 
-/// Apply the shim wrapping to a config. Pure over the injected environment so
-/// it is unit-testable on any platform.
+/// Wrap config; pure over env for testability.
 #[cfg(any(target_os = "windows", test))]
 fn apply_shim_wrap(
     cfg: &McpConfig,
@@ -313,8 +283,7 @@ fn apply_shim_wrap(
     out
 }
 
-/// The config actually handed to llama.cpp: on Windows, `.cmd`/`.bat` commands
-/// are rewrapped through `cmd /c`; elsewhere it is the persisted config as-is.
+/// Config handed to llama.cpp (Windows shim wrap applied; else as-is).
 pub fn effective_config(cfg: &McpConfig) -> McpConfig {
     #[cfg(target_os = "windows")]
     {
@@ -344,12 +313,7 @@ fn remove_stale_effective(base: &Path) {
     }
 }
 
-/// Path to pass as `--mcp-servers-config`. When the effective config differs
-/// from the persisted one (Windows shim wrap applied), a runtime copy is
-/// materialized at `mcp_effective.json` so `mcp.json` stays portable; the copy
-/// is removed again once unused so llama.cpp never reads a stale file.
-/// `disabled` holds the names of servers toggled off app-side; they are
-/// filtered out (and if none remain, no flag is emitted).
+/// `--mcp-servers-config` path; materializes `mcp_effective.json` when wrap/filter differs.
 pub fn runtime_mcp_config_path(disabled: &[String]) -> Result<Option<PathBuf>> {
     runtime_mcp_config_path_at(&mcp_config_path()?, disabled)
 }
@@ -362,10 +326,7 @@ fn runtime_mcp_config_path_at(base: &Path, disabled: &[String]) -> Result<Option
         return Ok(None);
     }
     let effective = effective_config(&cfg);
-    // The original file can only be handed over as-is when it already matches
-    // what llama.cpp should see (no disabled servers lingering, no shim wrap).
-    // Comparing against the filtered in-memory config is not enough: the file
-    // on disk still carries disabled entries, and llama.cpp reads the file.
+    // Reusable only when it matches what llama.cpp should see; disk still carries disabled entries.
     if serde_json::to_string(&effective)? == serde_json::to_string(&raw)? {
         remove_stale_effective(base);
         return Ok(Some(base.to_path_buf()));
@@ -554,9 +515,7 @@ mod tests {
 
     #[test]
     fn disabled_server_is_not_leaked_into_runtime_config() {
-        // Regression: when filtering disabled servers out left no commands that
-        // need the Windows shim wrap, the *original* mcp.json (still carrying
-        // the disabled entry) was handed to llama.cpp, which spawned it anyway.
+        // Regression: filtered-out disabled entries were still handed to llama.cpp via the raw file.
         let dir = temp_dir("runtime-disabled");
         let base = dir.join("mcp.json");
         save_at(&[
@@ -580,8 +539,7 @@ mod tests {
             },
         ], &base).unwrap();
 
-        // Remaining server is a real .exe (no wrap needed): previously the raw
-        // file was returned and the disabled `context7` leaked to llama.cpp.
+        // Real .exe needs no wrap; disabled entry must not leak.
         let resolved = runtime_mcp_config_path_at(&base, &["context7".to_string()]).unwrap();
         assert!(resolved.is_some());
         let resolved = resolved.unwrap();
@@ -589,7 +547,7 @@ mod tests {
         assert!(!content.contains("context7"), "disabled server must not reach llama.cpp: {}", content);
         assert!(content.contains("tool.exe"));
 
-        // Nothing disabled and nothing to wrap -> the original file is reused.
+        // Reused when nothing disabled and nothing to wrap.
         let wrap_free = dir.join("mcp_nowrap.json");
         save_at(&[McpServerEntry {
             name: "tool".to_string(),
@@ -603,7 +561,7 @@ mod tests {
         let same = runtime_mcp_config_path_at(&wrap_free, &[]).unwrap();
         assert_eq!(same.as_deref(), Some(wrap_free.as_path()));
 
-        // All disabled -> no flag at all, and the stale runtime copy is gone.
+        // All disabled -> no flag, stale copy removed.
         let none = runtime_mcp_config_path_at(&base, &["context7".to_string(), "tool".to_string()]).unwrap();
         assert!(none.is_none());
         assert!(!dir.join("mcp_effective.json").exists());
@@ -626,7 +584,6 @@ mod tests {
     fn bare_shim_resolves_through_path_order() {
         let dir = temp_dir("shim-path");
         std::fs::write(dir.join("npx.cmd"), "").unwrap();
-        // Bare name + .CMD shim found in the PATH dir -> wrap.
         assert!(needs_cmd_wrapper("npx", &exts(&[".CMD"]), &[dir.clone()], None));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -636,14 +593,14 @@ mod tests {
         let dir = temp_dir("shim-exe");
         std::fs::write(dir.join("npx.exe"), "").unwrap();
         std::fs::write(dir.join("npx.cmd"), "").unwrap();
-        // .EXE is tried first in PATHEXT order -> no wrap.
+        // PATHEXT order decides: .EXE first -> no wrap.
         assert!(!needs_cmd_wrapper(
             "npx",
             &exts(&[".EXE", ".CMD"]),
             &[dir.clone()],
             None
         ));
-        // Reversed order resolves the .CMD first -> wrap.
+        // Reversed order resolves .CMD first -> wrap.
         assert!(needs_cmd_wrapper("npx", &exts(&[".CMD", ".EXE"]), &[dir.clone()], None));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -663,12 +620,9 @@ mod tests {
     #[test]
     fn unresolved_bare_name_is_wrapped_defensively() {
         let dir = temp_dir("shim-unknown");
-        // Bare name, not found anywhere: conservatively wrap — PATH gaps must
-        // never defeat the fix.
+        // Unresolvable bare names wrap; PATH gaps must not defeat the fix.
         assert!(needs_cmd_wrapper("gobbledygook", &exts(&[".EXE", ".CMD"]), &[dir.clone()], None));
-        // Empty commands are skipped entirely.
         assert!(!needs_cmd_wrapper("", &exts(&[".EXE"]), &[dir.clone()], None));
-        // Explicit exe from a real dir is never wrapped.
         std::fs::write(dir.join("real.exe"), "").unwrap();
         assert!(!needs_cmd_wrapper("real", &exts(&[".EXE"]), &[dir.clone()], None));
         let _ = std::fs::remove_dir_all(&dir);
@@ -677,11 +631,11 @@ mod tests {
     #[test]
     fn bare_file_without_extension_is_ignored() {
         let dir = temp_dir("shim-bare");
-        std::fs::write(dir.join("npx"), "").unwrap(); // bare `npx` like Node's `C:\Program Files\nodejs\npx`
+        std::fs::write(dir.join("npx"), "").unwrap(); // bare `npx` like Node's install dir
         std::fs::write(dir.join("npx.cmd"), "").unwrap();
-        // Bare file must be ignored – the .CMD shim should still trigger wrapping.
+        // Bare file ignored; .CMD still triggers wrapping.
         assert!(needs_cmd_wrapper("npx", &exts(&[".EXE", ".CMD"]), &[dir.clone()], None));
-        // Also bare + .EXE should prefer .EXE (no wrap)
+        // Bare + .EXE prefers .EXE (no wrap).
         std::fs::write(dir.join("tool"), "").unwrap();
         std::fs::write(dir.join("tool.exe"), "").unwrap();
         assert!(!needs_cmd_wrapper("tool", &exts(&[".EXE", ".CMD"]), &[dir.clone()], None));
@@ -728,9 +682,7 @@ mod tests {
 
     #[test]
     fn windows_host_effective_config_wraps_npx_shim() {
-        // Environment-driven: only meaningful on Windows hosts where `npx`
-        // resolves to a `.cmd` shim (a normal Node install). Skips cleanly
-        // when the precondition does not hold (e.g. CI without Node).
+        // Windows-only: needs a real `npx` shim; skips when absent (e.g. CI).
         #[cfg(target_os = "windows")]
         {
             let exts: Vec<String> = match std::env::var("PATHEXT") {

@@ -48,21 +48,15 @@ pub struct GgufMeta {
     pub tags: Vec<String>,
     /// `general.capabilities` array when present (vision, reasoning, …)
     pub capabilities: Vec<String>,
-    /// `tokenizer.chat_template` when present (reasoning + effort detection).
-    /// Stored in full — templates are a few KB and live in the parsed header.
+    /// `tokenizer.chat_template` when present (a few KB, kept inline).
     pub chat_template: Option<String>,
-    /// `reasoning_effort` values the chat template accepts, in template order.
-    /// Parsed from the template at read time; the server 500s on values it
-    /// does not list, so the UI must only offer these.
+    /// `reasoning_effort` ids the template accepts; server 500s on others, so UI offers only these.
     pub reasoning_effort_levels: Vec<String>,
-    /// True when the model uses sliding-window attention (SWA layers, detected
-    /// via the architecture or explicit SWA metadata keys). `--swa-full` only
-    /// applies to these models.
+    /// Sliding-window attention; only these take `--swa-full`.
     pub is_swa: bool,
 }
 
-/// Architectures llama.cpp implements with sliding-window attention layers
-/// (iSWA cache). `--swa-full` is only meaningful for these.
+/// SWA architectures (iSWA cache); only these take `--swa-full`.
 pub fn is_swa_arch(arch: &str) -> bool {
     matches!(
         arch,
@@ -82,9 +76,7 @@ pub fn is_swa_arch(arch: &str) -> bool {
     )
 }
 
-/// Architectures whose llama.cpp memory/cache cannot shift token positions
-/// (iSWA, hybrid linear attention, recurrent, sparse, or M-RoPE caches).
-/// `--context-shift` is silently disabled for these by llama-server.
+/// Archs where llama-server silently disables `--context-shift` (non-shiftable caches).
 pub fn cache_cannot_shift_arch(arch: &str) -> bool {
     matches!(
         arch,
@@ -125,8 +117,7 @@ pub fn cache_cannot_shift_arch(arch: &str) -> bool {
     )
 }
 
-/// Read GGUF header metadata from a model file. Returns None if the file
-/// is not a valid GGUF or cannot be read.
+/// Read GGUF header; None when invalid/unreadable.
 pub fn read_model_metadata(path: &Path) -> Option<GgufMeta> {
     read_gguf_metadata(path)
 }
@@ -263,16 +254,14 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
         }
     }
 
-    // SWA-ness via architecture: llama.cpp hardcodes SWA per arch, and only
-    // some converters write explicit SWA keys (checked above).
+    // SWA via arch (llama.cpp hardcodes it; only some converters write SWA keys).
     if let Some(arch) = &meta.architecture {
         if is_swa_arch(arch) {
             meta.is_swa = true;
         }
     }
 
-    // Reasoning-effort levels the chat template accepts. The server 500s on
-    // anything it does not list, so this is the single source for the UI.
+    // Effort levels are the UI's single source (server 500s on unlisted values).
     if let Some(template) = meta.chat_template.as_deref() {
         meta.reasoning_effort_levels = parse_reasoning_effort_levels(template);
     }
@@ -314,16 +303,15 @@ pub struct RecommendedModel {
 pub(crate) struct GgufCacheEntry {
     size_bytes: u64,
     mtime_secs: i64,
-    // Cached metadata fields
     meta_name: Option<String>,
     meta_size_label: Option<String>,
     meta_context_length: Option<u64>,
     #[serde(default)]
     is_vision: bool,
-    /// True if GGUF architecture is "clip" or filename contains "mmproj"
+    /// True when arch is "clip" or filename contains "mmproj".
     #[serde(default)]
     is_mmproj: bool,
-    /// Reasoning-capable model (tags/capabilities or `<think>` chat template)
+    /// Tags/capabilities or `<think>` template.
     #[serde(default)]
     is_reasoning: bool,
 }
@@ -384,15 +372,13 @@ pub fn list_installed_models(config: &AppConfig) -> Result<Vec<ModelInfo>> {
         save_cache(&cache);
     }
 
-    // Consolidate split GGUF files into single entries
     models = consolidate_split_models(models);
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(models)
 }
 
-/// Group split GGUF parts (e.g. model-00001-of-00003.gguf) into single ModelInfo entries.
-/// Only consolidates when ALL expected parts are present.
+/// Group split parts into one entry; only when ALL parts are present.
 fn consolidate_split_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
     use std::collections::BTreeMap;
 
@@ -472,13 +458,11 @@ fn scan_gguf_recursive(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            // Auxiliary files (speculative drafts, MTP heads, imatrix) are
-            // companions, not loadable models — skip before header parsing.
+            // Companions (drafts, MTP heads, imatrix) aren't loadable models.
             if huggingface::is_auxiliary_file(&filename) {
                 continue;
             }
-            // Use std::fs::metadata to follow symlinks (e.g., HuggingFace cache links)
-            // DirEntry::metadata() can return symlink metadata on some platforms
+            // Follow symlinks (e.g. HuggingFace cache links).
             let file_meta = match std::fs::metadata(&path) {
                 Ok(m) => m,
                 Err(_) => continue,
@@ -491,7 +475,6 @@ fn scan_gguf_recursive(
 
             let cache_key = path.to_string_lossy().to_string();
 
-            // Check cache: hit if size and mtime match
             let cached_meta = if let Some(cached) = cache.get(&cache_key) {
                 if cached.size_bytes == size_bytes && cached.mtime_secs == mtime_secs {
                     CachedMeta {
@@ -511,22 +494,18 @@ fn scan_gguf_recursive(
                 read_and_cache(&path, size_bytes, mtime_secs, &cache_key, cache)
             };
 
-            // Skip mmproj files from the main model listing
             if cached_meta.is_mmproj {
                 continue;
             }
 
             let name = cached_meta.name
                 .map(|n| n.rsplit('/').next().unwrap_or(&n).to_string())
-                .filter(|n| n.len() >= 4) // Ignore suspiciously short GGUF names
+                .filter(|n| n.len() >= 4)
                 .unwrap_or(fallback_name);
             let params_b = cached_meta.size_label
                 .or_else(|| extract_params_from_filename(&filename).map(|p| format!("{}B", p)));
 
-            // A matching sibling mmproj is ground truth for vision: some quants
-            // (e.g. Gemma 4, Qwen3.5 GSQ-RCO) ship no vision tags/capabilities
-            // in the GGUF header, so always look for one instead of only when
-            // the header already claims vision.
+            // Sibling mmproj is vision ground truth (some quants ship no header vision signal).
             let mmproj_path = find_mmproj(&path, &filename, cache);
             let is_vision = cached_meta.is_vision || mmproj_path.is_some();
 
@@ -550,20 +529,13 @@ fn scan_gguf_recursive(
         }
     }
 }
-/// Base-name segments for companion matching, e.g. "Qwen3.5-4B-Q4_K_M" →
-/// ["qwen3", "5", "4b"]. The trailing quant is stripped so files pair across
-/// quants (main Q8 with BF16 mmproj, …).
+/// Base segments for companion matching; trailing quant stripped so files pair across quants.
 fn companion_segments(model_filename: &str) -> Vec<String> {
     let stem = model_filename.trim_end_matches(".gguf");
-    // Extract the "model name + params" prefix, e.g. "Qwen3.5-4B" from "Qwen3.5-4B-Q4_K_M"
-    // Strip trailing quant pattern to get the base name (case-insensitive:
-    // quants ship as Q4_K_M, q4_k_m, .f16, … — the dot covers compound
-    // extensions like `.f16.gguf`)
+    // Case-insensitive quant suffix; dot covers `.f16.gguf`-style compounds.
     let re = regex::Regex::new(r"(?i)[-._](?:MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)$").unwrap();
     let base = re.replace(stem, "").to_string();
 
-    // Split base into segments for matching
-    // e.g. "Qwen3.5-4B" → ["qwen3.5", "4b"]
     base.to_lowercase()
         .split(&['-', '_', '.'][..])
         .filter(|s| !s.is_empty())
@@ -571,11 +543,7 @@ fn companion_segments(model_filename: &str) -> Vec<String> {
         .collect()
 }
 
-/// Best directory sibling (a `.gguf` that is not the model itself) matching
-/// at least `min_matches` base segments and satisfying `is_candidate`.
-/// Draft companions use 1: sidecars ship short names that share only the
-/// family token (e.g. `MiniCPM5-2B-…` ↔ `MiniCPM5-2.6B-DSpark`), and sharing
-/// a directory already makes coincidence unlikely. mmproj files keep 2.
+/// Best same-dir `.gguf` sibling matching `min_matches` segments (drafts use 1, mmproj 2).
 fn best_sibling_match(
     dir: &Path,
     model_filename: &str,
@@ -597,14 +565,11 @@ fn best_sibling_match(
         if !fname_lower.ends_with(".gguf") || !is_candidate(&path, &fname_lower) {
             continue;
         }
-        // Count how many base segments appear in the candidate filename
         let matches = segments
             .iter()
             .filter(|seg| fname_lower.contains(seg.as_str()))
             .count();
-
-        // Best score wins; a same-directory sidecar with even one shared
-        // family token beats nothing (llama.cpp fails loudly on mismatch).
+        // Best score wins (same-dir sidecar with one family token beats nothing).
         if matches >= min_matches && best.as_ref().map_or(true, |(_, best_m)| matches > *best_m) {
             best = Some((path, matches));
         }
@@ -612,15 +577,11 @@ fn best_sibling_match(
     best.map(|(p, _)| p)
 }
 
-/// Find a compatible mmproj file in the same directory as the model.
-/// Detects mmproj files by filename ("mmproj" substring) or GGUF metadata
-/// (architecture == "clip"). Requires the mmproj to share name segments with
-/// the main model.
+/// Find a same-dir mmproj sharing name segments (by filename or clip-arch metadata).
 fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Option<PathBuf> {
     let dir = model_path.parent()?;
     let segments = companion_segments(model_filename);
     best_sibling_match(dir, model_filename, &segments, 2, |path, fname_lower| {
-        // Check if this file is an mmproj: by filename OR by cached GGUF metadata
         let is_mmproj_by_name = fname_lower.contains("mmproj");
         let cache_key = path.to_string_lossy().to_string();
         let is_mmproj_by_cache = cache.get(&cache_key).map_or(false, |e| e.is_mmproj);
@@ -628,17 +589,14 @@ fn find_mmproj(model_path: &Path, model_filename: &str, cache: &GgufCache) -> Op
     })
 }
 
-/// Speculative-draft sibling kind: a purpose-built drafter, or a separate
-/// MTP head (which drafts via `--spec-type draft-mtp`).
+/// Draft kind: purpose-built drafter vs separate MTP head (`--spec-type draft-mtp`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecDraftKind {
     Dspark,
     MtpHead,
 }
 
-/// Find a speculative-draft sibling sharing name segments with the model:
-/// DSpark drafts preferred, separate MTP heads second. Filename-based, so no
-/// header cache is needed.
+/// Draft sibling by filename (DSpark first, MTP heads second); no header cache needed.
 pub fn find_spec_draft(model_path: &Path) -> Option<(PathBuf, SpecDraftKind)> {
     let filename = model_path.file_name()?.to_string_lossy().to_string();
     let dir = model_path.parent()?;
@@ -654,9 +612,7 @@ pub fn find_spec_draft(model_path: &Path) -> Option<(PathBuf, SpecDraftKind)> {
     .map(|p| (p, SpecDraftKind::MtpHead))
 }
 
-/// Does a matching sibling mmproj sit next to this model file? Same pairing
-/// rule as the installed-models scan (no cache needed — filename detection
-/// suffices), so capability badges agree with the Models-page Eye tag.
+/// Same pairing rule as the scan, so badges agree with the Models-page Eye tag.
 pub(crate) fn has_mmproj_sibling(path: &std::path::Path) -> bool {
     let filename = path
         .file_name()
@@ -684,8 +640,7 @@ pub(crate) fn is_vision_model(tags: &[String]) -> bool {
     })
 }
 
-/// Reasoning models advertise it via `general.tags` / `general.capabilities`
-/// or ship a `<think>`-style chat template.
+/// Tags/capabilities or a `<think>`-style chat template.
 fn is_reasoning_model(tags: &[String], capabilities: &[String], chat_template: Option<&str>) -> bool {
     let tagged = tags.iter().chain(capabilities.iter()).any(|t| {
         let lower = t.to_lowercase();
@@ -694,15 +649,9 @@ fn is_reasoning_model(tags: &[String], capabilities: &[String], chat_template: O
     tagged || chat_template.map_or(false, |t| t.to_lowercase().contains("<think>"))
 }
 
-/// Reasoning-effort ids llama.cpp chat templates may accept.
-///
-/// "none" is included: a template that explicitly compares against it (e.g.
-/// `reasoning_effort == 'none'`) really does accept it. The UI always keeps a
-/// separate "Default" option that omits the field (the OpenAI convention for
-/// server-default behavior).
+/// Effort ids templates may accept; "none" counts when explicitly compared (UI "Default" omits the field).
 const EFFORT_IDS: &[&str] = &["minimal", "low", "medium", "high", "max", "xhigh", "none"];
 
-/// Words of a sentence that are effort ids, in order, deduped.
 fn effort_words_in(sentence: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for word in sentence.split(|c: char| !c.is_ascii_alphanumeric()) {
@@ -714,20 +663,11 @@ fn effort_words_in(sentence: &str) -> Vec<String> {
     out
 }
 
-/// Extract the `reasoning_effort` values a chat template accepts, in template
-/// order, deduped.
-///
-/// Two shapes are handled:
-/// 1. An explicit sentence such as "Supported types are xhigh (default),
-///    medium, and low."
-/// 2. Direct comparisons on `reasoning_effort` lines (`== 'low'`,
-///    `in ['low', 'medium']`, …) — quoted literals only, so Jinja null checks
-///    like `reasoning_effort is none` never leak in as a fake level.
+/// Effort ids a template accepts (explicit sentence or `reasoning_effort` comparisons; quoted literals only).
 pub(crate) fn parse_reasoning_effort_levels(template: &str) -> Vec<String> {
     let lower = template.to_lowercase();
 
-    // 1) Explicit sentence. It ends at the string literal's close (`')`),
-    //    a `}}`, or a line break — never mid-sentence at a `(default)` paren.
+    // 1) Explicit sentence (ends at literal close, `}}`, or newline).
     for marker in ["supported types are", "supported values are", "supported efforts are"] {
         if let Some(idx) = lower.find(marker) {
             let rest = &lower[idx + marker.len()..];
@@ -773,8 +713,7 @@ pub(crate) fn parse_reasoning_effort_levels(template: &str) -> Vec<String> {
     out
 }
 
-/// Does the template drive reasoning behavior at all (effort knobs or an
-/// enable flag), even without `<think>` markers?
+/// True when the template uses effort knobs or an enable flag, even without `<think>`.
 fn template_drives_reasoning(template: Option<&str>) -> bool {
     template.map_or(false, |t| {
         let lower = t.to_lowercase();
@@ -782,9 +721,7 @@ fn template_drives_reasoning(template: Option<&str>) -> bool {
     })
 }
 
-/// Reasoning support for the harness: tagged/capability flag, any think-style
-/// template markers, or parsed effort levels. Levels are (re)parsed from the
-/// template itself so the result is correct even for hand-built metadata.
+/// Harness reasoning support; levels re-parsed so hand-built metadata still works.
 pub(crate) fn reasoning_support(meta: &GgufMeta) -> (bool, Vec<String>) {
     let levels = if meta.reasoning_effort_levels.is_empty() {
         meta.chat_template
@@ -802,7 +739,7 @@ pub(crate) fn reasoning_support(meta: &GgufMeta) -> (bool, Vec<String>) {
     (supported, levels)
 }
 
-/// Detect mmproj from GGUF metadata: architecture == "clip"
+/// True when GGUF arch is "clip".
 fn is_mmproj_by_metadata(meta: &GgufMeta) -> bool {
     meta.architecture.as_deref().map(|a| a.to_lowercase()) == Some("clip".to_string())
 }
@@ -890,16 +827,12 @@ pub async fn download_model(
     download_single_file(client, &file.filename, &file.download_url, file.size_bytes, &models_dir, &progress_cb, cancel_signal).await
 }
 
-/// Compute a prefixed filename for an mmproj when downloaded alongside a model.
-/// E.g. model "Qwen2.5-VL-7B-Q4_K_M.gguf" + mmproj "mmproj-f16.gguf"
-///   → "Qwen2.5-VL-7B-mmproj-f16.gguf"
+/// Prefix mmproj with the model base name, e.g. "Qwen2.5-VL-7B-mmproj-f16.gguf".
 pub fn prefixed_mmproj_filename(model_filename: &str, mmproj_filename: &str) -> String {
     let model_stem = model_filename.trim_end_matches(".gguf");
-    // Strip trailing quant pattern to get the model base name
     let re = regex::Regex::new(r"[-_](?:MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)$").unwrap();
     let base = re.replace(model_stem, "").to_string();
 
-    // If the mmproj filename already contains the model base name, return as-is
     let mmproj_lower = mmproj_filename.to_lowercase();
     let base_lower = base.to_lowercase();
     if mmproj_lower.contains(&base_lower) {
@@ -909,7 +842,6 @@ pub fn prefixed_mmproj_filename(model_filename: &str, mmproj_filename: &str) -> 
     format!("{}-{}", base, mmproj_filename)
 }
 
-/// Download all parts of a split GGUF model, reporting combined progress.
 async fn download_split_model(
     client: &reqwest::Client,
     file: &HfFile,
@@ -926,7 +858,6 @@ async fn download_split_model(
     for part in &file.split_parts {
         let dest_path = models_dir.join(&part.filename);
 
-        // Skip already completed parts
         if dest_path.exists() {
             if let Ok(meta) = std::fs::metadata(&dest_path) {
                 if part.size_bytes > 0 && meta.len() == part.size_bytes {
@@ -942,7 +873,7 @@ async fn download_split_model(
 
         let part_cb = move |p: DownloadProgress| {
             if p.status == "done" {
-                return; // Don't forward individual part "done"
+                return;
             }
             progress_cb(DownloadProgress {
                 id: id.clone(),
@@ -958,7 +889,6 @@ async fn download_split_model(
         completed_bytes += part.size_bytes;
     }
 
-    // All parts done
     progress_cb(DownloadProgress {
         id: display_id,
         bytes_downloaded: total_bytes,
@@ -970,7 +900,7 @@ async fn download_split_model(
     Ok(first_dest)
 }
 
-/// Download a single file with resume support and exponential backoff.
+/// Download with resume and exponential backoff.
 async fn download_single_file(
     client: &reqwest::Client,
     filename: &str,
@@ -981,8 +911,7 @@ async fn download_single_file(
     cancel_signal: Arc<AtomicU8>,
 ) -> Result<PathBuf> {
     let dest_path = models_dir.join(filename);
-    // Keep the partial file next to its destination so resume and the final
-    // rename happen within the same (nested) directory.
+    // Partial stays next to dest so resume/rename share the same dir.
     let tmp_basename = format!(
         "__downloading__{}",
         filename.rsplit('/').next().unwrap_or(filename)
@@ -992,12 +921,11 @@ async fn download_single_file(
         .unwrap_or(&models_dir)
         .join(tmp_basename);
 
-    // Nested filenames (maker/model/file.gguf) need their parent dirs created
+    // Nested maker/model names need parent dirs.
     if let Some(parent) = tmp_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Check if already downloaded
     if dest_path.exists() {
         let existing_size = std::fs::metadata(&dest_path)?.len();
         if size_bytes > 0 && existing_size == size_bytes {
@@ -1032,7 +960,6 @@ async fn download_single_file(
             }
         }
 
-        // Build request with Range header for resume
         let mut req = client
             .get(download_url)
             .header("User-Agent", "catapult-launcher/0.1");
@@ -1078,7 +1005,7 @@ async fn download_single_file(
             continue;
         }
 
-        // If server returned 200 (not 206), it doesn't support Range — start from scratch
+        // 200 (not 206) means no Range support — restart.
         let (mut downloaded, mut out_file) = if status_code.as_u16() == 206 && resume_from > 0 {
             let f = tokio::fs::OpenOptions::new()
                 .append(true)
@@ -1099,9 +1026,7 @@ async fn download_single_file(
         let downloaded_at_start = downloaded;
 
         while let Some(chunk_result) = stream.next().await {
-            // Honor user-initiated pause/cancel between chunks. 0 = keep going.
-            // The frontend sets the flag (1 = cancel, 2 = pause) and observes the
-            // status we emit before bailing.
+            // Pause/cancel flags: 0 = run, 1 = cancel, 2 = pause.
             let signal = cancel_signal.load(Ordering::Acquire);
             if signal == 1 || signal == 2 {
                 let status = if signal == 1 { "cancelled" } else { "paused" };
@@ -1154,7 +1079,7 @@ async fn download_single_file(
         drop(out_file);
 
         if stream_error {
-            // If we received new data before the error, reset the failure counter
+            // Progress resets the retry counter.
             if downloaded > downloaded_at_start {
                 log::info!("Download of {} made progress ({} -> {} bytes), resetting retry counter",
                     filename, downloaded_at_start, downloaded);
@@ -1176,7 +1101,6 @@ async fn download_single_file(
             continue;
         }
 
-        // Success — move to final destination
         tokio::fs::rename(&tmp_path, &dest_path).await?;
 
         progress_cb(DownloadProgress {
@@ -1196,15 +1120,13 @@ pub fn abort_download(filename: &str, config: &AppConfig) -> Result<()> {
     let dest_path = models_dir.join(filename);
     let dir = dest_path.parent().unwrap_or(&models_dir);
 
-    // Partial file for this download (single file or first split part) lives
-    // next to its destination, named `__downloading__<basename>`.
+    // Partial `__downloading__<basename>` lives next to its destination.
     let basename = filename.rsplit('/').next().unwrap_or(filename);
     let tmp_path = dir.join(format!("__downloading__{}", basename));
     if tmp_path.exists() {
         std::fs::remove_file(&tmp_path)?;
     }
 
-    // For split models: also clean up temp files for other parts (same dir)
     if let Some((base, _, total)) = huggingface::parse_split_filename(basename) {
         for i in 1..=total {
             let part_name = format!("{}-{:05}-of-{:05}.gguf", base, i, total);
@@ -1218,15 +1140,12 @@ pub fn abort_download(filename: &str, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-/// Delete a model and its companions. Removes the model file (or all split
-/// parts), then — when no other model GGUF remains in the folder — the
-/// companion files (mmproj / dspark drafts / MTP heads), and finally any now-empty
-/// folders up to (but not including) the configured models roots.
+/// Delete model + orphaned companions + now-empty folders (never the models roots).
 pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let parent = path.parent().map(|p| p.to_path_buf());
 
-    // 1. Model file(s) — single or all split parts
+    // 1. Model file(s).
     if let Some((base, _, total)) = huggingface::parse_split_filename(filename) {
         if let Some(dir) = &parent {
             for i in 1..=total {
@@ -1241,9 +1160,7 @@ pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
         std::fs::remove_file(path)?;
     }
 
-    // 2. Companion files (mmproj / dspark / MTP heads): removed once no
-    // other model GGUF remains in the folder — earlier they would pair with
-    // surviving models.
+    // 2. Companions go once no other model GGUF remains.
     if let Some(dir) = &parent {
         let is_model_gguf = |name_lower: &str| -> bool {
             name_lower.ends_with(".gguf")
@@ -1279,8 +1196,7 @@ pub fn delete_model(path: &Path, model_roots: &[PathBuf]) -> Result<()> {
         }
     }
 
-    // 3. Remove now-empty folders up to (but not including) the models roots —
-    // with the nested layout a deleted model can leave `owner/repo/` behind.
+    // 3. Drop now-empty folders (nested layout leaves `owner/repo/` behind).
     if let Some(mut dir) = parent {
         let is_models_root = |dir: &Path| -> bool {
             let ds = dir.to_string_lossy().to_lowercase();
@@ -1333,11 +1249,8 @@ fn sanitize_id(filename: &str) -> String {
 }
 
 fn guess_repo_from_filename(filename: &str) -> (String, String) {
-    // Try to extract a clean name by stripping the .gguf extension
-    // and quant suffix like -Q4_K_M
     let stem = filename.trim_end_matches(".gguf");
 
-    // Strip trailing quant patterns
     let re = regex::Regex::new(r"-(?:MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)$").unwrap();
     let name = re.replace(stem, "").to_string();
 
@@ -1345,7 +1258,7 @@ fn guess_repo_from_filename(filename: &str) -> (String, String) {
 }
 
 fn extract_params_from_filename(filename: &str) -> Option<u32> {
-    // Match patterns like 7B, 8B, 70B, 1.5B, etc.
+    // e.g. 7B, 70B, 1.5B.
     let re = regex::Regex::new(r"(?i)[_\-.](\d+(?:\.\d+)?)b[_\-.]").ok()?;
     let caps = re.captures(filename)?;
     let val: f64 = caps.get(1)?.as_str().parse().ok()?;
@@ -1353,7 +1266,6 @@ fn extract_params_from_filename(filename: &str) -> Option<u32> {
 }
 
 pub fn estimate_size_mb(params_b: u32, quant: &str) -> u64 {
-    // Bits per weight for each quant type
     let bits_per_weight = match quant.to_uppercase().as_str() {
         q if q.starts_with("Q2") => 2.5_f64,
         q if q.starts_with("Q3") => 3.5,
@@ -1369,7 +1281,6 @@ pub fn estimate_size_mb(params_b: u32, quant: &str) -> u64 {
         _ => 4.5,
     };
 
-    // params_b * 1e9 * bits_per_weight / 8 bytes, converted to MB
     let bytes = (params_b as f64) * 1_000_000_000.0 * bits_per_weight / 8.0;
     (bytes / (1024.0 * 1024.0)) as u64
 }

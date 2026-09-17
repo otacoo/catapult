@@ -1,10 +1,4 @@
-//! OpenAI-compatible chat client with SSE streaming.
-//!
-//! Targets llama.cpp's `/v1/chat/completions` (and any other
-//! OpenAI-compatible server). Parses `choices[0].delta` content and
-//! tool-call deltas incrementally, and exposes a `StreamCollector` that
-//! assembles complete tool calls — with JSON repair via `jsonfix` — so the
-//! orchestrator can consume them (Phase 1).
+//! OpenAI-compatible SSE client (llama.cpp `/v1/chat/completions` first).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -38,8 +32,7 @@ fn default_call_type() -> String {
 pub struct ChatMessage {
     /// "system" | "user" | "assistant" | "tool"
     pub role: String,
-    /// String content or a multimodal parts array (text + image_url) for
-    /// vision models. JSON so both shapes serialize transparently.
+    /// String or multimodal parts array (text + image_url) for vision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,12 +73,9 @@ impl ChatMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
-    /// Incremental assistant text.
     Content { text: String },
-    /// Incremental model reasoning (`reasoning_content` deltas; shown as a
-    /// collapsed "Thinking…" block in the UI, excluded from answer metrics).
+    /// Reasoning deltas; excluded from answer text and speed metrics.
     ReasoningDelta { text: String },
-    /// Incremental tool-call data, assembled by `StreamCollector`.
     ToolCallDelta {
         index: usize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,16 +86,12 @@ pub enum StreamEvent {
         arguments_delta: String,
     },
     Finish { reason: String },
-    /// Usage stats (arrives in the final chunk when the server supports
-    /// `stream_options.include_usage`).
+    /// Usage stats; sent in the final chunk when the server supports it.
     Usage { prompt_tokens: u64, completion_tokens: u64 },
-    /// Non-fatal status for the user (e.g. "model is loading, first response
-    /// may be slow").
     Notice { text: String },
 }
 
-/// Accumulates deltas into complete tool calls; argument fragments are repaired
-/// via `jsonfix` before parsing in the orchestrator (Phase 1).
+/// Assembles deltas into complete tool calls; args repaired via `jsonfix`.
 #[derive(Debug, Default)]
 pub struct StreamCollector {
     calls: Vec<PartialToolCall>,
@@ -135,8 +121,7 @@ impl StreamCollector {
         }
     }
 
-    /// Complete tool calls with repaired, validated argument JSON. Repair that
-    /// still fails to parse is surfaced as an error (fail loud).
+    /// Repaired args; still fails loud when unparseable.
     pub fn finish(&self) -> Result<Vec<ToolCall>> {
         self.calls
             .iter()
@@ -174,8 +159,7 @@ pub struct RouterModel {
     pub status: String,
 }
 
-/// Parse the OAI-compatible `/models` payload (router mode). Status is nested:
-/// `data[i].status.value`.
+/// Parse `/models`; status lives at `data[i].status.value`.
 pub fn parse_router_models(json_text: &str) -> Vec<RouterModel> {
     let Ok(v) = serde_json::from_str::<Value>(json_text) else {
         return Vec::new();
@@ -199,7 +183,6 @@ pub fn parse_router_models(json_text: &str) -> Vec<RouterModel> {
 }
 
 impl LlmClient {
-    /// List models registered with the router (`GET /models`).
     pub async fn router_models(&self) -> Result<Vec<RouterModel>> {
         let resp = self
             .http
@@ -212,7 +195,6 @@ impl LlmClient {
         Ok(parse_router_models(&text))
     }
 
-    /// Force the router to re-read its models preset (`GET /models?reload=1`).
     pub async fn router_reload(&self) -> Result<()> {
         let resp = self
             .http
@@ -225,7 +207,6 @@ impl LlmClient {
         Ok(())
     }
 
-    /// Load a registered model on demand (`POST /models/load`).
     pub async fn router_load(&self, name: &str) -> Result<()> {
         let resp = self
             .http
@@ -238,12 +219,10 @@ impl LlmClient {
             let text = resp.text().await.unwrap_or_default();
             bail!("Loading model '{}' failed: {}", name, text);
         }
-        // Note: the load request returns immediately; the model loads in the
-        // background (child process spawn + GGUF load).
+        // Load returns immediately; the model loads in the background.
         Ok(())
     }
 
-    /// Unload a model (frees its VRAM; LRU eviction also happens server-side).
     #[allow(dead_code)]
     pub async fn router_unload(&self, name: &str) -> Result<()> {
         let resp = self
@@ -260,10 +239,6 @@ impl LlmClient {
         Ok(())
     }
 
-    /// Live slot context sizes (`GET /slots`, enabled by default). Returns the
-    /// largest `n_ctx` across slots — the effective context ceiling right now.
-    /// `None` when the endpoint is disabled, unreachable, or has no slots
-    /// (e.g. router frontends that don't proxy it).
     pub async fn slot_context(&self) -> Result<Option<u64>> {
         let resp = self
             .http
@@ -278,9 +253,6 @@ impl LlmClient {
         Ok(max_slot_n_ctx(&text))
     }
 
-    /// Live slot fill (`GET /slots`): largest `n_ctx` (ceiling) plus the most
-    /// prompt tokens held by any slot (currently used context). `None` when
-    /// the endpoint is disabled, unreachable, or has no slots.
     pub async fn slot_fill(&self) -> Result<Option<(u64, u64)>> {
         let resp = self
             .http
@@ -295,10 +267,7 @@ impl LlmClient {
         Ok(max_slot_fill(&text))
     }
 
-    /// Server-side throughput gauges from the Prometheus endpoint (`GET
-    /// /metrics`, needs the server's Metrics toggle). Router mode requires
-    /// `?model=<id>` — pass the served router model id. `None` when the
-    /// endpoint is disabled or unreachable.
+    /// Throughput gauges from `GET /metrics`; router mode needs `?model=<id>`.
     pub async fn server_throughput(&self, router_model: Option<&str>) -> Result<ServerThroughput> {
         let mut req = self.http.get(format!("{}/metrics", self.base_url));
         if let Some(model) = router_model {
@@ -313,22 +282,18 @@ impl LlmClient {
     }
 }
 
-/// Average throughputs (tokens/s) from `GET /metrics`. Server-lifetime
-/// averages, not per-request — shown as "server avg" in the ring tooltip.
+/// Throughput averages (tokens/s) from `GET /metrics`; lifetime, not per-request.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ServerThroughput {
     /// `llamacpp:prompt_tokens_seconds` — prefill rate.
     pub prompt_tps: Option<f64>,
     /// `llamacpp:predicted_tokens_seconds` — generation rate.
     pub gen_tps: Option<f64>,
-    /// Context-size gauge when the build exposes one
-    /// (`llama_server_context_size` or similar) — live ceiling.
+    /// Live context-size gauge when the build exposes one.
     pub context_size: Option<u64>,
 }
 
-/// Parse live gauges out of Prometheus text exposition. Metric names vary
-/// across llama.cpp builds (`llamacpp:` vs `llamacpp_` prefixes), so names
-/// are normalized before matching.
+/// Parse Prometheus gauges; names normalized across llama.cpp builds.
 pub fn parse_throughput(text: &str) -> ServerThroughput {
     let mut out = ServerThroughput::default();
     for line in text.lines() {
@@ -341,8 +306,7 @@ pub fn parse_throughput(text: &str) -> ServerThroughput {
             (Some(n), Some(v)) => (n, v),
             _ => continue,
         };
-        // Counter-style names with {} labels are skipped — the gauges carry
-        // no labels in single-model mode.
+        // Labelled per-model counters carry no plain gauge; skip them.
         if name.contains('{') {
             continue;
         }
@@ -376,7 +340,6 @@ pub fn parse_throughput(text: &str) -> ServerThroughput {
     out
 }
 
-/// Largest `n_ctx` in a `GET /slots` payload, if any slot reports one.
 pub fn max_slot_n_ctx(json_text: &str) -> Option<u64> {
     let v: Value = serde_json::from_str(json_text).ok()?;
     let arr = v.as_array()?;
@@ -385,9 +348,6 @@ pub fn max_slot_n_ctx(json_text: &str) -> Option<u64> {
         .max()
 }
 
-/// Live slot fill: largest `n_ctx` (ceiling) plus the most context tokens
-/// held by any slot (`n_prompt` + predicted live in the context window).
-/// Missing fields simply don't contribute — unknown stays unknown.
 pub fn max_slot_fill(json_text: &str) -> Option<(u64, u64)> {
     let v: Value = serde_json::from_str(json_text).ok()?;
     let arr = v.as_array()?;
@@ -396,8 +356,7 @@ pub fn max_slot_fill(json_text: &str) -> Option<(u64, u64)> {
         .iter()
         .map(|s| {
             let num = |k: &str| s.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
-            // Schemas vary (`n_prompt`+`n_predicted` vs a single `n_tokens`);
-            // take the larger reading per slot so nothing double-counts.
+            // Schemas vary; take the larger reading so nothing double-counts.
             (num("n_prompt") + num("n_predicted")).max(num("n_tokens"))
         })
         .max()
@@ -413,8 +372,7 @@ pub struct LlmClient {
     http: reqwest::Client,
 }
 
-/// Parse one SSE `data:` line into stream events. `[DONE]` produces
-/// `Finish { reason: "stop" }`. Testable without a server.
+/// Parse one SSE `data:` line; `[DONE]` maps to `Finish { reason: "stop" }`.
 pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
     let data = line.strip_prefix("data:")?.trim();
     if data == "[DONE]" {
@@ -442,8 +400,6 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
         }
     }
     if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
-        // Multiple parallel tool calls in one delta are rare; emit the first
-        // with data and the rest with empty deltas is not needed — take each.
         for call in calls {
             let index = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
             let id = call.get("id").and_then(|i| i.as_str()).map(String::from);
@@ -483,17 +439,13 @@ impl LlmClient {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
-            // No overall request timeout: generation streams can run for minutes.
+            // No timeout: generations can stream for minutes.
             http: reqwest::Client::builder()
                 .build()
                 .expect("failed to build HTTP client"),
         }
     }
 
-    /// Stream a chat completion, invoking `on_event` per delta. Returns the
-    /// finish reason. `should_stop` is polled between chunks for cooperative
-    /// abort (the caller owns the flag). `tools` attaches OpenAI function
-    /// schemas for tool calling.
     pub async fn chat_stream(
         &self,
         model: Option<&str>,
@@ -517,9 +469,7 @@ impl LlmClient {
         if let Some(t) = tools {
             body["tools"] = Value::from(t.to_vec());
         }
-        // A router-mode server answers 503 ("Loading model!") while the role
-        // model is still loading — wait for it instead of failing the turn.
-        // The notice is emitted once; polling continues silently.
+        // Router answers 503 while the model loads; wait instead of failing.
         let mut noticed_loading = false;
         let load_deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
         let resp = loop {
@@ -537,8 +487,7 @@ impl LlmClient {
                     let text = resp.text().await.unwrap_or_default();
                     bail!("Chat request failed (503): {}", text);
                 }
-                // A model that failed to load will 503 forever — bail now with
-                // a clear error instead of spinning until the deadline.
+                // A failed model 503s forever; bail instead of polling to deadline.
                 if let Some(name) = model {
                     if let Ok(list) = self.router_models().await {
                         if let Some(entry) = list.iter().find(|e| e.id == name) {
@@ -636,8 +585,6 @@ mod tests {
 
     #[test]
     fn throughput_ignores_labels_and_garbage() {
-        // Labelled counters (router per-model lines) are skipped; only the
-        // plain single-model gauges are read.
         let payload = "llamacpp:predicted_tokens_seconds{model=\"x\"} 10\nnot-a-metric\n";
         let t = parse_throughput(payload);
         assert_eq!(t, ServerThroughput::default());

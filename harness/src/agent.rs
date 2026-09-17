@@ -1,15 +1,6 @@
 //! Orchestrator loop: LLM ⇄ sandboxed tools.
 //!
-//! One turn = stream a chat completion (with the tool registry attached),
-//! collect tool calls, execute them under the path jail + permission engine,
-//! append tool results, repeat until the model answers without tool calls or
-//! the turn budget is exhausted.
-//!
-//! Approval flow: when a call needs a grant, the loop parks on an
-//! [`ApprovalGate`] (the UI implementation emits a Tauri event and awaits the
-//! user's decision). An approved call is granted (`Once`/`Session`) and then
-//! executed through the normal permission check; a denial feeds "denied by
-//! user" back to the model as the tool result, never silently retrying.
+//! Denials feed "denied by user" back to the model; never silently retry.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -31,18 +22,14 @@ pub const DEFAULT_SUBAGENT_MAX_TURNS: usize = 25;
 
 // ── Subagent kinds ──────────────────────────────────────────────────────────
 
-/// The two built-in ephemeral specialists. Prompts are deliberately brief —
-/// the orchestrator owns planning; specialists execute.
+/// Ephemeral specialists; prompts stay brief — the orchestrator owns planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentKind {
     Coder,
     Researcher,
 }
 
-/// OS/shell guidance shared by the orchestrator prompt and both subagent
-/// prompts. One source so small worker models never default to the wrong
-/// shell idioms (sh on Windows, PowerShell on Unix). This wording is part of
-/// the byte-stable prompt prefix — change it deliberately.
+/// Shared shell guidance so workers use the right idioms. Byte-stable prompt prefix.
 pub fn os_shell_snippet() -> String {
     let (os_name, shell, shell_examples, avoid) = if cfg!(windows) {
         (
@@ -107,10 +94,7 @@ Your final message is the only thing the orchestrator sees: state the answer dir
         format!("{base} {}{}", os_shell_snippet(), crate::skills::system_prompt_listing(skills))
     }
 
-    /// Registry for one subagent run: native allowlist + `skill` loader for
-    /// both kinds, MCP tools for the coder kind only (the researcher stays
-    /// read-only by construction). `spawn_subagent` is always stripped, and
-    /// `exec` goes when the Tools page disables shell access.
+    /// Subagent registry: allowlist + skills, MCP for coder only. Strips `spawn_subagent`.
     pub fn subagent_registry(
         jail: Arc<crate::sandbox::PathJail>,
         skills: &[crate::skills::Skill],
@@ -154,8 +138,6 @@ Your final message is the only thing the orchestrator sees: state the answer dir
     }
 }
 
-/// Args summary shown in tool-call cards (kept short; full args live in the
-/// call itself).
 fn short_args(pretty: &str) -> String {
     let one_line = pretty.lines().collect::<Vec<_>>().join(" ");
     let mut s = one_line.chars().take(300).collect::<String>();
@@ -168,48 +150,32 @@ fn short_args(pretty: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    /// A tool call was issued (UI card with name + args).
     ToolCall { call_id: String, tool: String, args: String },
-    /// Tool finished (output truncated for the orchestrator transcript).
-    /// `images` carries data URLs read mid-run so the UI shows them live.
+    /// `images` carries live mid-run reads for the UI.
     ToolResult { call_id: String, ok: bool, output: String, images: Vec<String> },
-    /// A grant is required; the UI must show the approval prompt.
     ApprovalRequired { tool: String, command: Option<String>, args: String },
-    /// A subagent started working (UI shows an inline activity card).
-    /// `branch` is set when it runs in a sibling git worktree.
+    /// `branch` is set for sibling-worktree runs.
     SubagentSpawned { call_id: String, kind: String, goal: String, branch: Option<String> },
-    /// A subagent finished; `summary` is what the orchestrator received.
     SubagentFinished { call_id: String, kind: String, summary: String },
-    /// Non-fatal notice for the user (e.g. VRAM feasibility warning).
     Notice { text: String },
 }
 
-/// Configuration for ephemeral subagents (enabled = orchestrator may delegate).
 pub struct Subagents {
     pub jail: Arc<crate::sandbox::PathJail>,
     pub max_turns: usize,
-    /// Model override for subagent workers (hybrid routing); `None` inherits
-    /// the orchestrator's model.
+    /// `None` inherits the orchestrator's model.
     pub model: Option<String>,
-    /// Discovered skills: both kinds get the `skill` loader (read-only).
     pub skills: Vec<crate::skills::Skill>,
-    /// MCP tools: coder kind only. The researcher stays read-only by
-    /// construction (MCP actions can mutate the outside world).
+    /// Coder kind only; researcher stays read-only (MCP can mutate the world).
     pub mcp_tools: Vec<crate::mcp::McpTool>,
-    /// Whether the subagent's (worker) model is vision-capable. Unset worker
-    /// inherits the orchestrator's value at send time.
     pub vision: bool,
-    /// Whether the shell tool is available (follows the Tools page Shell
-    /// Command toggle; off removes `exec` for every agent).
+    /// Follows the Tools page shell toggle; off removes `exec` everywhere.
     pub exec_enabled: bool,
-    /// Attached images (`image_url` parts) forwarded into the isolated
-    /// transcript so visual work can be delegated to a capable worker.
+    /// `image_url` parts forwarded so visual work can be delegated.
     pub images: Vec<serde_json::Value>,
-    /// Fenced text blocks from text attachments, appended after the goal.
     pub attachment_texts: Vec<String>,
 }
 
-/// What the UI answers when asked about a suspicious call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Approved {
@@ -220,19 +186,15 @@ pub enum Approved {
     Global,
 }
 
-/// Request handed to the gate when a call needs a grant.
 pub struct ApprovalRequest {
     pub key: crate::permissions::ApprovalKey,
-    /// Pretty-printed arguments for the approval card.
     pub args_pretty: String,
 }
 
-/// Bridge the loop waits on for user decisions. Implemented in src-tauri
-/// (emit Tauri event → await oneshot from the approve command).
+/// Implemented in src-tauri (Tauri event → oneshot from the approve command).
 pub trait ApprovalGate: Send + Sync {
     fn decide(&self, req: ApprovalRequest) -> Pin<Box<dyn Future<Output = Approved> + Send>>;
-    /// Called right after a persistable (project/global) grant lands so the
-    /// implementation can save it. Default is a no-op (test gates).
+    /// Save hook after a persistable grant lands; no-op by default.
     fn grants_changed(&self, _grants: &[crate::permissions::Grant]) {}
 }
 
@@ -241,25 +203,17 @@ pub struct AgentRun<'a> {
     pub registry: Arc<ToolRegistry>,
     pub engine: Arc<PermissionEngine>,
     pub model: Option<String>,
-    /// Project id grants are tagged with (None when no project is active).
     /// Subagent runs inherit the parent's project.
     pub project: Option<String>,
-    /// Reasoning effort hint for reasoning-capable models
-    /// ("low"|"medium"|"high"|"max"|"xhigh"; None = server default).
+    /// Reasoning effort hint ("low"|"medium"|"high"|"max"|"xhigh"; None = default).
     pub reasoning_effort: Option<String>,
     pub max_turns: usize,
-    /// When set, the orchestrator may delegate via `spawn_subagent`. The
-    /// subagent runs with a registry stripped of `spawn_subagent` and filtered
-    /// to the kind's allowlist — recursion is impossible by construction.
+    /// When set, delegation allowed; registry strips `spawn_subagent` so recursion is impossible.
     pub subagents: Option<Subagents>,
-    /// Whether THIS run's model is vision-capable. Image parts are only ever
-    /// sent to vision runs — a text-only runner gets a delegation hint
-    /// instead (sending pixels there fails the request server-side).
+    /// Only vision runs receive image parts (pixels 500 text-only models).
     pub vision: bool,
 }
 
-/// Result of a full agent run: the final answer plus stream metrics for the
-/// UI (model name/tokens-per-second footer).
 #[derive(Debug, Clone, Default)]
 pub struct AgentOutcome {
     pub text: String,
@@ -267,15 +221,11 @@ pub struct AgentOutcome {
     pub prompt_tokens: Option<u64>,
     pub tokens_per_sec: Option<f64>,
     pub elapsed_ms: u64,
-    /// Accumulated `reasoning_content` across turns (persisted per response;
-    /// never sent back to the model).
+    /// Accumulated reasoning; never sent back to the model.
     pub reasoning: String,
 }
 
 impl AgentRun<'_> {
-    /// Drive the loop to completion. Mutates `history` in place (system +
-    /// conversation, including tool messages). Returns the final assistant
-    /// text when the model finishes without tool calls.
     pub async fn run(
         &self,
         history: &mut Vec<ChatMessage>,
@@ -296,11 +246,7 @@ impl AgentRun<'_> {
                 bail!("Turn budget exhausted ({} turns)", self.max_turns);
             }
 
-            // 1. Stream one completion, accumulating content + tool deltas.
-            // Metrics: content/tool deltas ≈ tokens; first-delta → finish
-            // gives the tokens-per-second and response time of the answer.
-            // Reasoning deltas are forwarded (UI shows "Thinking…") but are
-            // excluded from answer text and speed metrics.
+            // Deltas ≈ tokens; reasoning excluded from metrics.
             let mut collector = StreamCollector::default();
             let mut text_acc = String::new();
             let mut deltas = 0usize;
@@ -381,7 +327,6 @@ impl AgentRun<'_> {
                 tool_call_id: None,
             });
 
-            // 3. Execute calls one by one under jail + permissions.
             for call in calls {
                 if should_stop() {
                     bail!("aborted");
@@ -398,8 +343,7 @@ impl AgentRun<'_> {
                     args: short_args(&args_pretty),
                 });
 
-                // spawn_subagent is intercepted: the subagent loop runs inline
-                // and only its report enters this transcript.
+                // `spawn_subagent` runs inline; only its report enters the transcript.
                 let output = if tool_name == "spawn_subagent" {
                     match &self.subagents {
                         None => "error: subagents are not available".to_string(),
@@ -424,9 +368,7 @@ impl AgentRun<'_> {
                         tool_calls: None,
                         tool_call_id: Some(call_id),
                     });
-                    // Vision payloads ride as a follow-up user message (tool
-                    // results are text-only): the model sees the pixels inline
-                    // right after reading them.
+                    // Tool results are text-only; pixels ride as a follow-up user message.
                     if !media.is_empty() {
                         let mut parts = vec![serde_json::json!({
                             "type": "text",
@@ -453,9 +395,6 @@ impl AgentRun<'_> {
         }
     }
 
-    /// Permission-gated execution of one non-spawn tool call. Returns the
-    /// text that goes back to the model as the tool result, plus any
-    /// `image_url` parts for vision (read_file on images).
     async fn execute_tool_call(
         &self,
         tool_name: &str,
@@ -468,7 +407,6 @@ impl AgentRun<'_> {
         let Some(tool) = self.registry.get(tool_name) else {
             return (format!("error: unknown tool '{tool_name}'"), Vec::new());
         };
-        // Permission check (read-only tools auto-allow).
         let project = self.project.as_deref();
         let allowed = match tool.approval_key(args_value) {
             None => true,
@@ -483,9 +421,7 @@ impl AgentRun<'_> {
                 {
                     Approved::Denied => false,
                     scope => {
-                        // Grant exactly what was approved (the approval key:
-                        // per MCP server, tool-wide for shell) — never the bare
-                        // registry name, which would never match a later check.
+                        // Grant the approval key (never the bare registry name).
                         self.engine.grant(Grant {
                             tool: key.tool.clone(),
                             command: key.command.clone(),
@@ -500,7 +436,6 @@ impl AgentRun<'_> {
                             project: self.project.clone(),
                         });
                         gate.grants_changed(&self.engine.persistable());
-                        // Once-grants are consumed by check.
                         self.engine.check(&key, project) == Decision::Allowed
                     }
                 },
@@ -522,10 +457,7 @@ impl AgentRun<'_> {
             .unwrap_or_else(|e| (Err(anyhow::Error::new(e)), Vec::new()));
         match res {
             (Ok(out), media) => {
-                // Pixels only travel to vision-capable runners: sending
-                // image parts to a text-only model fails the whole request
-                // server-side (500, needs mmproj). Others get a nudge to
-                // delegate instead — the worker receives images automatically.
+                // Pixels 500 text-only models; others get a delegation nudge.
                 let (text, kept) = if media.is_empty() || self.vision {
                     (out, media)
                 } else {
@@ -561,9 +493,6 @@ impl AgentRun<'_> {
         }
     }
 
-    /// Ensure a router model is loaded, waiting (with a one-time notice)
-    /// until it is. Bails early if the router reports the model failed,
-    /// instead of spinning until the timeout like the blind 503 retry would.
     async fn ensure_router_model(
         client: &LlmClient,
         id: &str,
@@ -606,9 +535,7 @@ impl AgentRun<'_> {
         }
     }
 
-    /// Run an ephemeral subagent to completion and return its final report
-    /// (truncated for the orchestrator transcript). Nested tool events are
-    /// forwarded with a `sub:` call-id prefix so the UI can group them.
+    /// Run a subagent; nested events forwarded with a `sub:` prefix.
     fn run_subagent<'a>(
         &'a self,
         sub: &'a Subagents,
@@ -631,11 +558,7 @@ impl AgentRun<'_> {
             if goal.is_empty() {
                 bail!("spawn_subagent requires a non-empty 'goal'");
             }
-            // Optional git branch: run isolated in a sibling worktree so
-            // parallel agents share the codebase without clashing on files.
-            // A fresh worktree is created on demand; an existing one is reused
-            // for continued work. Loud failure (never a silent fallback into
-            // the main checkout — that could clobber parallel work).
+            // Branch runs isolated in a sibling worktree; never fall back silently.
             let branch = args
                 .get("branch")
                 .and_then(|b| b.as_str())
@@ -655,7 +578,7 @@ impl AgentRun<'_> {
                 }
                 None => (sub.jail.root().to_path_buf(), None),
             };
-            // The worktree jail keeps the parent's extra scope (allowlist).
+            // Worktree jail inherits the parent's extra scope.
             let work_jail = Arc::new(sub.jail.rooted_at(&work_root).map_err(|e| {
                 anyhow::anyhow!("Cannot sandbox worktree {}: {e:#}", work_root.display())
             })?);
@@ -667,15 +590,11 @@ impl AgentRun<'_> {
                 branch: branch.clone(),
             });
 
-            // Lazy worker load: the worker model only loads when a subagent
-            // actually needs it (see resolve_roles — eager double-load on a
-            // VRAM-tight machine makes every request crawl).
+            // Lazy worker load: eager double-load crawls VRAM-tight machines.
             if let Some(worker) = &sub.model {
                 Self::ensure_router_model(self.client, worker, &should_stop, on_event).await?;
             }
 
-            // Fresh, isolated transcript: system prompt + goal (+ ctx files).
-            // Skills ride along (both kinds); MCP tools join the coder kind.
             let mut history = vec![ChatMessage::system(kind.prompt(&sub.skills))];
             let mut initial = match &worktree_note {
                 Some(note) => format!("{note}\nGoal: {goal}\n"),
@@ -708,7 +627,6 @@ impl AgentRun<'_> {
             if sub.images.is_empty() {
                 history.push(ChatMessage::user(initial));
             } else {
-                // Multimodal: goal/context text plus the forwarded image parts.
                 let mut parts = vec![serde_json::json!({ "type": "text", "text": initial })];
                 parts.extend(sub.images.clone());
                 history.push(ChatMessage {
@@ -734,7 +652,7 @@ impl AgentRun<'_> {
                 project: self.project.clone(),
                 reasoning_effort: self.reasoning_effort.clone(),
                 max_turns: sub.max_turns,
-                subagents: None, // no recursion: the strip above is belt-and-braces
+                subagents: None, // stripped above; belt-and-braces
                 vision: sub.vision,
             };
             let mut nested = |ev: AgentEvent| {
@@ -759,7 +677,7 @@ impl AgentRun<'_> {
                 .run(&mut history, should_stop.clone(), gate, &mut noop, &mut nested)
                 .await?;
 
-            // Cap the report entering the orchestrator transcript.
+            // Cap the report; tag worktree edits so the orchestrator knows where they landed.
             const REPORT_CAP: usize = 16_000;
             let mut report = if outcome.text.chars().count() > REPORT_CAP {
                 let mut t: String = outcome.text.chars().take(REPORT_CAP).collect();
@@ -768,8 +686,7 @@ impl AgentRun<'_> {
             } else {
                 outcome.text
             };
-            // The orchestrator must know WHERE the work happened: worktree
-            // edits are not in the main checkout.
+            // Worktree edits are not in the main checkout.
             if let Some(b) = branch.as_deref() {
                 report.push_str(&format!(
                     "\n[worktree: {} (branch '{b}') — changes are in the worktree, merge or review them from the sidebar]",
@@ -791,9 +708,7 @@ mod tests {
     use super::*;
     use crate::client::FunctionCall;
 
-    // Note: the loop itself requires a live SSE endpoint to unit-test; the
-    // pieces it composes (StreamCollector, ToolRegistry, PermissionEngine,
-    // PathJail) each have their own suites. Message assembly is covered here.
+    // Loop needs a live SSE endpoint; composed units have their own suites.
     #[test]
     fn short_args_truncates() {
         let long = "x".repeat(500);
@@ -921,7 +836,6 @@ mod tests {
         assert!(researcher.get("skill").is_some(), "researcher reads skills too");
         assert!(researcher.get("write_file").is_none(), "researcher must be read-only");
         assert!(researcher.get("spawn_subagent").is_none());
-        // The skill listing reaches the subagent system prompt.
         assert!(SubagentKind::Coder.prompt(&skills).contains("acme-deploy"));
         assert!(!SubagentKind::Coder.prompt(&[]).contains("acme-deploy"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -935,7 +849,7 @@ mod tests {
     }
 
     fn test_run(jail: Arc<crate::sandbox::PathJail>, vision: bool) -> AgentRun<'static> {
-        // Leaked client: the run never touches the network (read_file is local).
+        // Leaked client never touches the network (read_file is local).
         let client: &'static LlmClient = Box::leak(Box::new(LlmClient::new("http://127.0.0.1:9")));
         AgentRun {
             client,

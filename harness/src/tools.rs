@@ -1,14 +1,5 @@
-//! Sandboxed tool implementations for the harness.
-//!
-//! Every path-taking tool resolves through [`PathJail`] before touching the
-//! filesystem — the model can never escape the project by traversal or
-//! symlinks. `edit_file` is an exact-match search/replace with loud failure:
-//! zero or multiple matches are errors, never silent corruption.
-//!
-//! Approval: read-only tools return `None` from `approval_key` (auto-approved);
-//! mutating tools return an [`ApprovalKey`] that the orchestrator checks
-//! against the [`PermissionEngine`]. Tool names are dynamic (`String`) so
-//! MCP tools can be merged into the same registry.
+//! Sandboxed tools: every path resolves through `PathJail` (traversal/symlink escapes rejected); `edit_file` fails loud unless exactly one match.
+//! Read-only tools return `None` from `approval_key`; names are dynamic so MCP tools merge into the registry.
 
 use std::sync::Arc;
 
@@ -19,13 +10,9 @@ use crate::permissions::{ApprovalKey, Decision, PermissionEngine};
 use crate::sandbox::PathJail;
 use base64::Engine as _;
 
-/// Max characters returned by file-reading tools before truncation.
 const READ_CAP: usize = 100_000;
-/// Max matches returned by `search_content`.
 const SEARCH_CAP: usize = 50;
-/// Max entries returned by `find_files`.
 const FIND_CAP: usize = 100;
-/// Max chars captured from command output.
 const EXEC_CAP: usize = 50_000;
 /// Shell command timeout (poll-based, cooperative).
 const EXEC_TIMEOUT_SECS: u64 = 120;
@@ -40,9 +27,7 @@ pub trait Tool: Send + Sync {
     /// permission engine before executing.
     fn approval_key(&self, args: &Value) -> Option<ApprovalKey>;
     fn execute(&self, args: &Value) -> Result<String>;
-    /// Execute plus optional `image_url` parts for vision models (default:
-    /// none). `read_file` overrides this for image files: the text result
-    /// names the image while the pixels ride alongside for the model to see.
+    /// Execute plus optional `image_url` parts for vision (`read_file` on images: text names it, pixels ride alongside).
     fn execute_with_media(&self, args: &Value) -> (Result<String>, Vec<Value>) {
         (self.execute(args), Vec::new())
     }
@@ -76,9 +61,8 @@ struct IgnorePattern {
     prefix: String,
 }
 
-/// Project-local ignore file for agent file tools. Same role as `.gitignore`
-/// but for LLM context: patterns hide generated/noise files from `find_files`
-/// and `search_content`. Missing file = no extra ignores.
+/// Project-local ignore for agent file tools (like `.gitignore` for LLM context).
+/// Missing file = no extra ignores.
 struct LlmIgnore {
     patterns: Vec<IgnorePattern>,
 }
@@ -113,13 +97,11 @@ impl LlmIgnore {
         Self { patterns }
     }
 
-    /// `rel` = `/`-separated path relative to the project root.
     fn is_ignored(&self, rel: &str, is_dir: bool) -> bool {
         let base = rel.rsplit('/').next().unwrap_or(rel);
         let mut ignored = false;
         for p in &self.patterns {
             let hit = if p.dir_only {
-                // Directory itself or anything beneath it.
                 (is_dir && (p.glob.matches(rel) || p.glob.matches(base)))
                     || rel.starts_with(&p.prefix)
                     || (!p.rooted && rel.split('/').any(|c| p.glob.matches(c)))
@@ -194,7 +176,6 @@ impl Tool for ReadFileTool {
         None // read-only
     }
     fn execute(&self, args: &Value) -> Result<String> {
-        // Plain-text path (also what `execute_with_media` falls back to).
         let path = str_arg(args, "path")?;
         let resolved = self.jail.check_read(std::path::Path::new(&path))?;
         let text = std::fs::read_to_string(&resolved)
@@ -356,9 +337,7 @@ impl Tool for EditFileTool {
                 resolved.display()
             ));
         }
-        // Pass 3: line-oriented match ignoring trailing whitespace (models
-        // routinely drop trailing spaces). Still requires exactly one match;
-        // anything ambiguous fails loudly below.
+        // Pass 3: ignore trailing whitespace (models drop it); still requires exactly one match.
         if let Some((start, end)) = heal_trailing_whitespace(&text, &search) {
             let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
             let mut lines: Vec<&str> = text.split('\n').collect();
@@ -386,9 +365,7 @@ impl Tool for EditFileTool {
     }
 }
 
-/// Line range `[start, end)` of `text` matching `search` once whitespace at
-/// line ends is ignored (and CRLF folded by line splitting). `None` unless
-/// there is exactly one such range.
+/// Line range matching `search` ignoring trailing whitespace; `None` unless exactly one.
 fn heal_trailing_whitespace(text: &str, search: &str) -> Option<(usize, usize)> {
     let t: Vec<&str> = text.split('\n').collect();
     let s: Vec<&str> = search.split('\n').collect();
@@ -442,7 +419,6 @@ impl Tool for FindFilesTool {
             .map_err(|e| anyhow::anyhow!("Invalid glob '{}': {e}", pattern_str))?
             .filter_map(|p| p.ok())
             .filter(|p| {
-                // Hard ignores: nothing under an ignored directory component.
                 if p.components()
                     .any(|c| c.as_os_str().to_str().map(ignored_dir).unwrap_or(false))
                 {
@@ -549,7 +525,7 @@ impl Tool for SearchContentTool {
             }
             let text = match std::fs::read_to_string(entry.path()) {
                 Ok(t) => t,
-                Err(_) => continue, // binary or unreadable
+                Err(_) => continue,
             };
             for (lineno, line) in text.lines().enumerate() {
                 if re.is_match(line) {
@@ -576,16 +552,13 @@ impl Tool for SearchContentTool {
 
 // ── exec (shell) ────────────────────────────────────────────────────────────
 
-/// Head tokens auto-approved as read-only ("safe commands"). Anything
-/// else goes through the approval prompt; grants are scoped per head token.
+/// Head tokens auto-approved as read-only.
 const READONLY_COMMANDS: &[&str] = &[
     "dir", "ls", "pwd", "type", "cat", "get-content", "get-childitem", "get-location",
     "head", "tail", "wc", "where", "which", "select-string", "grep", "findstr",
     "git status", "git log", "git diff", "git show", "git branch", "git remote",
 ];
 
-/// Does the command head (plus optional subcommand for git-like tools) match
-/// the read-only allowlist?
 fn command_is_readonly(command: &str) -> bool {
     let lower = command.trim().to_lowercase();
     let words: Vec<&str> = lower.split_whitespace().collect();
@@ -622,10 +595,8 @@ fn unquoted(command: &str) -> String {
     out
 }
 
-/// Wrong-shell syntax for this OS (small models emit it despite the system
-/// prompt + tool description). Returns a corrective hint; the call is
-/// rejected before spawning so the model rewrites it instead of failing
-/// noisily (or worse, running half-parsed).
+/// Wrong-shell syntax for this OS (small models emit it despite the prompt); rejected before spawning.
+/// Returns a corrective hint so the model rewrites instead of failing noisily.
 fn shell_mismatch_hint(command: &str) -> Option<String> {
     let lower = unquoted(command).to_lowercase();
     // Padded once so `grep` etc. match on word boundaries only.
@@ -724,9 +695,7 @@ impl Tool for ExecTool {
         })
     }
     fn approval_key(&self, args: &Value) -> Option<ApprovalKey> {
-        // Tool-wide grant: one approval covers the whole shell tool (the
-        // approval card names the tool; per-command scoping proved too naggy).
-        // The wrong-shell guard still rejects sh-isms before spawning.
+        // Tool-wide grant (per-command proved too naggy); wrong-shell guard still rejects before spawning.
         let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
         if command_is_readonly(command) {
             None
@@ -739,8 +708,6 @@ impl Tool for ExecTool {
         if command.trim().is_empty() {
             bail!("'command' must not be empty");
         }
-        // Wrong-shell idioms never reach the shell: explain the native
-        // equivalent so the model rewrites instead of failing noisily.
         if let Some(hint) = shell_mismatch_hint(&command) {
             bail!("Wrong-shell syntax for this OS: {hint}. Rewrite the command and try again.");
         }
@@ -873,9 +840,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Standard project toolset rooted at one project jail, including the
-    /// orchestrator-only `spawn_subagent` (strip it with `.without()` for
-    /// subagent registries — that is what prevents recursion).
+    /// Standard toolset including orchestrator-only `spawn_subagent` (strip with `.without()` for subagents to prevent recursion).
     pub fn project_tools(jail: Arc<PathJail>) -> Self {
         Self {
             tools: vec![
@@ -890,7 +855,6 @@ impl ToolRegistry {
         }
     }
 
-    /// Merge extra tools (skill tool, MCP tools) into the registry.
     pub fn add(mut self, tool: Arc<dyn Tool>) -> Self {
         self.tools.push(tool);
         self
@@ -907,7 +871,6 @@ impl ToolRegistry {
         }
     }
 
-    /// Keep only the named tools (subagent allowlists).
     pub fn only(self, names: &[&str]) -> Self {
         Self {
             tools: self
@@ -926,7 +889,6 @@ impl ToolRegistry {
         self.tools.iter().map(|t| t.name()).collect()
     }
 
-    /// OpenAI `tools` array entries for the chat request.
     pub fn tool_schemas(&self) -> Vec<Value> {
         self.tools
             .iter()
@@ -943,8 +905,6 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Should this call be executed now? Read-only → yes; otherwise consult
-    /// the permission engine with the tool's approval key for `project`.
     pub fn check_permissions(&self, name: &str, args: &Value, engine: &PermissionEngine, project: Option<&str>) -> bool {
         match self.get(name) {
             None => false, // unknown tool → refuse
@@ -955,9 +915,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Run a tool on the blocking thread pool (file/process work must not
-    /// stall the async runtime). Caller holds `Arc<Self>` because tools are
-    /// not `Clone`.
+    /// Run on the blocking pool (file/process work must not stall the async runtime).
     pub fn spawn_execute(
         self: &Arc<Self>,
         name: String,
@@ -972,8 +930,7 @@ impl ToolRegistry {
         })
     }
 
-    /// Same, plus any `image_url` parts for vision (only `read_file` on
-    /// image files produces them today).
+    /// Same, plus `image_url` parts for vision (only `read_file` on images today).
     pub fn spawn_execute_with_media(
         self: &Arc<Self>,
         name: String,
@@ -1076,12 +1033,9 @@ mod tests {
         std::fs::write(root.join("a.rs"), "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
         let edit = registry.get("edit_file").unwrap();
 
-        // Zero matches fail loud.
         assert!(edit.execute(&json!({"path": "a.rs", "search": "NOPE", "replace": "x"})).is_err());
-        // Two matches fail.
         std::fs::write(root.join("b.rs"), "same\nsame\n").unwrap();
         assert!(edit.execute(&json!({"path": "b.rs", "search": "same", "replace": "x"})).is_err());
-        // Single match replaces.
         edit.execute(&json!({"path": "a.rs", "search": "println!(\"hi\");", "replace": "println!(\"bye\");"})).unwrap();
         let text = std::fs::read_to_string(root.join("a.rs")).unwrap();
         assert!(text.contains("bye"));
@@ -1093,7 +1047,6 @@ mod tests {
         let root = temp_dir("edit-heal");
         let registry = registry_for(&root);
         let edit = registry.get("edit_file").unwrap();
-        // CRLF file, LF search: heals without rewriting the whole file.
         std::fs::write(root.join("crlf.txt"), "line one\r\nline two\r\n").unwrap();
         let out = edit
             .execute(&json!({"path": "crlf.txt", "search": "line one\nline two", "replace": "CHANGED"}))
@@ -1101,7 +1054,6 @@ mod tests {
         assert!(out.contains("line endings"), "unexpected: {out}");
         let text = std::fs::read_to_string(root.join("crlf.txt")).unwrap();
         assert!(text.contains("CHANGED"));
-        // Trailing spaces the model dropped: heals line-wise.
         std::fs::write(root.join("ws.txt"), "key = 1;   \nnext = 2;\n").unwrap();
         let out = edit
             .execute(&json!({"path": "ws.txt", "search": "key = 1;\nnext = 2;", "replace": "key = 9;"}))
@@ -1109,7 +1061,6 @@ mod tests {
         assert!(out.contains("trailing whitespace"), "unexpected: {out}");
         let text = std::fs::read_to_string(root.join("ws.txt")).unwrap();
         assert!(text.starts_with("key = 9;"));
-        // Ambiguous even after healing: still loud.
         std::fs::write(root.join("amb.txt"), "dup   \ndup\t\n").unwrap();
         assert!(edit.execute(&json!({"path": "amb.txt", "search": "dup", "replace": "x"})).is_err());
         std::fs::remove_dir_all(&root).unwrap();
@@ -1167,14 +1118,11 @@ mod tests {
         let root = temp_dir("exec-approval");
         let registry = registry_for(&root);
         let exec = registry.get("exec").unwrap();
-        // One grant covers the whole shell tool (per-head scoping proved too
-        // naggy); the wrong-shell guard still filters before spawning.
         for cmd in ["npm install left-pad", "cargo test", "Remove-Item foo"] {
             let key = exec.approval_key(&json!({"command": cmd})).expect("must need approval");
             assert_eq!(key.tool, "exec");
             assert_eq!(key.command, None);
         }
-        // Allowlisted read-only heads stay free.
         assert!(exec.approval_key(&json!({"command": "git status"})).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -1184,9 +1132,7 @@ mod tests {
         let root = temp_dir("perm-gate");
         let registry = registry_for(&root);
         let engine = crate::permissions::PermissionEngine::new();
-        // read_file auto-allowed
         assert!(registry.check_permissions("read_file", &json!({"path": "x"}), &engine, Some("p")));
-        // write needs a grant
         assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         engine.grant(crate::permissions::Grant {
             tool: "write_file".into(),
@@ -1196,7 +1142,6 @@ mod tests {
             project: Some("p".into()),
         });
         assert!(registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
-        // Consumed once-grant
         assert!(!registry.check_permissions("write_file", &json!({"path": "x", "content": ""}), &engine, Some("p")));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -1205,23 +1150,19 @@ mod tests {
     fn read_file_attaches_images_for_vision() {
         let root = temp_dir("img-read");
         let registry = registry_for(&root);
-        // Minimal valid PNG (signature + IHDR + IEND).
         let mut png = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         png.extend([0u8; 64]);
         std::fs::write(root.join("art.png"), &png).unwrap();
         std::fs::write(root.join("note.txt"), "hello").unwrap();
         let read = registry.get("read_file").unwrap();
-        // Images: marker text plus one image part (not a text-decode error).
         let (out, media) = read.execute_with_media(&json!({"path": "art.png"}));
         let text = out.unwrap();
         assert!(text.contains("read for visual inspection"), "{text}");
         assert_eq!(media.len(), 1);
         assert_eq!(media[0].get("type").and_then(|t| t.as_str()), Some("image_url"));
-        // Text files: unchanged behavior, no media.
         let (out, media) = read.execute_with_media(&json!({"path": "note.txt"}));
         assert_eq!(out.unwrap(), "hello");
         assert!(media.is_empty());
-        // Missing files still fail.
         assert!(read.execute_with_media(&json!({"path": "nope.png"})).0.is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }

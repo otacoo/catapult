@@ -1,29 +1,15 @@
-//! Permission engine for tool execution.
-//!
-//! Policy: read-only operations are auto-approved; mutating operations
-//! (`write_file`, `edit_file`, non-allowlisted shell commands) require a
-//! grant. Grants carry a scope with a TTL so trust decays over time.
-//! Scope rules:
-//!
-//! - `Once`  — single execution, consumed immediately (in-memory)
-//! - `Session` — in-memory, expires quickly (30 min), never persisted
-//! - `Project` — persisted with the project, 30 days
-//! - `Global`  — persisted app-wide, 30 days
-//!
-//! Approvals control *whether/when* a tool runs — never *where* it may touch
-//! (that is the `sandbox::PathJail`'s job, decided by the project allowlist).
+//! Permission engine: read-only auto-approved, mutating needs a scoped grant with TTL.
+//! Approvals gate *whether/when* a tool runs, never *where* (`sandbox::PathJail` owns the boundary).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// What identifies a potentially-dangerous call. `command` carries the shell
-/// command's head token (e.g. `git`) so grants can be scoped per command.
+/// Dangerous-call identity; `command` is the shell head token for per-command scoping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalKey {
     pub tool: String,
-    /// For `exec`-style tools: the command head (e.g. "git"), normalized
-    /// lowercase. `None` for non-shell tools.
+    /// Shell head token, lowercase; `None` for non-shell tools.
     pub command: Option<String>,
 }
 
@@ -52,9 +38,8 @@ impl Scope {
     }
 }
 
-/// A granted approval. `command` must match the key exactly when present.
-/// `expires` is a Unix timestamp (None = single-use). `project` tags the
-/// project the grant was made in (None = global-scope or legacy in-memory).
+/// A granted approval; `command` must match exactly when present.
+/// `expires` is Unix time (None = single-use); `project` tags the origin project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
     pub tool: String,
@@ -103,19 +88,13 @@ impl PermissionEngine {
         grants.push(grant);
     }
 
-    /// Does an active grant cover this key in this project? Read-only tools
-    /// (empty command head matches nothing here) are handled by the caller:
-    /// only tools that produce an `ApprovalKey` consult the engine.
-    /// `project` is the current project id (None when no project is active).
-    /// Global grants apply everywhere; anything else must match the project
-    /// it was made in, so trust never leaks across projects.
+    /// Does an active grant cover this key? Only `ApprovalKey`-producing tools consult the engine.
+    /// Global grants apply everywhere; others must match the project so trust never leaks.
     pub fn check(&self, key: &ApprovalKey, project: Option<&str>) -> Decision {
         let now = now_unix();
         let mut grants = self.grants.lock().unwrap();
         grants.retain(|g| g.expires.is_none_or(|e| e > now));
-        // Match: same tool, and command matches exactly when both present. A
-        // tool-wide grant (no command) covers any call for that tool, but a
-        // command-scoped grant never covers a bare (unspecified) call.
+        // Same tool; tool-wide covers any call, command-scoped never covers bare.
         let hit = grants.iter().position(|g| {
             g.tool == key.tool
                 && match (&g.command, &key.command) {
@@ -134,7 +113,7 @@ impl PermissionEngine {
             Some(idx) => {
                 let grant = &grants[idx];
                 if grant.scope == Scope::Once {
-                    grants.remove(idx); // consume
+                    grants.remove(idx);
                 }
                 Decision::Allowed
             }
@@ -147,7 +126,6 @@ impl PermissionEngine {
         self.check(key, project) == Decision::Allowed
     }
 
-    /// Grants that should be persisted with the project / global config.
     pub fn persistable(&self) -> Vec<Grant> {
         let now = now_unix();
         self.grants
@@ -202,7 +180,6 @@ mod tests {
             project: Some("p".into()),
         });
         assert_eq!(engine.check(&key("write_file", None), Some("p")), Decision::Allowed);
-        // Consumed — next call needs approval again.
         assert_eq!(engine.check(&key("write_file", None), Some("p")), Decision::NeedsApproval);
     }
 
@@ -218,7 +195,6 @@ mod tests {
         });
         assert_eq!(engine.check(&key("exec", Some("npm")), Some("p")), Decision::Allowed);
         assert_eq!(engine.check(&key("exec", Some("npm")), Some("p")), Decision::Allowed);
-        // Different command head does not match.
         assert_eq!(engine.check(&key("exec", Some("cargo")), Some("p")), Decision::NeedsApproval);
         // Grant for a specific command must not cover a bare key.
         assert_eq!(engine.check(&key("exec", None), Some("p")), Decision::NeedsApproval);
@@ -237,7 +213,6 @@ mod tests {
         assert_eq!(engine.check(&key("write_file", None), Some("a")), Decision::Allowed);
         assert_eq!(engine.check(&key("write_file", None), Some("b")), Decision::NeedsApproval);
         assert_eq!(engine.check(&key("write_file", None), None), Decision::NeedsApproval);
-        // Global grants apply everywhere.
         engine.grant(Grant {
             tool: "exec".into(),
             command: None,

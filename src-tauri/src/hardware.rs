@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
-/// Creates a Command that won't spawn a visible console window on Windows.
+/// Creates a Command without a visible console window on Windows.
 fn silent_cmd(program: &str) -> std::process::Command {
     #[allow(unused_mut)]
     let mut cmd = std::process::Command::new(program);
@@ -56,8 +56,7 @@ pub struct BackendInfo {
 }
 
 fn get_cuda_version() -> Option<String> {
-    // Prefer nvcc --version (CUDA toolkit — what's actually installed).
-    // Fall back to nvidia-smi (driver-supported CUDA version) if nvcc isn't available.
+    // Prefer nvcc (toolkit) over nvidia-smi (driver-supported version).
     get_cuda_version_from_nvcc().or_else(get_cuda_version_from_nvsmi)
 }
 
@@ -65,7 +64,7 @@ fn get_cuda_version_from_nvcc() -> Option<String> {
     let output = silent_cmd("nvcc").args(["--version"]).output().ok()?;
     if !output.status.success() { return None; }
     let text = String::from_utf8_lossy(&output.stdout);
-    // Look for "release X.Y," in the output
+    // Output contains "release X.Y,".
     let marker = "release ";
     text.lines().find(|line| line.contains(marker)).and_then(|line| {
         let start = line.find(marker)? + marker.len();
@@ -112,22 +111,16 @@ pub struct MemoryEstimate {
     pub kv_cache_mb: u64,
     pub overhead_mb: u64,
     pub total_mb: u64,
-    /// Total GPU VRAM in MB
     pub vram_total_mb: u64,
-    /// Available system RAM in MB
     pub ram_available_mb: u64,
-    /// Estimated VRAM usage in MB
     pub vram_used_mb: u64,
-    /// Estimated RAM usage in MB
     pub ram_used_mb: u64,
-    // Per-resource breakdown for visualization
     pub vram_model_mb: u64,
     pub vram_kv_mb: u64,
     pub vram_overhead_mb: u64,
     pub ram_model_mb: u64,
     pub ram_kv_mb: u64,
     pub ram_overhead_mb: u64,
-    /// True if the estimate fits in VRAM + available RAM
     pub fits: bool,
     pub notes: Vec<String>,
 }
@@ -141,26 +134,20 @@ fn cache_bytes_per_element(cache_type: &str) -> u64 {
     }
 }
 
-/// KV bytes per token (across all layers) for the given dimensions.
 pub fn kv_bytes_per_token(layers: u64, kv_embd: u64, cache_type_k: &str, cache_type_v: &str) -> u64 {
     layers
         .saturating_mul(kv_embd)
         .saturating_mul(cache_bytes_per_element(cache_type_k) + cache_bytes_per_element(cache_type_v))
 }
 
-/// KV cache size in MB for the given model dimensions and context.
-/// `kv_embd` is the effective per-layer KV dimension (embd × kv_heads/heads).
-/// `--ctx-size` is the total budget shared across server slots, so this does
-/// not scale with `--parallel`.
+/// KV cache in MB; `--ctx-size` is shared across slots, so this ignores `--parallel`.
 fn kv_cache_mb(layers: u64, kv_embd: u64, ctx: u64, cache_type_k: &str, cache_type_v: &str) -> u64 {
     kv_bytes_per_token(layers, kv_embd, cache_type_k, cache_type_v)
         .saturating_mul(ctx)
         / (1024 * 1024)
 }
 
-/// Estimate the memory footprint of running a model with the given settings.
-/// `model_size_mb` is the GGUF file size; layer/embedding info is read from
-/// the file header when available, with sensible fallbacks otherwise.
+/// Estimate memory footprint; layer info comes from the GGUF header with fallbacks.
 pub fn estimate_memory(
     model_path: &str,
     model_size_mb: u64,
@@ -179,8 +166,7 @@ pub fn estimate_memory(
     let embd = meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096);
     let model_ctx = meta.as_ref().and_then(|m| m.context_length);
 
-    // GQA factor: the KV cache stores only the KV-head dimensions per layer,
-    // i.e. embd × kv_heads / heads. Without GQA (kv_heads == heads) this is 1.
+    // GQA: KV cache stores embd × kv_heads / heads per layer.
     let gqa_factor = match (meta.as_ref().and_then(|m| m.attention_head_count),
                             meta.as_ref().and_then(|m| m.attention_head_count_kv)) {
         (Some(heads), Some(kv_heads)) if heads > 0 => kv_heads as f64 / heads as f64,
@@ -198,10 +184,8 @@ pub fn estimate_memory(
         notes.push(format!("Context: model default ({})", effective_ctx));
     }
 
-    // KV cache: per layer, K and V each n_ctx × kv_embd × bytes-per-element.
     let kv_cache_mb = kv_cache_mb(layers, kv_embd, effective_ctx, cache_type_k, cache_type_v);
 
-    // Split model weights between VRAM and RAM based on offload layers
     let offload_layers = if n_gpu_layers < 0 {
         layers as i64 // -1 = all layers
     } else {
@@ -211,7 +195,7 @@ pub fn estimate_memory(
     let model_in_vram_mb = (model_size_mb as f64 * offload_ratio) as u64;
     let model_in_ram_mb = model_size_mb - model_in_vram_mb;
 
-    // Compute overhead & KV cache placement: on GPU when offloading
+    // Overhead & KV live on GPU when offloading.
     let overhead_mb = 512;
     let gpu_offload = n_gpu_layers != 0;
     let kv_in_vram_mb = if gpu_offload { kv_cache_mb } else { 0 };
@@ -315,7 +299,6 @@ fn detect_gpus() -> Vec<GpuInfo> {
 fn detect_gpus_linux() -> Vec<GpuInfo> {
     let mut gpus = Vec::new();
 
-    // Try nvidia-smi first for NVIDIA GPUs
     if let Ok(output) = silent_cmd("nvidia-smi")
         .args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
         .output()
@@ -337,7 +320,6 @@ fn detect_gpus_linux() -> Vec<GpuInfo> {
         }
     }
 
-    // Try rocm-smi for AMD GPUs
     if let Ok(output) = silent_cmd("rocm-smi")
         .args(["--showmeminfo", "vram", "--json"])
         .output()
@@ -363,7 +345,6 @@ fn detect_gpus_linux() -> Vec<GpuInfo> {
         }
     }
 
-    // Fallback: parse lspci
     if gpus.is_empty() {
         if let Ok(output) = silent_cmd("lspci").output() {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -380,7 +361,6 @@ fn detect_gpus_linux() -> Vec<GpuInfo> {
                         GpuVendor::Unknown
                     };
 
-                    // Extract GPU name (part after the colon)
                     let name = line
                         .split(':')
                         .last()
@@ -400,7 +380,7 @@ fn detect_gpus_linux() -> Vec<GpuInfo> {
     gpus
 }
 
-/// Returns true for virtual/emulated GPU adapters that should be deprioritized.
+/// True for virtual/emulated adapters (deprioritized).
 #[cfg(any(target_os = "windows", test))]
 fn is_virtual_gpu(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -423,7 +403,6 @@ fn is_virtual_gpu(name: &str) -> bool {
 fn detect_gpus_windows() -> Vec<GpuInfo> {
     let mut gpus = Vec::new();
 
-    // Use PowerShell to query WMI
     let script = "Get-WmiObject Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json";
     if let Ok(output) = silent_cmd("powershell")
         .args(["-NoProfile", "-Command", script])
@@ -431,7 +410,6 @@ fn detect_gpus_windows() -> Vec<GpuInfo> {
     {
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
-            // Handle both single object and array
             let json_text = if text.trim().starts_with('[') {
                 text.to_string()
             } else {
@@ -456,7 +434,6 @@ fn detect_gpus_windows() -> Vec<GpuInfo> {
                         GpuVendor::Unknown
                     };
 
-                    // Try nvidia-smi for more accurate VRAM
                     let actual_vram = if vendor == GpuVendor::Nvidia {
                         get_nvidia_vram_mb().unwrap_or(vram_mb)
                     } else {
@@ -473,7 +450,7 @@ fn detect_gpus_windows() -> Vec<GpuInfo> {
         }
     }
 
-    // Filter out virtual GPUs when real ones are present
+    // Drop virtual adapters when real GPUs exist.
     let has_real_gpu = gpus.iter().any(|g| !is_virtual_gpu(&g.name));
     if has_real_gpu {
         gpus.retain(|g| !is_virtual_gpu(&g.name));
@@ -500,7 +477,6 @@ fn detect_gpus_macos() -> Vec<GpuInfo> {
                             .unwrap_or("Apple GPU")
                             .to_string();
 
-                        // VRAM parsing (e.g., "16 GB")
                         let vram_mb = display["spdisplays_vram"]
                             .as_str()
                             .and_then(|s| parse_vram_string(s))
@@ -524,7 +500,7 @@ fn detect_gpus_macos() -> Vec<GpuInfo> {
     if gpus.is_empty() {
         gpus.push(GpuInfo {
             name: "Apple Silicon GPU".to_string(),
-            vram_mb: 0, // shared memory, unknown
+            vram_mb: 0,
             vendor: GpuVendor::Apple,
         });
     }
@@ -577,7 +553,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
 
     #[cfg(target_os = "linux")]
     {
-        // CUDA (via nvidia-smi presence)
         let cuda_available = gpus.iter().any(|g| g.vendor == GpuVendor::Nvidia)
             && silent_cmd("nvidia-smi").output().map(|o| o.status.success()).unwrap_or(false);
         backends.push(BackendInfo {
@@ -588,7 +563,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             version: cuda_version.clone(),
         });
 
-        // ROCm (AMD)
         let rocm_available = gpus.iter().any(|g| g.vendor == GpuVendor::Amd)
             && (std::path::Path::new("/opt/rocm").exists()
                 || silent_cmd("rocm-smi").output().map(|o| o.status.success()).unwrap_or(false));
@@ -600,7 +574,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             version: None,
         });
 
-        // Vulkan
         let vulkan_available = !gpus.is_empty()
             && (std::path::Path::new("/usr/lib/libvulkan.so.1").exists()
                 || std::path::Path::new("/usr/lib/x86_64-linux-gnu/libvulkan.so.1").exists()
@@ -613,7 +586,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             version: None,
         });
 
-        // OpenVINO (Intel)
         let openvino_available = gpus.iter().any(|g| g.vendor == GpuVendor::Intel)
             && (std::path::Path::new("/opt/intel/openvino").exists()
                 || std::path::Path::new("/usr/lib/libopenvino.so").exists());
@@ -628,7 +600,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
 
     #[cfg(target_os = "windows")]
     {
-        // CUDA
         let cuda_available = gpus.iter().any(|g| g.vendor == GpuVendor::Nvidia)
             && silent_cmd("nvidia-smi").output().map(|o| o.status.success()).unwrap_or(false);
         backends.push(BackendInfo {
@@ -639,7 +610,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             version: cuda_version.clone(),
         });
 
-        // Vulkan
         let vulkan_available = !gpus.is_empty() && {
             let sys32 = std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".to_string());
             std::path::Path::new(&format!("{}\\System32\\vulkan-1.dll", sys32)).exists()
@@ -652,7 +622,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             version: None,
         });
 
-        // SYCL (Intel oneAPI)
         let sycl_available = gpus.iter().any(|g| g.vendor == GpuVendor::Intel) && {
             let oneapi = std::path::Path::new("C:\\Program Files (x86)\\Intel\\oneAPI").exists()
                 || std::path::Path::new("C:\\Program Files\\Intel\\oneAPI").exists();
@@ -666,7 +635,6 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
             version: None,
         });
 
-        // HIP (AMD on Windows)
         let hip_available = gpus.iter().any(|g| g.vendor == GpuVendor::Amd) && {
             std::path::Path::new("C:\\Program Files\\AMD\\ROCm").exists()
         };
@@ -694,12 +662,11 @@ fn detect_backends(gpus: &[GpuInfo]) -> Vec<BackendInfo> {
 }
 
 fn pick_best_backend(backends: &[BackendInfo], gpus: &[GpuInfo]) -> String {
-    // Priority: CUDA > Metal > ROCm > Vulkan > SYCL > HIP > OpenVINO > CPU
+    // Preference order; Vulkan needs a discrete GPU (>512 MB).
     let priority = ["cuda", "metal", "rocm", "vulkan", "hip", "sycl", "openvino", "cpu"];
 
     for &id in &priority {
         if let Some(b) = backends.iter().find(|b| b.id == id && b.available) {
-            // For Vulkan, prefer only if there's a discrete GPU
             if id == "vulkan" && !gpus.iter().any(|g| g.vram_mb > 512) {
                 continue;
             }
@@ -710,8 +677,7 @@ fn pick_best_backend(backends: &[BackendInfo], gpus: &[GpuInfo]) -> String {
     "cpu".to_string()
 }
 
-/// Model dimensions the estimator actually studies (from the GGUF header).
-/// Anything unknown falls back to common dense-model defaults.
+/// Model dimensions from the GGUF header; unknown fields use dense-model defaults.
 #[derive(Debug, Clone)]
 pub struct ModelSpec {
     pub size_mb: u64,
@@ -724,7 +690,6 @@ pub struct ModelSpec {
 }
 
 impl ModelSpec {
-    /// Minimal spec when only the file size is known.
     pub fn size_only(size_mb: u64, layers: Option<u32>) -> Self {
         Self {
             size_mb,
@@ -741,7 +706,6 @@ impl ModelSpec {
         self.expert_count.unwrap_or(0) > 0
     }
 
-    /// Effective per-layer KV dimension (GQA-aware).
     pub fn kv_embd(&self) -> u64 {
         if self.attention_head_count == 0 {
             return self.embedding_length.max(1);
@@ -750,7 +714,7 @@ impl ModelSpec {
         ((self.embedding_length as f64) * factor).max(1.0) as u64
     }
 
-    /// Approximate weight bytes per layer (includes output layer — close enough).
+    /// Weight bytes per layer (includes output layer — close enough).
     pub fn bytes_per_layer(&self) -> u64 {
         if self.layers == 0 {
             return 0;
@@ -758,13 +722,12 @@ impl ModelSpec {
         self.size_mb.saturating_mul(1024 * 1024) / self.layers
     }
 
-    /// Model's native context, or a sane default when unknown.
+    /// Native context, or a sane default when unknown.
     pub fn native_ctx(&self) -> u64 {
         self.context_length.unwrap_or(32768).clamp(4096, 131072)
     }
 }
 
-/// Full suggestion produced by studying model + system together.
 #[derive(Debug, Clone)]
 pub struct FullSuggestion {
     /// -1 = all layers on GPU, else explicit count.
@@ -780,21 +743,13 @@ pub struct FullSuggestion {
     pub notes: Vec<String>,
 }
 
-/// Study the model and the machine, then choose GPU offload, context, cache
-/// precision, threads and batch sizes as one coherent fit:
-///
-/// - Tier 1 (speed): biggest context ≥ 8k that still runs fully on GPU.
-/// - Tier 2 (balanced): biggest context with ≥ half the layers on GPU.
-/// - Tier 3 (capacity): biggest context that fits anywhere, leftover offload.
-/// Precision is tried f16-first inside every tier; q8_0 KV is nearly
-/// lossless and roughly halves KV pressure.
+/// Tiered fit: full-GPU ≥8k ctx, then balanced (≥half layers), then capacity; f16 first, q8_0 fallback.
 pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
     let total_vram_mb: u64 = system.gpus.iter().map(|g| g.vram_mb).sum();
     let ram_mb = system.available_ram_mb;
     let mut notes = Vec::new();
 
-    // Headroom: 10% of VRAM (min 1 GiB) stays free for the OS, CUDA context
-    // and fragmentation. A flat 512 MB is not enough on 12 GB+ cards.
+    // Headroom: 10% VRAM (min 1 GiB) for OS/CUDA/fragmentation.
     let usable_vram = total_vram_mb.saturating_sub((total_vram_mb / 10).max(1024));
     let total_usable_mb = if total_vram_mb > 0 {
         total_vram_mb + ram_mb
@@ -808,7 +763,6 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
     let bytes_per_layer = spec.bytes_per_layer().max(1);
 
     let kv_mb = |ctx: u64, k: &str, v: &str| kv_cache_mb(layers, kv_embd, ctx, k, v);
-    // GPU layers that fit the VRAM left after a KV cache of `kv` MB.
     let ngl_for = |kv: u64| -> u64 {
         if total_vram_mb == 0 {
             return 0;
@@ -816,7 +770,6 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
         let left = usable_vram.saturating_sub(kv.min(usable_vram));
         (left.saturating_mul(1024 * 1024) / bytes_per_layer).min(layers)
     };
-    // Context candidates: native, halving down to `floor`.
     let candidates = |floor: u64| -> Vec<u64> {
         let mut out = Vec::new();
         let mut ctx = native_ctx;
@@ -830,10 +783,9 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
         out
     };
 
-    // (cache_k, cache_v, ctx, ngl or -1, full_gpu)
     let mut pick: Option<(String, String, u64, i32, bool)> = None;
 
-    // Tier 1: biggest ctx ≥ 8k that fits fully on GPU (f16 first, then q8_0).
+    // Tier 1: biggest ctx ≥ 8k fully on GPU (f16, then q8_0).
     'tier1: for (k, v) in [("f16", "f16"), ("q8_0", "q8_0")] {
         for ctx in candidates(native_ctx.min(8192)) {
             if spec.size_mb.saturating_add(kv_mb(ctx, k, v)) <= usable_vram {
@@ -843,10 +795,7 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
         }
     }
 
-    // Tier 2 (balanced): biggest ctx with ≥ half the layers on GPU.
-    // Tier 3 (capacity): biggest ctx that fits anywhere, leftover offload.
-    // Both try f16 first, then q8_0, and require weights + KV within
-    // VRAM + RAM (minus margin).
+    // Tiers 2-3: biggest ctx within VRAM+RAM margin (f16, then q8_0).
     let margin_mb = 2048u64;
     let budget_mb = usable_vram.saturating_add(ram_mb).saturating_sub(margin_mb);
     if pick.is_none() {
@@ -878,8 +827,7 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
         Some((k, v, ctx, _, full)) => (k, v, ctx, full),
         None => ("q8_0".to_string(), "q8_0".to_string(), 4096, false),
     };
-    // Partial tiers store a placeholder ngl; the real count follows from the
-    // VRAM left after the chosen KV cache.
+    // Partial tiers defer ngl until after the KV choice.
     let kv_chosen_mb = kv_mb(n_ctx, &cache_type_k, &cache_type_v);
     if cache_type_k == "q8_0" {
         notes.push(format!(
@@ -910,10 +858,7 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
         ));
     }
 
-    // ── GPU layers: weights that fit the VRAM left after the KV cache.
-    // Offloading is pointless when the whole footprint exceeds VRAM + RAM —
-    // the model can't run either way, so stay CPU-only instead of suggesting
-    // a token few layers on GPU.
+    // ── GPU layers: weights fitting VRAM after KV. Stay CPU-only when nothing fits anywhere.
     let fits_anywhere = spec.size_mb.saturating_add(kv_chosen_mb)
         <= usable_vram.saturating_add(ram_mb).saturating_sub(margin_mb);
     let layers_fit = if fits_anywhere { ngl_for(kv_chosen_mb) } else { 0 };
@@ -961,8 +906,7 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
     }
 
     // ── 4. threads / batch ──
-    // CPU-bound inference (no offload) wants every logical thread; with GPU
-    // offload the physical cores are plenty and leave room for the OS.
+    // CPU-only wants all logical threads; GPU offload wants physical cores.
     let n_threads = if n_gpu_layers == 0 {
         system.cpu_threads.max(1).min(64)
     } else {
@@ -973,8 +917,7 @@ pub fn suggest_full(spec: &ModelSpec, system: &SystemInfo) -> FullSuggestion {
         n_threads,
         if n_gpu_layers == 0 { "all logical threads for CPU inference" } else { "physical cores" }
     ));
-    // Larger VRAM → larger micro-batch for prefill throughput; keep b = 4·ub
-    // and never exceed the chosen context.
+    // Larger VRAM → larger ubatch (b = 4·ub), capped by ctx.
     let mut n_ubatch = if total_vram_mb >= 16384 { 1024 } else { 512 };
     if n_ubatch as u64 > n_ctx {
         let mut halved = 32u32;

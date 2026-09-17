@@ -1,16 +1,5 @@
-//! Agent Skills discovery (agentskills.io-style `SKILL.md` folders).
-//!
-//! Skills are folders containing a `SKILL.md` with optional YAML frontmatter:
-//!
-//! ```text
-//! skills/
-//!   pdf-forms/SKILL.md       ← global ({data_dir}/catapult/skills/)
-//! project/.catapult/skills/deploy/SKILL.md
-//! ```
-//!
-//! Discovery is progressive disclosure: only names + descriptions are shown
-//! to the model (appended to the system prompt); the `skill` tool loads the
-//! full instructions on demand.
+//! Agent Skills discovery (`SKILL.md` folders): progressive disclosure — only names + descriptions reach the system prompt.
+//! The `skill` tool loads full instructions on demand.
 
 use std::path::PathBuf;
 
@@ -23,12 +12,10 @@ pub struct Skill {
     pub name: String,
     /// Short description from frontmatter (shown in the system prompt).
     pub description: String,
-    /// Path to the SKILL.md file.
     pub path: PathBuf,
 }
 
-/// Parse `name`/`description` out of a `SKILL.md` frontmatter block
-/// (`---` … `---`), tolerating missing fields.
+/// Parse frontmatter `name`/`description`, tolerating missing fields.
 fn parse_skill_md(content: &str, folder: &str) -> (String, String) {
     let mut name = folder.to_string();
     let mut description = String::new();
@@ -80,7 +67,6 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
             };
             let folder = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
             let (name, description) = parse_skill_md(&content, &folder);
-            // Project-local entries win over global ones with the same name.
             out.retain(|s: &Skill| s.name != name);
             out.push(Skill { name, description, path: skill_file });
         }
@@ -89,13 +75,11 @@ pub fn discover(roots: &[PathBuf]) -> Vec<Skill> {
     out
 }
 
-/// Full instructions for a skill (the `skill` tool returns this).
 pub fn load(skill: &Skill) -> Result<String> {
     std::fs::read_to_string(&skill.path)
         .with_context(|| format!("Cannot read skill {}", skill.path.display()))
 }
 
-/// A tool that expands a discovered skill's instructions on demand.
 pub struct SkillTool {
     skills: Vec<Skill>,
 }
@@ -153,7 +137,6 @@ impl crate::tools::Tool for SkillTool {
     }
 }
 
-/// Compact listing injected into the system prompt (name — description).
 pub fn system_prompt_listing(skills: &[Skill]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -171,7 +154,6 @@ pub fn system_prompt_listing(skills: &[Skill]) -> String {
 pub const SKILL_MD_CAP: usize = 32 * 1024;
 pub const SKILL_FILE_CAP: usize = 64 * 1024;
 
-/// Supporting-file subdirectories a skill may contain.
 const SKILL_SUBDIRS: &[&str] = &["references", "templates", "scripts", "assets"];
 
 /// Validate a skill name (filesystem-safe, discovery-stable).
@@ -234,9 +216,8 @@ fn validate_frontmatter(content: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Authoring tool for SKILL.md skills (orchestrator-only: subagents stay
-/// consumers). Project scope writes under `<project>/.catapult/skills`
-/// (team-shared); global scope under the app data dir (personal).
+/// Authoring tool (orchestrator-only; subagents stay consumers).
+/// Project scope is team-shared, global scope is personal.
 pub struct ManageSkillTool {
     project_root: std::path::PathBuf,
     global_root: Option<std::path::PathBuf>,
@@ -255,7 +236,6 @@ impl ManageSkillTool {
     }
 
     /// Resolve a skill dir: project first, then global (unless scoped).
-    /// Returns (dir, scope-used).
     fn resolve(&self, name: &str, scope: Option<&str>) -> Result<(std::path::PathBuf, &'static str)> {
         validate_name(name)?;
         match scope {
@@ -522,24 +502,18 @@ mod tests {
     fn manage_create_validates_and_discovers() {
         let (tool, project, base) = manage_tool("manage-create");
         assert_eq!(tool.name(), "manage_skill");
-        // Approval: curation is always gated.
         assert!(tool.approval_key(&serde_json::json!({"action": "create"})).is_some());
-        // Bad names rejected.
         assert!(tool.execute(&serde_json::json!({"action": "create", "name": "Bad Name!", "content": skill_md("x")})).is_err());
-        // Bad frontmatter rejected (missing description, name mismatch, empty body).
         assert!(tool.execute(&serde_json::json!({"action": "create", "name": "s", "content": "no frontmatter"})).is_err());
         assert!(tool.execute(&serde_json::json!({"action": "create", "name": "s", "content": "---\nname: s\n---\nbody"})).is_err());
         assert!(tool.execute(&serde_json::json!({"action": "create", "name": "s", "content": "---\nname: other\ndescription: d\n---\nbody"})).is_err());
         assert!(tool.execute(&serde_json::json!({"action": "create", "name": "s", "content": "---\nname: s\ndescription: d\n---\n"})).is_err());
-        // Valid create lands discoverable in project scope.
         let out = tool.execute(&serde_json::json!({"action": "create", "name": "deploy", "content": skill_md("deploy")})).unwrap();
         assert!(out.contains("project"));
         let found = discover(&[project]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].description, "Does things.");
-        // Same-scope collisions rejected…
         assert!(tool.execute(&serde_json::json!({"action": "create", "name": "deploy", "content": skill_md("deploy")})).is_err());
-        // …while a global copy may shadow (discovery still prefers project).
         tool.execute(&serde_json::json!({"action": "create", "name": "deploy", "content": skill_md("deploy"), "scope": "global"})).unwrap();
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -548,21 +522,17 @@ mod tests {
     fn manage_patch_edit_delete_roundtrip() {
         let (tool, _project, base) = manage_tool("manage-roundtrip");
         tool.execute(&serde_json::json!({"action": "create", "name": "fixer", "content": skill_md("fixer")})).unwrap();
-        // Targeted patch, then ambiguity refused without replace_all.
         let out = tool.execute(&serde_json::json!({"action": "patch", "name": "fixer", "old_string": "Do it.", "new_string": "Do it well."})).unwrap();
         assert!(out.contains("patched"));
         assert!(tool.execute(&serde_json::json!({"action": "patch", "name": "fixer", "old_string": "missing", "new_string": "x"})).is_err());
         tool.execute(&serde_json::json!({"action": "create", "name": "other", "content": skill_md("other")})).unwrap();
-        // Full rewrite keeps validation.
         assert!(tool.execute(&serde_json::json!({"action": "edit", "name": "fixer", "content": "nope"})).is_err());
         tool.execute(&serde_json::json!({"action": "edit", "name": "fixer", "content": skill_md("fixer")})).unwrap();
-        // Supporting files constrained to known subdirs.
         assert!(tool.execute(&serde_json::json!({"action": "write_file", "name": "fixer", "file_path": "../evil.md", "file_content": "x"})).is_err());
         assert!(tool.execute(&serde_json::json!({"action": "write_file", "name": "fixer", "file_path": "data/x.md", "file_content": "x"})).is_err());
         tool.execute(&serde_json::json!({"action": "write_file", "name": "fixer", "file_path": "references/api.md", "file_content": "API"})).unwrap();
         tool.execute(&serde_json::json!({"action": "remove_file", "name": "fixer", "file_path": "references/api.md"})).unwrap();
         assert!(tool.execute(&serde_json::json!({"action": "remove_file", "name": "fixer", "file_path": "references/api.md"})).is_err());
-        // Delete removes the whole skill dir.
         tool.execute(&serde_json::json!({"action": "delete", "name": "fixer"})).unwrap();
         assert!(tool.execute(&serde_json::json!({"action": "delete", "name": "fixer"})).is_err());
         let _ = std::fs::remove_dir_all(&base);
@@ -572,10 +542,8 @@ mod tests {
     fn manage_scopes_stay_separate() {
         let (tool, _project, base) = manage_tool("manage-scopes");
         tool.execute(&serde_json::json!({"action": "create", "name": "mine", "content": skill_md("mine"), "scope": "global"})).unwrap();
-        // Unscoped edits fall through to the global copy…
         let out = tool.execute(&serde_json::json!({"action": "patch", "name": "mine", "old_string": "Do it.", "new_string": "Done well."})).unwrap();
         assert!(out.contains("global"));
-        // …while project scope shadows it once created there.
         tool.execute(&serde_json::json!({"action": "create", "name": "mine", "content": skill_md("mine")})).unwrap();
         let out = tool.execute(&serde_json::json!({"action": "patch", "name": "mine", "old_string": "Do it.", "new_string": "Done better."})).unwrap();
         assert!(out.contains("project"));

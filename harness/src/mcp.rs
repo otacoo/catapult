@@ -1,14 +1,5 @@
-//! Minimal MCP (Model Context Protocol) stdio client.
-//!
-//! Speaks JSON-RPC 2.0 over newline-delimited stdio to MCP servers, exactly
-//! the transport llama.cpp also uses. The handshake is `initialize` →
-//! `notifications/initialized`; tools are listed once per server and exposed
-//! to the model as `mcp_<server>_<tool>` registry entries.
-//!
-//! The client is synchronous (thread + channel based) so tool execution can
-//! run on the blocking pool like the native tools. All failures are loud;
-//! a server that fails to start simply contributes no tools (surfaced as a
-//! notice by the caller).
+//! Minimal MCP stdio client: JSON-RPC 2.0 over newline-delimited stdio (`initialize` → `notifications/initialized`).
+//! Synchronous (thread + channel) so tools run on the blocking pool; failures are loud.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -33,7 +24,6 @@ pub struct McpToolInfo {
     pub schema: Value,
 }
 
-/// One live MCP server connection (child process over stdio).
 pub struct McpSession {
     child: Child,
     writer: std::process::ChildStdin,
@@ -43,7 +33,6 @@ pub struct McpSession {
 }
 
 impl McpSession {
-    /// Spawn a server process and complete the MCP handshake.
     pub fn start(
         command: &str,
         args: &[String],
@@ -97,7 +86,6 @@ impl McpSession {
             next_id: 1,
             timeout,
         };
-        // Handshake.
         let init = session.request(
             "initialize",
             serde_json::json!({
@@ -146,7 +134,7 @@ impl McpSession {
                     }
                     return Ok(value.get("result").cloned().unwrap_or(Value::Null));
                 }
-                Ok(_stale) => continue, // response for an older id
+                Ok(_stale) => continue,
                 Err(RecvTimeoutError::Timeout) => bail!("MCP request '{method}' timed out"),
                 Err(RecvTimeoutError::Disconnected) => {
                     bail!("MCP server closed the connection during '{method}'")
@@ -160,7 +148,6 @@ impl McpSession {
         self.send(&msg)
     }
 
-    /// Advertised tools of this server.
     pub fn list_tools(&mut self) -> Result<Vec<McpToolInfo>> {
         let result = self.request("tools/list", serde_json::json!({}))?;
         let mut out = Vec::new();
@@ -185,7 +172,7 @@ impl McpSession {
         Ok(out)
     }
 
-    /// Invoke a tool; returns the concatenated text content (fail loud).
+    /// Returns concatenated text content; fails loud on `isError`.
     pub fn call_tool(&mut self, name: &str, arguments: &Value) -> Result<String> {
         let result = self.request(
             "tools/call",
@@ -218,7 +205,6 @@ impl Drop for McpSession {
     }
 }
 
-/// A registry-facing wrapper around one MCP tool.
 #[derive(Clone)]
 pub struct McpTool {
     pub server: String,
@@ -279,7 +265,6 @@ mod tests {
     fn tool_names_namespaced_per_server() {
         assert_eq!(mcp_tool_name("ddg-search", "web_search"), "mcp_ddg-search_web_search");
         assert_eq!(mcp_tool_name("context7", "get-docs"), "mcp_context7_get-docs");
-        // Server and tool name must both appear, in order.
         let n = mcp_tool_name("a", "b");
         assert!(n.starts_with("mcp_"));
         assert!(n.ends_with("_b"));
@@ -287,7 +272,6 @@ mod tests {
 
     #[test]
     fn request_messages_are_jsonrpc_shaped() {
-        // The wire format must be exactly JSON-RPC 2.0 with an id.
         let msg = serde_json::json!({
             "jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {}
         });

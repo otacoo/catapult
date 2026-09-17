@@ -185,13 +185,9 @@ const DEFAULT_CONFIG: ServerConfig = {
   n_batch: 2048,
   n_ubatch: 512,
   cont_batching: true,
-  mlock: false,
-  no_mmap: false,
   seed: null,
   rope_freq_scale: null,
   rope_freq_base: null,
-  grp_attn_n: null,
-  grp_attn_w: null,
   parallel: 1,
   extra_params: {},
 };
@@ -1414,11 +1410,6 @@ export default function Server() {
                 onChange={(v) => setEp("lazy-mode", v === "auto" ? "" : v)} />
             </div>
             <div className="space-y-3 mt-2">
-              <Toggle label="mlock" flag="--load-mode" hint="Retired upstream — mapped to --load-mode mmap+mlock (explicit Load Mode wins)" checked={config.mlock}
-                onChange={(v) => setConfig((c) => ({ ...c, mlock: v }))} />
-              <Toggle label="Memory Map" flag="--load-mode" hint="Retired upstream — disabling maps to --load-mode none (explicit Load Mode wins)" checked={!config.no_mmap}
-                onChange={(v) => setConfig((c) => ({ ...c, no_mmap: !v }))} />
-              <Toggle label="Direct IO" flag="--load-mode" hint="Retired upstream — mapped to --load-mode dio (explicit Load Mode wins)" checked={hasFlag("direct-io")} onChange={(v) => setFlag("direct-io", v)} />
               <Toggle label="CPU MoE" flag="--cpu-moe" hint="Keep all MoE weights on CPU" checked={hasFlag("cpu-moe")} onChange={(v) => setFlag("cpu-moe", v)} />
               <Toggle label="CPU MoE (Draft)" flag="--spec-draft-cpu-moe" hint="Keep all MoE weights on CPU for draft model" checked={hasFlag("spec-draft-cpu-moe")} onChange={(v) => setFlag("spec-draft-cpu-moe", v)} />
               <Toggle label="Repack" flag="--no-repack" hint="Enable weight repacking (default: on)" checked={!hasFlag("no-repack")} onChange={(v) => setFlag("no-repack", !v)} />

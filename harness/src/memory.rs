@@ -1,31 +1,18 @@
-//! Declarative long-term memory (MEMORY.md).
-//!
-//! Two files: a global one under the app data directory (user preferences,
-//! durable corrections) and a per-project one (`.catapult/MEMORY.md`: repo
-//! conventions, project facts). Both are injected as one small stable block
-//! in the system prompt; the `remember` tool curates them (writes go through
-//! the normal approval flow). No retrieval layer: the files are small by
-//! design and fully injected.
-//!
-//! Contrast: memory = small durable facts (always in context), skills =
-//! procedures (loaded on demand), sessions = episodic history.
+//! Declarative long-term memory (MEMORY.md): global + per-project files injected as one stable system-prompt block.
+//! No retrieval layer (files stay small); contrast skills (on-demand procedures) and sessions (episodic history).
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-/// Max injected memory block: global + project combined.
 pub const MEMORY_BLOCK_CAP: usize = 4 * 1024;
 /// Refuse new notes past this file size (forget something first).
 pub const MEMORY_FILE_CAP: usize = 16 * 1024;
 
-/// Path of the per-project memory file.
 pub fn project_memory_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".catapult").join("MEMORY.md")
 }
 
-/// Combined memory block for the system prompt (global first, then project).
-/// Missing/empty files contribute nothing. Capped so the prefix stays
-/// cache-friendly.
+/// Combined block (global first); missing files contribute nothing. Capped to stay cache-friendly.
 pub fn load_block(global_file: Option<&std::path::Path>, project_root: &std::path::Path) -> String {
     let mut sections = Vec::new();
     if let Some(path) = global_file {
@@ -58,8 +45,7 @@ fn read_trimmed(path: &std::path::Path) -> Option<String> {
     }
 }
 
-/// Curator tool for both memory files. Writes are approval-gated like any
-/// other mutating tool; `scope` picks the file (`project` default).
+/// Curator tool; writes are approval-gated, `scope` picks the file.
 pub struct RememberTool {
     project_file: std::path::PathBuf,
     global_file: Option<std::path::PathBuf>,
@@ -185,23 +171,18 @@ mod tests {
     fn note_forget_show_roundtrip() {
         let (root, global) = setup("roundtrip");
         let tool = RememberTool::new(&root, Some(global.clone()));
-        // Approval: showing is free, writes need a grant.
         assert!(tool.approval_key(&json!({"action": "show"})).is_none());
         assert!(tool.approval_key(&json!({"action": "note", "text": "x"})).is_some());
-        // Empty at first.
         let out = tool.execute(&json!({"action": "show"})).unwrap();
         assert_eq!(out, "(empty)");
-        // Note to project memory.
         tool.execute(&json!({"action": "note", "text": "Always use pnpm here"})).unwrap();
         let out = tool.execute(&json!({"action": "show"})).unwrap();
         assert!(out.contains("pnpm"));
-        // Global scope is a separate file.
         tool.execute(&json!({"action": "note", "text": "My name is Ada", "scope": "global"})).unwrap();
         let out = tool.execute(&json!({"action": "show", "scope": "global"})).unwrap();
         assert!(out.contains("Ada"));
         let out = tool.execute(&json!({"action": "show"})).unwrap();
         assert!(!out.contains("Ada"));
-        // Forget removes by substring.
         let out = tool.execute(&json!({"action": "forget", "text": "pnpm"})).unwrap();
         assert!(out.contains('1'));
         let out = tool.execute(&json!({"action": "show"})).unwrap();
@@ -220,7 +201,6 @@ mod tests {
         assert!(block.contains("Project memory"));
         assert!(block.contains("global fact"));
         assert!(block.contains("project fact"));
-        // Missing files contribute nothing.
         let empty = load_block(None, &std::env::temp_dir().join("harness-memory-nope"));
         assert_eq!(empty, "");
         let _ = std::fs::remove_dir_all(&root);

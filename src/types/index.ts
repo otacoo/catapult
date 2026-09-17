@@ -220,13 +220,9 @@ export interface ServerConfig {
   n_batch: number;
   n_ubatch: number;
   cont_batching: boolean;
-  mlock: boolean;
-  no_mmap: boolean;
   seed: number | null;
   rope_freq_scale: number | null;
   rope_freq_base: number | null;
-  grp_attn_n: number | null;
-  grp_attn_w: number | null;
   parallel: number;
   extra_params: Record<string, string>;
 }

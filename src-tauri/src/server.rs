@@ -116,15 +116,10 @@ pub struct ServerConfig {
     pub n_batch: u32,
     pub n_ubatch: u32,
     pub cont_batching: bool,
-    // Memory
-    pub mlock: bool,
-    pub no_mmap: bool,
     // Misc
     pub seed: Option<u64>,
     pub rope_freq_scale: Option<f32>,
     pub rope_freq_base: Option<f32>,
-    pub grp_attn_n: Option<u32>,
-    pub grp_attn_w: Option<u32>,
     // Slots
     pub parallel: u32,
     /// Working directory for the llama-server child process. Controls where the
@@ -158,13 +153,9 @@ impl Default for ServerConfig {
             n_batch: 512,
             n_ubatch: 512,
             cont_batching: true,
-            mlock: false,
-            no_mmap: false,
             seed: None,
             rope_freq_scale: None,
             rope_freq_base: None,
-            grp_attn_n: None,
-            grp_attn_w: None,
             parallel: 1,
             working_dir: None,
             extra_params: HashMap::new(),
@@ -259,6 +250,9 @@ pub fn migrate_extra_params(extra: &mut HashMap<String, String>) -> bool {
         "profile",
         "profile-output",
         "verbose-prompt",
+        // Grouped attention was retired upstream with no replacement.
+        "grp-attn-n",
+        "grp-attn-w",
     ];
     // Old → canonical rename. Some are still recognized by llama.cpp as aliases,
     // but we normalise to the canonical form so the UI and saved presets stay
@@ -843,9 +837,9 @@ fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, 
     let mut notes = Vec::new();
 
     // Retired memory toggles → --load-mode values (b10917+ removed --mlock,
-    // --no-mmap, --direct-io; the binary rejects them). An explicit
-    // --load-mode always wins. Extra-map legacy keys (hand-edited presets)
-    // fold in first; the typed fields below take precedence over them.
+    // --no-mmap, --direct-io; the binary rejects them). Only lingering
+    // extra-map keys from old presets can still carry them. An explicit
+    // --load-mode always wins.
     let mut legacy_mode: Option<&str> = None;
     if extra.remove("direct-io").is_some() {
         legacy_mode = Some("dio");
@@ -858,11 +852,6 @@ fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, 
     }
     if extra.remove("mlock").is_some() {
         legacy_mode = Some("mmap+mlock");
-    }
-    if config.mlock {
-        legacy_mode = Some(if config.no_mmap { "mlock" } else { "mmap+mlock" });
-    } else if config.no_mmap {
-        legacy_mode = Some("none");
     }
     if let Some(mode) = legacy_mode {
         if extra.contains_key("load-mode") {
@@ -913,9 +902,7 @@ fn sanitize_extra_for_model(config: &ServerConfig) -> (HashMap<String, String>, 
             .get("ot")
             .map(|v| v.contains("cpu"))
             .unwrap_or(false);
-    let load_mode_chosen = extra.contains_key("load-mode")
-        || extra.contains_key("no-mmap")
-        || config.no_mmap;
+    let load_mode_chosen = extra.contains_key("load-mode");
     if cpu_tensors && !load_mode_chosen {
         extra.insert("load-mode".to_string(), "none".to_string());
         notes.push(
@@ -1084,10 +1071,6 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
         args.push("--no-cont-batching".to_string());
     }
 
-    // NOTE: --mlock/--no-mmap/--direct-io and --grp-attn-* were retired
-    // upstream; memory mode now flows through --load-mode (see sanitize),
-    // and grouped attention has no replacement (dropped with a note below).
-
     if let Some(seed) = config.seed {
         args.push("--seed".to_string());
         args.push(seed.to_string());
@@ -1101,10 +1084,6 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     if let Some(base) = config.rope_freq_base {
         args.push("--rope-freq-base".to_string());
         args.push(format!("{:.1}", base));
-    }
-
-    if config.grp_attn_n.is_some() || config.grp_attn_w.is_some() {
-        notes.push("--grp-attn-* retired upstream; ignored".to_string());
     }
 
     args.push("--parallel".to_string());
@@ -1662,33 +1641,6 @@ mod tests {
     }
 
     #[test]
-    fn build_args_maps_typed_mlock_to_load_mode() {
-        let config = ServerConfig {
-            model_path: "/m.gguf".to_string(),
-            mlock: true,
-            ..Default::default()
-        };
-        let (args, notes) = build_args_with_notes(&config);
-        assert!(!args.contains(&"--mlock".to_string()));
-        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
-        assert_eq!(args[idx + 1], "mmap+mlock");
-        assert!(notes.iter().any(|n| n.contains("--load-mode")));
-    }
-
-    #[test]
-    fn build_args_maps_typed_no_mmap_to_load_mode_none() {
-        let config = ServerConfig {
-            model_path: "/m.gguf".to_string(),
-            no_mmap: true,
-            ..Default::default()
-        };
-        let (args, _) = build_args_with_notes(&config);
-        assert!(!args.contains(&"--no-mmap".to_string()));
-        let idx = args.iter().position(|a| a == "--load-mode").unwrap();
-        assert_eq!(args[idx + 1], "none");
-    }
-
-    #[test]
     fn build_args_maps_direct_io_to_load_mode_dio() {
         let mut extra = HashMap::new();
         extra.insert("direct-io".to_string(), String::new());
@@ -1705,20 +1657,22 @@ mod tests {
     }
 
     #[test]
-    fn build_args_explicit_load_mode_beats_legacy_toggles() {
+    fn build_args_explicit_load_mode_beats_legacy_keys() {
         let mut extra = HashMap::new();
         extra.insert("load-mode".to_string(), "mmap".to_string());
+        extra.insert("no-mmap".to_string(), String::new());
         let config = ServerConfig {
             model_path: "/m.gguf".to_string(),
-            mlock: true,
             extra_params: extra,
             ..Default::default()
         };
-        let (args, _) = build_args_with_notes(&config);
+        let (args, notes) = build_args_with_notes(&config);
+        assert!(!args.contains(&"--no-mmap".to_string()));
         let modes: Vec<&String> = args.iter().filter(|a| *a == "--load-mode").collect();
         assert_eq!(modes.len(), 1);
         let idx = args.iter().position(|a| a == "--load-mode").unwrap();
         assert_eq!(args[idx + 1], "mmap");
+        assert!(notes.iter().any(|n| n.contains("explicit --load-mode wins")));
     }
 
     #[test]
@@ -2184,6 +2138,8 @@ mod tests {
             "profile",
             "profile-output",
             "verbose-prompt",
+            "grp-attn-n",
+            "grp-attn-w",
         ] {
             ep.insert(k.to_string(), "x".to_string());
         }

@@ -1,7 +1,5 @@
-//! Git worktree orchestration (Phase 5): run parallel agent sessions on
-//! separate branches without context bleeding. Thin wrappers over `git
-//! worktree` with output parsing; failures are loud so the UI can surface
-//! them (e.g. a worktree with uncommitted changes needs `--force`).
+//! Git worktree orchestration: parallel sessions on separate branches.
+//! Failures are loud so the UI can surface them.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,7 +18,6 @@ pub struct Worktree {
     pub main: bool,
 }
 
-/// Run `git` with the repo as CWD, with a timeout. Returns stdout on success.
 fn run_git(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String> {
     #[allow(unused_mut)]
     let mut cmd = std::process::Command::new("git");
@@ -40,7 +37,6 @@ fn run_git(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Read remaining output after exit.
                 use std::io::Read;
                 let mut out = Vec::new();
                 if let Some(mut so) = child.stdout.take() {
@@ -68,14 +64,12 @@ fn run_git(args: &[&str], cwd: &Path, timeout_secs: u64) -> Result<String> {
     }
 }
 
-/// Is this path inside a git working tree?
 pub fn is_repo(path: &Path) -> bool {
     run_git(&["rev-parse", "--is-inside-work-tree"], path, 10)
         .map(|out| out.trim() == "true")
         .unwrap_or(false)
 }
 
-/// Parse `git worktree list --porcelain` output into entries.
 pub fn parse_worktree_list(output: &str) -> Vec<Worktree> {
     let mut out: Vec<Worktree> = Vec::new();
     let mut current: Option<Worktree> = None;
@@ -130,7 +124,6 @@ pub fn parse_worktree_list(output: &str) -> Vec<Worktree> {
     out
 }
 
-/// List the worktrees of the repo containing `path`.
 pub fn list(path: &Path) -> Result<Vec<Worktree>> {
     let out = run_git(&["worktree", "list", "--porcelain"], path, GIT_TIMEOUT_SECS)?;
     Ok(parse_worktree_list(&out))
@@ -151,11 +144,8 @@ pub fn add(repo: &Path, path: &Path, branch: Option<&str>) -> Result<String> {
     Ok(path_str)
 }
 
-/// Resolve (creating if needed) the sibling worktree for `branch`:
-/// `<repo-parent>/<repo-name>-<branch>`. Returns the path and whether it was
-/// just created. An existing directory is reused (continued work); otherwise
-/// a new branch is checked out there. Errors when the project is not a git
-/// repo or the branch name is invalid.
+/// Resolve the sibling worktree `<repo>-<branch>` (creating if needed; existing dirs reused).
+/// Errors when not a git repo or the branch name is invalid.
 pub fn ensure_worktree(repo: &Path, branch: &str) -> Result<(PathBuf, bool)> {
     let branch = branch.trim();
     if branch.is_empty()
@@ -292,16 +282,13 @@ bare\n\
             return; // git is not installed in this environment
         }
         let root = init_repo("ensure");
-        // First call creates a new branch worktree…
         let (path, created) = ensure_worktree(&root, "feature-y").unwrap();
         assert!(created);
         assert!(path.is_dir());
         assert!(list(&root).unwrap().iter().any(|w| w.branch.as_deref() == Some("feature-y")));
-        // …second call reuses it for continued work.
         let (path2, created2) = ensure_worktree(&root, "feature-y").unwrap();
         assert!(!created2);
         assert_eq!(path, path2);
-        // Bad names and non-repos fail loudly.
         assert!(ensure_worktree(&root, "no spaces allowed!").is_err());
         let plain = std::env::temp_dir().join(format!("harness-wt-plain-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&plain);

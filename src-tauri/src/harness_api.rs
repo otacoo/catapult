@@ -1,17 +1,5 @@
 // ── Harness runtime + commands ──────────────────────────────────────────────
-//
-// Phase 1: the agent loop (orchestrator) with sandboxed tools, running against
-// the managed llama-server. State lives in `HarnessRuntime` (shared via
-// AppState): message history for the current session, the permission engine,
-// an in-flight marker, and the pending approval channel the loop parks on.
-//
-// Phase 3: model roles — in router mode, the orchestrator and worker models
-// are resolved against the router's registry, the models-preset is regenerated
-// when needed, and role models are loaded on demand before the loop starts.
-//
-// Events to the UI flow through a typed `Channel` (stream + tool events) and
-// a global `harness_approval` event for approval prompts (they can arrive
-// while the invoke promise is still pending).
+// Agent loop with sandboxed tools; roles resolve in router mode, events via Channel + harness_approval.
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -27,9 +15,7 @@ use harness::permissions::PermissionEngine;
 use harness::sandbox::PathJail;
 use harness::tools::ToolRegistry;
 
-/// Byte-stable system prompt (KV-cache friendly). The project line is appended
-/// once and stays stable per project. The OS/shell section comes from the
-/// shared harness snippet so subagents get identical guidance.
+/// Byte-stable prompt (KV-cache friendly); OS/shell comes from the shared snippet so subagents match.
 fn system_prompt() -> String {
     format!(
         "You are Catapult's agent, working inside a sandboxed project directory. \
@@ -45,44 +31,36 @@ and give a concise summary when done.",
 }
 
 pub struct HarnessRuntime {
-    /// Current agent conversation (system prompt included once, byte-stable).
+    /// Current conversation (system prompt included once, byte-stable).
     pub history: Mutex<Vec<ChatMessage>>,
     pub engine: Arc<PermissionEngine>,
-    /// Set while the agent loop is in flight; blocks concurrent sends.
+    /// Set while the loop is in flight; blocks concurrent sends.
     pub running: std::sync::atomic::AtomicBool,
-    /// The parked approval the loop is waiting on (oneshot per request).
+    /// Parked approval the loop waits on (oneshot per request).
     pub pending: Mutex<Option<tokio::sync::oneshot::Sender<Approved>>>,
-    /// Whether the persisted session was loaded this app run (loaded lazily
-    /// on the first send so a fresh start resumes, but finished sessions
-    /// don't resurrect mid-run).
+    /// Persisted session loaded this run (lazily on first send).
     pub session_loaded: std::sync::atomic::AtomicBool,
-    /// One-shot notices (e.g. VRAM feasibility) are shown once per app run.
+    /// One-shot notices (e.g. VRAM) shown once per run.
     pub notice_shown: std::sync::atomic::AtomicBool,
-    /// MCP server sessions + their tool listings (built once per app run;
-    /// invalidated when the Tools page saves mcp.json).
+    /// MCP sessions + tools (built once; invalidated on mcp.json save).
     pub mcp: Mutex<Option<Arc<Vec<McpConnection>>>>,
-    /// Id of the session file currently open (None = new one on next send).
+    /// Open session file id (None = new on next send).
     pub session_id: Mutex<Option<String>>,
-    /// Prompt tokens of the last completed run — the freshest measure of
-    /// context fill until the next run finishes.
+    /// Prompt tokens of the last run (freshest context-fill measure).
     pub last_prompt_tokens: Mutex<Option<u64>>,
-    /// Generated tokens of the last completed run (added to the above for
-    /// the ring's used figure).
+    /// Generated tokens of the last run (added above for the ring).
     pub last_gen_tokens: Mutex<Option<u64>>,
-    /// Response display metadata by transcript message index (footer stats).
+    /// Display metadata by message index (footer stats).
     pub meta: Mutex<std::collections::HashMap<usize, MessageMeta>>,
-    /// Throttled /metrics scrape (lifetime-average gauges barely move; every
-    /// router query logs a proxy line, so this refreshes at most ~30s).
+    /// Throttled /metrics scrape (at most ~30s; router queries log proxy lines).
     pub metrics_at: Mutex<Option<std::time::Instant>>,
     pub metrics_cache: Mutex<ServerThroughput>,
-    /// Whether the persisted global grants were loaded this app run.
+    /// Global grants loaded this run.
     pub permissions_global_loaded: std::sync::atomic::AtomicBool,
-    /// Project id whose persisted grants are currently in memory (None =
-    /// none loaded yet, or no project active). Tracks switches for eviction.
+    /// Project whose grants are in memory (None = none yet); tracks switches for eviction.
     pub permissions_project: Mutex<Option<String>>,
 }
 
-/// Shape of a persisted session file.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PersistedSession {
     pub id: String,
@@ -92,15 +70,12 @@ pub struct PersistedSession {
     pub created: i64,
     pub updated: i64,
     pub messages: Vec<ChatMessage>,
-    /// Per-response display metadata (model, tok/s, …) keyed by message
-    /// index. Old session files without it still load (`default`).
+    /// Footer metadata by message index; old files without it still load.
     #[serde(default)]
     pub meta: Vec<MessageMeta>,
 }
 
-/// Display metadata for one assistant response turn: what the footer under
-/// each bubble shows. Persisted with the session so footers survive restarts;
-/// never sent to the model (stored alongside, not inside, the transcript).
+/// Footer metadata for one turn; persisted, never sent to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageMeta {
     pub index: usize,
@@ -114,12 +89,11 @@ pub struct MessageMeta {
     pub prompt_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
-    /// Reasoning trace for the turn (capped; restored collapsed).
+    /// Reasoning trace (capped; restored collapsed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
 }
 
-/// Listing entry for the Chat sidebar.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -163,9 +137,7 @@ fn read_grants_file(path: &std::path::Path) -> Vec<harness::permissions::Grant> 
         .unwrap_or_default()
 }
 
-/// Write the engine's persistable grants to disk: global grants app-wide,
-/// project grants under the active project. Runs after every persistable
-/// grant lands and on project switch, so trust survives restarts.
+/// Persist global + active-project grants so trust survives restarts.
 fn save_permission_grants(state: &AppState) {
     let Some(dir) = permissions_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
@@ -193,9 +165,7 @@ fn save_permission_grants(state: &AppState) {
     }
 }
 
-/// Load persisted grants: global once per app run, project grants on change.
-/// Evicts the previous project's in-memory grants (after saving) so trust
-/// never leaks across projects.
+/// Load global once + project on change; evicts old project so trust never leaks.
 fn ensure_permissions_loaded(state: &AppState) {
     let rt = &state.harness;
     if !rt.permissions_global_loaded.swap(true, Ordering::SeqCst) {
@@ -220,7 +190,7 @@ fn ensure_permissions_loaded(state: &AppState) {
     }
 }
 
-/// Stable-ish id from a timestamp: `s<millis>`.
+/// Timestamp id `s<millis>`.
 fn new_session_id() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -289,14 +259,12 @@ fn sessions_for_project(project: Option<&str>) -> Vec<PersistedSession> {
         .collect()
 }
 
-/// Load a persisted session into the runtime (replaces history + id).
 fn adopt_session(state: &AppState, s: PersistedSession) {
     *state.harness.history.lock().unwrap() = s.messages;
     adopt_meta(state, s.meta);
 }
 
-/// Resume the most recently updated session for the active project (app
-/// start). Conversations never leak across projects this way.
+/// Resume the newest session for the active project (never leaks across projects).
 fn load_session(state: &AppState) {
     let rt = &state.harness;
     if rt.session_loaded.swap(true, Ordering::SeqCst) {
@@ -311,9 +279,7 @@ fn load_session(state: &AppState) {
     }
 }
 
-/// Id of the stored session (same project) whose transcript is the longest
-/// exact prefix of `history`. Used when the runtime id was lost so sending
-/// into an old session updates it instead of forking a duplicate file.
+/// Stored session id whose transcript is the longest exact prefix of `history` (avoids forking duplicates).
 fn longest_prefix_session(state: &AppState, history: &[ChatMessage]) -> Option<String> {
     let project = {
         let c = state.config.lock().unwrap();
@@ -322,9 +288,7 @@ fn longest_prefix_session(state: &AppState, history: &[ChatMessage]) -> Option<S
     longest_prefix_in(&sessions_for_project(project.as_deref()), history)
 }
 
-/// Pure core of [`longest_prefix_session`]: longest stored transcript that is
-/// an exact prefix of `history` (and strictly shorter — identical content
-/// means this exact save already happened).
+/// Longest stored transcript that is an exact (strictly shorter) prefix of `history`.
 fn longest_prefix_in(sessions: &[PersistedSession], history: &[ChatMessage]) -> Option<String> {
     sessions
         .iter()
@@ -339,10 +303,7 @@ fn longest_prefix_in(sessions: &[PersistedSession], history: &[ChatMessage]) -> 
         .map(|s| s.id.clone())
 }
 
-/// Save the current transcript under its id (creating the id if needed).
-/// When the runtime id was lost (restart races, explicit loads), reuse the
-/// session file this history extends instead of forking a duplicate: the
-/// longest stored transcript that is an exact prefix of the current one wins.
+/// Save transcript under its id, reusing the longest-prefix file when the id was lost.
 fn save_session(state: &AppState) {
     let Some(dir) = session_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
@@ -387,25 +348,21 @@ fn save_session(state: &AppState) {
     }
 }
 
-/// Snapshot of the runtime meta map for persistence (index order).
 fn stored_meta(state: &AppState) -> Vec<MessageMeta> {
     let mut v: Vec<MessageMeta> = state.harness.meta.lock().unwrap().values().cloned().collect();
     v.sort_by_key(|m| m.index);
     v
 }
 
-/// Restore a session's meta map from its persisted form.
 fn adopt_meta(state: &AppState, meta: Vec<MessageMeta>) {
     *state.harness.meta.lock().unwrap() =
         meta.into_iter().map(|m| (m.index, m)).collect();
 }
 
-/// Drop a session's meta map (new chat / project switch / delete).
 fn clear_meta(state: &AppState) {
     state.harness.meta.lock().unwrap().clear();
 }
 
-/// Drop meta entries at or past `len` (rewind truncates the transcript).
 fn truncate_meta(state: &AppState, len: usize) {
     state.harness.meta.lock().unwrap().retain(|&i, _| i < len);
 }
@@ -432,26 +389,22 @@ impl HarnessRuntime {
     }
 }
 
-/// Live context stats for the ring: fill from the last completed run, ceiling
-/// from the live slot size (`GET /slots`, which reflects the server's actual
-/// per-slot context), falling back to the GGUF metadata length.
+/// Ring stats: fill from last run, ceiling from live slot or GGUF length.
 #[derive(Debug, Serialize)]
 pub struct ContextStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
-    /// Server-side avg generation throughput (needs the Metrics toggle).
+    /// Needs the Metrics toggle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_gen_tps: Option<f64>,
-    /// Server-side avg prompt (prefill) throughput (needs Metrics toggle).
+    /// Needs Metrics toggle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_prompt_tps: Option<f64>,
 }
 
-/// Ring "used" figure: measured prompt + generated added together; when the
-/// server omits usage reporting, the prompt is estimated from transcript
-/// characters (~4 chars/token) so the ring still moves.
+/// Prompt + generated; estimates prompt from chars (~4/token) when usage is omitted.
 fn used_figure(last_prompt: Option<u64>, last_gen: Option<u64>, hist_chars: usize) -> Option<u64> {
     match (last_prompt, last_gen) {
         (Some(p), Some(g)) => Some(p.saturating_add(g)),
@@ -478,16 +431,11 @@ pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<Context
             other => other.to_string().len(),
         })
         .sum();
-    // Used figure: prompt + generated added together (the run's footprint).
-    // Small models/servers often omit usage reporting — then estimate the
-    // prompt from the transcript (~4 chars/token) so the ring still moves.
     let mut used = used_figure(last_prompt, last_gen, hist_chars);
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
     let router = is_router_mode(&state);
-    // Total = the model's max context (GGUF header): role model, single
-    // loaded model, then the router's served model. Stable and always
-    // available, unlike --fit/live slot sizes.
+    // Total from GGUF header (stable; unlike --fit/live slot sizes).
     let mut total: Option<u64> = None;
     if let Some(path) = active_model_path(&state) {
         total = crate::models::read_model_metadata(std::path::Path::new(&path))

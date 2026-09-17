@@ -1,9 +1,6 @@
 // ── Chat attachments (files/images for multimodal models) ───────────────────
 //
-// The frontend reads nothing itself: paths + optional base64 payloads arrive
-// here and are folded into the user message as OpenAI multimodal content:
-// a text part plus one `image_url` part per attached image (data URL), and
-// text attachments appended as fenced blocks.
+// Folded into the user message as OpenAI multimodal content (data-URL images + fenced text).
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -11,8 +8,7 @@ use serde_json::{json, Value};
 
 use harness::client::ChatMessage;
 
-/// An attachment sent from the Chat UI. Images carry `data_base64` (read via
-/// the read command); text files carry `text`.
+/// Chat UI attachment: images carry `data_base64`, text files carry `text`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
@@ -40,9 +36,8 @@ fn mime_for(name: &str) -> &'static str {
     }
 }
 
-/// Fold the typed message and its attachments into a single OpenAI user
-/// message: a multimodal parts array when images are present, otherwise a
-/// plain string with text attachments appended as fenced blocks.
+/// Fold message + attachments into one OpenAI user message (parts array with
+/// images, else string with fenced text blocks).
 pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>) -> ChatMessage {
     let attachments = attachments.unwrap_or_default();
     if attachments.is_empty() {
@@ -101,9 +96,7 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
     }
 }
 
-/// Image `image_url` parts for the attachments (empty when no images).
-/// Subagent runs receive these so visual work can be delegated to a
-/// vision-capable worker.
+/// Image parts for subagent delegation (empty when no images).
 pub fn image_parts(attachments: &Option<Vec<Attachment>>) -> Vec<Value> {
     let mut out = Vec::new();
     for a in attachments.as_ref().map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -119,8 +112,7 @@ pub fn image_parts(attachments: &Option<Vec<Attachment>>) -> Vec<Value> {
     out
 }
 
-/// Fenced text blocks for text attachments (forwards file context the model
-/// can't re-read, e.g. into an isolated subagent transcript).
+/// Fenced text blocks for contexts the model can't re-read (e.g. subagents).
 pub fn fenced_texts(attachments: &Option<Vec<Attachment>>) -> Vec<String> {
     let mut out = Vec::new();
     for a in attachments.as_ref().map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -141,9 +133,7 @@ pub fn fenced_texts(attachments: &Option<Vec<Attachment>>) -> Vec<String> {
     out
 }
 
-/// Strip `image_url` parts for a text-only model, leaving a delegation hint
-/// per image so it routes visual work to a capable worker instead of
-/// guessing. Text parts pass through untouched.
+/// Strip images for text-only models, leaving a delegation hint per image.
 pub fn strip_image_parts(msg: ChatMessage) -> ChatMessage {
     let images: Vec<String> = match &msg.content {
         Some(Value::Array(parts)) => parts
@@ -153,8 +143,7 @@ pub fn strip_image_parts(msg: ChatMessage) -> ChatMessage {
                     return None;
                 }
                 let url = p.get("image_url")?.get("url")?.as_str().unwrap_or("");
-                // Data URLs carry no filename; the text part's [image: …]
-                // markers (if any) already name them.
+                // Data URLs carry no filename; text markers already name them.
                 Some(if url.len() > 60 { "[attached image]" } else { url }.to_string())
             })
             .collect(),
@@ -191,8 +180,7 @@ pub fn strip_image_parts(msg: ChatMessage) -> ChatMessage {
     }
 }
 
-/// Read an attachment for the Chat UI: images are returned as base64
-/// (frontend builds the data URL), text files as UTF-8 text.
+/// Read attachment: images as base64, text as UTF-8.
 #[derive(Debug, Serialize)]
 pub struct AttachmentRead {
     pub kind: String,

@@ -29,15 +29,10 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub server: SharedServerState,
     pub http_client: reqwest::Client,
-    /// Per-download control flag: 0 = active, 1 = cancel (discard), 2 = pause
-    /// (keep partial file for resume). Set by `pause_download` / `cancel_download`
-    /// and polled by the download loop between stream chunks.
+    /// Download control: 0 = active, 1 = cancel, 2 = pause. Polled between stream chunks.
     pub downloads: Mutex<HashMap<String, Arc<AtomicU8>>>,
-    /// Cooperative abort flag for the harness agent loop. Set by
-    /// `harness_agent_abort`, polled between stream chunks and tool calls.
+    /// Cooperative abort flag for the harness loop. Polled between chunks and tool calls.
     pub harness_abort: Arc<std::sync::atomic::AtomicBool>,
-    /// Agent harness runtime: session history, permission engine, approval
-    /// channel (see `harness_api`).
     pub harness: Arc<harness_api::HarnessRuntime>,
 }
 
@@ -182,13 +177,11 @@ async fn add_all_custom_runtime_binaries(
 async fn set_custom_runtime_binary(binary_path: String, state: State<'_, AppState>) -> Result<(), String> {
     let binary_path = std::path::PathBuf::from(binary_path);
     let mut config = state.config.lock().unwrap();
-    // Add to custom runtimes list and activate
     let label = binary_path.parent()
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Custom".to_string());
     let index = config.custom_runtimes.len();
-    // Avoid duplicates
     if let Some(existing) = config.custom_runtimes.iter().position(|c| c.binary_path == binary_path) {
         config.active_runtime = config::ActiveRuntime::Custom { index: existing };
     } else {
@@ -251,7 +244,6 @@ async fn remove_custom_runtime(index: usize, state: State<'_, AppState>) -> Resu
         return Err("Cannot remove the active runtime. Switch to another first.".to_string());
     }
     config.custom_runtimes.remove(index);
-    // Fix active index if it shifted
     if let config::ActiveRuntime::Custom { index: ref mut active_idx } = config.active_runtime {
         if *active_idx > index {
             *active_idx -= 1;
@@ -291,9 +283,7 @@ async fn set_enable_quick_bench(enabled: bool, state: State<'_, AppState>) -> Re
     config.save().map_err(|e| e.to_string())
 }
 
-/// Notification sound toggles (Settings → General → Notifications).
-/// One command per sound so rapid toggles can't clobber each other through
-/// a stale full-config snapshot.
+/// One command per sound to avoid clobbering via stale full-config snapshots.
 #[tauri::command]
 async fn set_sound_agent(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state.config.lock().unwrap();
@@ -333,8 +323,7 @@ async fn set_harness_chat(enabled: bool, state: State<'_, AppState>) -> Result<(
     config.save().map_err(|e| e.to_string())
 }
 
-/// Single-model mode: the orchestrator runs alone (no worker delegation).
-/// Takes effect on the next run.
+/// Single-model mode: orchestrator runs alone; takes effect on next run.
 #[tauri::command]
 async fn set_harness_subagents_enabled(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state.config.lock().unwrap();
@@ -342,9 +331,7 @@ async fn set_harness_subagents_enabled(enabled: bool, state: State<'_, AppState>
     config.save().map_err(|e| e.to_string())
 }
 
-/// Per-role server settings for the harness (context size / GPU layers
-/// overrides written into the role's router-preset section). `role` is
-/// "orchestrator" or "worker"; `None` values inherit the default (auto).
+/// Per-role server overrides (role is orchestrator/worker); None inherits default.
 #[tauri::command]
 async fn set_harness_role_params(
     role: String,
@@ -469,9 +456,7 @@ async fn download_model(
         _ => (false, vec![]),
     };
 
-    // If downloading an mmproj alongside a model, prefix the filename with the
-    // model's base name. Both filenames may already carry a repo subfolder —
-    // work on basenames so the prefix logic stays predictable.
+    // Prefix mmproj with model base name; work on basenames so subfolder prefixes stay predictable.
     let is_mmproj = huggingface::is_mmproj_file(&filename);
     let file_basename = filename.rsplit('/').next().unwrap_or(&filename).to_string();
     let save_basename = if is_mmproj {
@@ -485,10 +470,7 @@ async fn download_model(
         file_basename.clone()
     };
 
-    // Nest downloads under maker/model subfolders, e.g.
-    // `lmstudio-community/Muse-Spark-1.2/model.gguf`. Filenames arriving from
-    // the Browse tab already carry the prefix (get_repo_files applies it);
-    // bare filenames (Recommended tab) get it from the repo_id here.
+    // Nest under maker/model subfolders; Browse rows already carry the prefix, bare names get it from repo_id.
     let save_filename = if save_basename.contains('/') {
         save_basename
     } else {
@@ -498,7 +480,6 @@ async fn download_model(
         }
     };
 
-    // Keep split parts next to the main file inside the repo subfolder
     let rel_dir = std::path::Path::new(&save_filename)
         .parent()
         .map(|p| p.to_string_lossy().to_string());
@@ -525,9 +506,6 @@ async fn download_model(
         is_dspark: false,
     };
 
-    // Register a per-download control flag (0 = active). Polled by the
-    // download loop between stream chunks; 1 = cancel (discard), 2 = pause
-    // (keep the partial file for resume).
     let cancel_signal = Arc::new(AtomicU8::new(0));
     state.downloads.lock().unwrap().insert(save_filename.clone(), cancel_signal.clone());
 
@@ -543,12 +521,9 @@ async fn download_model(
     )
     .await;
 
-    // Drop the flag once the download is no longer in progress. The temp
-    // file is preserved on pause (status "paused") so Resume picks it up; the
-    // frontend handles temp-file deletion for cancel via abort_download.
+    // Temp file survives pause for Resume; cancel cleanup is frontend-driven via abort_download.
     state.downloads.lock().unwrap().remove(&save_filename);
 
-    // On success, check for presets.ini in the repo and save as a named preset
     if result.is_ok() {
         if let Ok(Some(params)) = huggingface::fetch_presets_ini(&state.http_client, &repo_id).await {
             if !params.is_empty() {
@@ -596,8 +571,6 @@ async fn cancel_download(id: String, state: State<'_, AppState>) -> Result<(), S
 #[tauri::command]
 async fn abort_download(filename: String, state: State<'_, AppState>) -> Result<(), String> {
     let config = state.config.lock().unwrap().clone();
-    // Discard the control flag (the download is no longer in progress) and
-    // delete the partial temp file.
     state.downloads.lock().unwrap().remove(&filename);
     models::abort_download(&filename, &config).map_err(|e| e.to_string())
 }
@@ -657,7 +630,6 @@ async fn set_download_dir(path: String, state: State<'_, AppState>) -> Result<()
         std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     }
     let mut config = state.config.lock().unwrap();
-    // Also add to model_dirs if not already there
     if !config.model_dirs.contains(&path) {
         config.model_dirs.push(path.clone());
     }
@@ -675,14 +647,10 @@ async fn start_server(
 ) -> Result<(), String> {
     let app_config = state.config.lock().unwrap().clone();
 
-    // App-wide file tools are authoritative — override whatever a preset or the
-    // session config carried so stale/unsupported names can't abort startup.
+    // App-wide tools override stale preset names that would abort startup.
     server::apply_global_tools(&mut config, &app_config.server_tools);
 
-    // MCP servers configured in the Tools tab are attached at run time. On
-    // Windows a runtime copy may be materialized so `.cmd`/`.bat` shims (e.g.
-    // `npx`) are wrapped through `cmd /c`, which CreateProcess cannot do.
-    // Servers toggled off app-side are filtered out here.
+    // MCP servers attach at run time; Windows `.cmd`/`.bat` shims need `cmd /c`, disabled servers filtered.
     let mcp_config_path = mcp::runtime_mcp_config_path(&app_config.mcp_disabled)
         .ok()
         .flatten();
@@ -694,12 +662,10 @@ async fn start_server(
 
     let server_state = state.server.clone();
 
-    // Strip flags removed/renamed in newer llama.cpp so old session state or
-    // imported configs don't fail with "argument has been removed".
+    // Strip flags removed in newer llama.cpp so old configs don't fail startup.
     server::migrate_extra_params(&mut config.extra_params);
 
-    // Router mode: no single model selected — register the pinned models via a
-    // generated models-preset so they can be loaded on demand (WebUI picker).
+    // Router mode: register pinned models via a generated preset for on-demand load.
     let router_preset = server::write_router_preset(&config, &app_config).map_err(|e| e.to_string())?;
 
     server::start_server(
@@ -782,7 +748,6 @@ async fn run_quick_benchmark(
     state: State<'_, AppState>,
 ) -> Result<bench::BenchResult, String> {
     let app_config = state.config.lock().unwrap().clone();
-    // Prefer explicit args from UI (current config), fallback to running server's config
     let (fallback_threads, fallback_batch, fallback_ubatch, fallback_ctx, fallback_ngl) = {
         let s = state.server.lock().unwrap();
         if let Some(cfg) = &s.config {
@@ -966,7 +931,6 @@ async fn set_tools(tools: Vec<String>, state: State<'_, AppState>) -> Result<(),
 
 #[tauri::command]
 async fn list_mcp_servers(state: State<'_, AppState>) -> Result<mcp::McpInfo, String> {
-    // Seed the default servers on first run (only when mcp.json is missing).
     mcp::ensure_defaults().map_err(|e| e.to_string())?;
     let cfg = mcp::load().map_err(|e| e.to_string())?;
     let disabled = state.config.lock().unwrap().mcp_disabled.clone();
@@ -991,7 +955,7 @@ async fn save_mcp_servers(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     mcp::save(&servers).map_err(|e| e.to_string())?;
-    // App-side enabled toggles live in AppConfig; mcp.json stays Cursor-compatible.
+    // Disabled names live in AppConfig so mcp.json stays Cursor-compatible.
     {
         let mut config = state.config.lock().unwrap();
         config.mcp_disabled = servers
@@ -1078,7 +1042,6 @@ pub fn run() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Warning: failed to load config: {e}");
-            // Back up the existing config file so the user can recover it
             if let Ok(path) = AppConfig::config_path() {
                 if path.exists() {
                     let backup = path.with_extension("json.bak");
@@ -1089,8 +1052,6 @@ pub fn run() {
             AppConfig::default()
         }
     };
-
-    // --force-wizard resets the wizard flag so it runs again
     if std::env::args().any(|a| a == "--force-wizard" || a == "-w") {
         config.wizard_completed = false;
         let _ = config.save();
@@ -1111,7 +1072,6 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Close-to-tray: hide the window instead of quitting.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let close_to_tray = window
                     .app_handle()
@@ -1246,8 +1206,7 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
-                // Drop MCP sessions so their child processes die with the app
-                // (process exit alone would orphan them).
+                // Drop MCP sessions so child processes die with the app (no orphans).
                 harness_api::invalidate_mcp(&state);
                 server::kill_server_sync(&state.server);
             }

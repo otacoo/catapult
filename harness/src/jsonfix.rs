@@ -1,22 +1,13 @@
-//! Lenient JSON repair for tool-call arguments.
-//!
-//! Small local models frequently emit malformed tool-call JSON: markdown
-//! fences, trailing commas, unbalanced braces or truncated strings. The
-//! orchestrator retries calls, but each retry costs a full generation — so
-//! arguments are repaired *before* parsing. Repair is best-effort and
-//! conservative: if the result still doesn't parse as JSON, the caller must
-//! fail loud (never silently guess intent).
+//! Lenient JSON repair for tool-call arguments (small models emit malformed JSON; retries cost a generation).
+//! Repair is best-effort: callers must fail loud when the result still doesn't parse.
 
-/// Attempt to repair a fragment of JSON into something `serde_json` can parse.
-/// Returns the repaired text; callers must still validate by parsing.
+/// Best-effort repair; callers must still validate by parsing.
 pub fn repair_json(input: &str) -> String {
     let mut s = strip_code_fences(input.trim());
     s = strip_trailing_commas(&s);
     if serde_json::from_str::<serde_json::Value>(&s).is_ok() {
         return s;
     }
-    // Scan tracking string/escape state; remember unclosed container types in
-    // order so we can close them in reverse.
     let mut stack: Vec<char> = Vec::new();
     let mut in_string = false;
     let mut escaped = false;
@@ -55,8 +46,7 @@ pub fn repair_json(input: &str) -> String {
         }
         out.push('"');
     }
-    // Close in reverse-open order (correct JSON nesting), dropping matches
-    // that would clash with what remains unbalanced in the text itself.
+    // Close in reverse-open order for correct nesting.
     for open in stack.iter().rev() {
         out.push(match open {
             '{' => '}',
@@ -68,11 +58,9 @@ pub fn repair_json(input: &str) -> String {
     s
 }
 
-/// Remove ```json fences and stray ``` markers.
 fn strip_code_fences(input: &str) -> String {
     let mut s = input.trim().to_string();
     if s.starts_with("```") {
-        // Drop the first line (```json / ```) and the closing fence.
         if let Some(rest) = s.split_once('\n') {
             s = rest.1.to_string();
         }
@@ -83,9 +71,7 @@ fn strip_code_fences(input: &str) -> String {
     s.trim().to_string()
 }
 
-/// Remove commas immediately preceding `}` or `]` (outside strings handled by
-/// simplicity: trailing commas inside string literals are rare in malformed
-/// fragments, and the scanner below re-validates anyway).
+/// Drop commas before `}`/`]`; string-literal edge cases re-validated below.
 fn strip_trailing_commas(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -110,13 +96,12 @@ fn strip_trailing_commas(s: &str) -> String {
                 out.push(ch);
             }
             ',' => {
-                // Peek past whitespace for } or ]
                 let mut j = i + 1;
                 while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
                     j += 1;
                 }
                 if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
-                    continue; // drop the comma
+                    continue;
                 }
                 out.push(ch);
             }

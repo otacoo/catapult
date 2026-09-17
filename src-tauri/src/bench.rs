@@ -8,9 +8,7 @@ use tokio::process::Command;
 use crate::config::AppConfig;
 use crate::runtime::find_file_recursive;
 
-/// Only one llama-bench may run at a time: two benches loading the same model
-/// onto the same GPU contend for memory/compute and can starve each other past
-/// the timeout. This guards against double-invocation from any entry point.
+/// Only one llama-bench at a time (parallel runs contend and starve past timeout).
 static BENCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
 struct BenchRunGuard;
@@ -31,9 +29,7 @@ pub struct BenchResult {
     pub ubatch_size: u32,
     pub n_ctx: u32,
     pub n_gpu_layers: i32,
-    /// Prompt processing t/s
     pub pp_tps: Option<f64>,
-    /// Token generation t/s
     pub tg_tps: Option<f64>,
     pub status: String,
     pub raw_stdout: String,
@@ -94,8 +90,7 @@ pub fn clear_bench_results() -> Result<()> {
     Ok(())
 }
 
-/// Run a quick `llama-bench` with the current ServerConfig-ish flags.
-/// Keeps it to 1 rep by default for responsiveness (like --quick).
+/// Quick `llama-bench` with 1 rep for responsiveness.
 pub async fn run_quick_bench(
     app_config: &AppConfig,
     model_path: String,
@@ -128,9 +123,8 @@ pub async fn run_quick_bench(
     cmd.arg("-m").arg(&model_path);
     cmd.arg("-p").arg(p.to_string());
     cmd.arg("-n").arg(n.to_string());
-    cmd.arg("-r").arg("1"); // quick: 1 repetition
+    cmd.arg("-r").arg("1");
     cmd.arg("--output").arg("csv");
-    // Use current config if provided, else let bench defaults handle it
     if let Some(t) = n_threads {
         cmd.arg("-t").arg(t.to_string());
     }
@@ -138,17 +132,13 @@ pub async fn run_quick_bench(
         cmd.arg("-b").arg(b.to_string());
     }
     if let Some(ub) = ubatch_size {
-        // llama-bench flag for ubatch is often -ub or --ubatch-size; try both
-        // Prefer --ubatch-size if supported, fallback to -ub via raw args.
         cmd.arg("--ubatch-size").arg(ub.to_string());
     }
-    // bench has no -c/--ctx-size flag – context is derived from model/prompt.
-    // Passing -c makes it exit 1 with help. Only pass ngl.
+    // No -c flag: context derives from model/prompt; passing -c exits 1. Only pass ngl.
     if let Some(ngl) = n_gpu_layers {
         cmd.arg("-ngl").arg(ngl.to_string());
     }
 
-    // Suppress console window on Windows
     #[cfg(target_os = "windows")]
     {
         #[allow(unused_imports)]
@@ -156,14 +146,11 @@ pub async fn run_quick_bench(
         cmd.creation_flags(0x08000000);
     }
 
-    // kill_on_drop ensures llama-bench never survives as an orphan: if the
-    // wait future is dropped (timeout below), the child is killed instead of
-    // silently running on and consuming GPU/CPU resources.
+    // kill_on_drop so a timeout kills the child instead of orphaning it.
     cmd.kill_on_drop(true);
 
     let child = cmd.spawn().context("Failed to spawn llama-bench")?;
-    // Generous limit: model loading alone can take minutes on large models.
-    // On timeout the future (and the child, via kill_on_drop) is dropped.
+    // Loading alone can take minutes on large models.
     let output = match tokio::time::timeout(
         std::time::Duration::from_secs(300),
         child.wait_with_output(),
@@ -188,13 +175,12 @@ pub async fn run_quick_bench(
     }
     .to_string();
 
-    // Try structured CSV parse first (handles llama-bench --output csv where pp/tg
-    // are distinguished by n_prompt/n_gen and throughput is in avg_ts)
+    // CSV first (pp/tg told apart by n_prompt/n_gen, throughput in avg_ts).
     if let Some((pp, tg)) = parse_llama_bench_csv(&stdout).or_else(|| parse_llama_bench_csv(&stderr)) {
         pp_tps = Some(pp);
         tg_tps = Some(tg);
     }
-    // Fallback: markdown table (| pp512 | 540.99 ± ... | / | tg128 | 35.54 |)
+    // Fallback markdown table (| pp512 | 540.99 | / | tg128 | 35.54 |).
     if pp_tps.is_none() || tg_tps.is_none() {
         let md_pp = parse_llama_bench_md(&stdout).or_else(|| parse_llama_bench_md(&stderr));
         if let Some((pp, tg)) = md_pp {
@@ -202,7 +188,6 @@ pub async fn run_quick_bench(
             if tg_tps.is_none() { tg_tps = Some(tg); }
         }
     }
-    // Last fallback: scan for tg= / pp= fragments
     if pp_tps.is_none() || tg_tps.is_none() {
         let combined = format!("{}\n{}", stdout, stderr);
         for line in combined.lines() {
@@ -258,7 +243,7 @@ pub async fn run_quick_bench(
 }
 
 fn extract_metric(line: &str, key: &str) -> Option<f64> {
-    // Look for "key=12.34" or "key: 12.34" or "key 12.34"
+    // Formats "key=12.34" and "key: 12.34".
     let lower = line.to_lowercase();
     let needle = format!("{}=", key);
     if let Some(idx) = lower.find(&needle) {
@@ -271,7 +256,6 @@ fn extract_metric(line: &str, key: &str) -> Option<f64> {
             return Some(v);
         }
     }
-    // Try "key: value"
     let needle2 = format!("{}:", key);
     if let Some(idx) = lower.find(&needle2) {
         let rest = &line[idx + needle2.len()..];
@@ -288,8 +272,7 @@ fn extract_metric(line: &str, key: &str) -> Option<f64> {
 }
 
 fn parse_llama_bench_csv(csv: &str) -> Option<(f64, f64)> {
-    // llama-bench --output csv has header with n_prompt,n_gen,avg_ts,…
-    // pp row: n_prompt=512 n_gen=0, tg row: n_prompt=0 n_gen=128, avg_ts = throughput
+    // CSV header n_prompt,n_gen,avg_ts; pp has n_gen=0, tg has n_prompt=0.
     let mut lines = csv.lines();
     let header = lines.next()?.to_lowercase();
     let headers: Vec<String> = header.split(',').map(|s| s.trim().to_lowercase()).collect();
@@ -303,7 +286,7 @@ fn parse_llama_bench_csv(csv: &str) -> Option<(f64, f64)> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // Naive CSV split – values are simple, quoted but no commas inside
+        // Values are simple (quoted, no inner commas).
         let cols: Vec<String> = line.split(',').map(|c| c.trim().trim_matches('"').to_string()).collect();
         if cols.len() <= n_prompt_idx.max(n_gen_idx).max(avg_ts_idx) {
             continue;
@@ -327,17 +310,15 @@ fn parse_llama_bench_csv(csv: &str) -> Option<(f64, f64)> {
 }
 
 fn parse_llama_bench_md(md: &str) -> Option<(f64, f64)> {
-    // Markdown table: | ... | pp512 | 540.99 ± 0.00 |  and | ... | tg128 | 35.54 ± ... |
+    // Rows like `| … | pp512 | 540.99 |` and `| … | tg128 | 35.54 |`.
     let mut pp: Option<f64> = None;
     let mut tg: Option<f64> = None;
     for line in md.lines() {
-        // Look for pipe-separated cells
         if line.contains('|') {
             let cells: Vec<String> = line.split('|').map(|c| c.trim().to_string()).collect();
             for (i, cell) in cells.iter().enumerate() {
                 let cl = cell.to_lowercase();
                 if cl.starts_with("pp") {
-                    // Next cell should contain "540.99 ±"
                     if let Some(next) = cells.get(i + 1) {
                         if let Some(v) = next.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()) {
                             pp = Some(v);
@@ -382,29 +363,6 @@ fn parse_bench_build(csv: &str) -> Option<(u32, String)> {
                 return Some((bn, cols[bc_idx].clone()));
             }
         }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn parse_csv_throughput(csv: &str) -> Option<(f64, f64)> {
-    let mut lines = csv.lines();
-    let header = lines.next()?.to_lowercase();
-    let headers: Vec<String> = header.split(',').map(|s| s.trim().to_lowercase()).collect();
-    let pp_idx = headers.iter().position(|h| h.contains("pp") && h.contains("tps"))?;
-    let tg_idx = headers.iter().position(|h| h.contains("tg") && h.contains("tps"))?;
-    for line in lines {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let cols: Vec<&str> = line.split(',').collect();
-        if cols.len() <= pp_idx.max(tg_idx) {
-            continue;
-        }
-        let pp = cols[pp_idx].trim().parse::<f64>().ok()?;
-        let tg = cols[tg_idx].trim().parse::<f64>().ok()?;
-        return Some((pp, tg));
     }
     None
 }

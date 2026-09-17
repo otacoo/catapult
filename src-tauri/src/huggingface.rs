@@ -11,7 +11,6 @@ pub const DEFAULT_PREFERRED_OWNERS: &[&str] = &[
     "mradermacher",
 ];
 
-/// Well-known providers of GGUF models on HuggingFace
 pub const KNOWN_GGUF_OWNERS: &[(&str, &str)] = &[
     ("unsloth", "Dominant quantizer, Unsloth Dynamic 2.0 quants"),
     ("bartowski", "High-quality imatrix quants, large catalog"),
@@ -23,7 +22,6 @@ pub const KNOWN_GGUF_OWNERS: &[(&str, &str)] = &[
     ("QuantFactory", "Quantized models collection"),
 ];
 
-/// Curated list of recommended models with metadata
 pub const RECOMMENDED_MODELS: &[RecommendedModelDef] = &[
     // ── Small (fits 4-8 GB VRAM) ────────────────────────────
     RecommendedModelDef {
@@ -165,8 +163,7 @@ pub struct HfFile {
     pub split_parts: Vec<HfFilePart>,
     #[serde(default)]
     pub is_mmproj: bool,
-    /// DSpark speculative-draft files (DeepSeek V4). Auxiliary; hidden from the
-    /// model list and download picker in the frontend.
+    /// DSpark draft (auxiliary; hidden in frontend).
     #[serde(default)]
     pub is_dspark: bool,
 }
@@ -232,7 +229,6 @@ pub async fn search_models(
     Ok(models.into_iter().map(convert_model).collect())
 }
 
-/// Check if a HuggingFace user/org exists and has published GGUF models.
 pub async fn validate_hf_gguf_author(client: &reqwest::Client, author: &str) -> Result<bool> {
     let url = format!(
         "https://huggingface.co/api/models?author={}&filter=gguf&limit=1",
@@ -252,7 +248,6 @@ pub async fn validate_hf_gguf_author(client: &reqwest::Client, author: &str) -> 
     Ok(!models.is_empty())
 }
 
-/// File entry from the HuggingFace tree API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HfTreeEntry {
     #[serde(rename = "type")]
@@ -262,36 +257,28 @@ struct HfTreeEntry {
     path: String,
 }
 
-/// Check if a filename is an imatrix/importance matrix file (not a model).
 pub fn is_imatrix_file(filename: &str) -> bool {
     let lower = filename.to_lowercase();
     lower.contains("imatrix") || lower.contains("importance_matrix")
 }
 
-/// Check if a filename is an mmproj (vision projection) file.
 pub fn is_mmproj_file(filename: &str) -> bool {
     filename.to_lowercase().contains("mmproj")
 }
 
-/// Check if a filename is a dspark (DeepSeek V4 speculative-draft) file.
-// DSpark drafters are auxiliary and shipped alongside the target checkpoint,
-// so we hide them from the main model list and download picker.
+/// Auxiliary draft file; hidden from model list/picker.
 pub fn is_dspark_file(filename: &str) -> bool {
     filename.to_lowercase().contains("dspark")
 }
 
-/// Check if a filename is a *separate* MTP-head sidecar (`mtp-<rest>.gguf`,
-/// e.g. Gemma-4). A full model with embedded MTP keeps `-MTP-` mid-name
-/// (e.g. `Qwen3.6-27B-MTP-Q4_K_M.gguf`) and stays listed — only the
-/// head-only sidecar is auxiliary.
+/// Separate MTP-head sidecar (`mtp-*`); embedded `-MTP-` models stay listed.
 pub fn is_mtp_head_file(filename: &str) -> bool {
     let lower = filename.to_lowercase();
     let stem = lower.strip_suffix(".gguf").unwrap_or(&lower);
     stem.split(['-', '_', ' ', '.']).next() == Some("mtp")
 }
 
-/// Check if a main-model filename carries embedded MTP heads (`-MTP-`
-/// mid-name). These load standalone with `--spec-type draft-mtp`.
+/// Embedded `-MTP-` model; loads standalone with `--spec-type draft-mtp`.
 pub fn has_embedded_mtp(filename: &str) -> bool {
     if is_mtp_head_file(filename) {
         return false;
@@ -303,8 +290,7 @@ pub fn has_embedded_mtp(filename: &str) -> bool {
     segs.any(|s| s == "mtp")
 }
 
-/// Auxiliary GGUFs that must never list as loadable models: speculative
-/// drafts (DSpark), separate MTP heads, importance matrices.
+/// Auxiliary GGUFs (drafts, MTP heads, imatrix): never listed as models.
 pub fn is_auxiliary_file(filename: &str) -> bool {
     is_dspark_file(filename) || is_mtp_head_file(filename) || is_imatrix_file(filename)
 }
@@ -326,9 +312,7 @@ pub fn sanitize_component(input: &str) -> String {
     }
 }
 
-/// Compute the download subfolder for a repo: `owner/model-name`, with the
-/// trailing `-GGUF` suffix (any case) stripped from the model name. Returns
-/// None when the repo_id has no `owner/repo` shape.
+/// Download subfolder `owner/model` (`-GGUF` stripped); None without `owner/repo` shape.
 pub fn repo_subdir(repo_id: &str) -> Option<String> {
     let (owner, repo) = repo_id.split_once('/')?;
     let owner = owner.trim();
@@ -352,8 +336,7 @@ pub fn repo_subdir(repo_id: &str) -> Option<String> {
     ))
 }
 
-/// Parse a split GGUF filename like `model-00001-of-00003.gguf`.
-/// Returns (base_name, part_number, total_parts).
+/// Parse `model-00001-of-00003.gguf` → (base, part, total).
 pub fn parse_split_filename(filename: &str) -> Option<(String, u32, u32)> {
     let name = filename.rsplit('/').next().unwrap_or(filename);
     let re = regex::Regex::new(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$").ok()?;
@@ -364,8 +347,7 @@ pub fn parse_split_filename(filename: &str) -> Option<(String, u32, u32)> {
     Some((base, part, total))
 }
 
-/// Grouping key for split files: includes directory prefix so files in
-/// different subdirs don't get merged.
+/// Split key incl. dir prefix (no cross-dir merges).
 fn split_group_key(path: &str) -> Option<String> {
     let dir_prefix = match path.rfind('/') {
         Some(pos) => &path[..=pos],
@@ -375,8 +357,7 @@ fn split_group_key(path: &str) -> Option<String> {
     Some(format!("{}{}-{:05}", dir_prefix, base, total))
 }
 
-/// Consolidate split GGUF files into single entries and strip subdirectory
-/// prefixes from filenames (download URLs keep the full path).
+/// Consolidate splits; strip subdir prefixes (URLs keep full path).
 fn consolidate_files(files: Vec<HfFile>) -> Vec<HfFile> {
     use std::collections::BTreeMap;
 
@@ -440,7 +421,6 @@ fn consolidate_files(files: Vec<HfFile>) -> Vec<HfFile> {
     singles
 }
 
-/// Recursively fetch the HuggingFace tree API, following directories up to max_depth.
 fn fetch_tree_recursive<'a>(
     client: &'a reqwest::Client,
     repo_id: &'a str,
@@ -490,7 +470,6 @@ fn fetch_tree_recursive<'a>(
 }
 
 pub async fn get_repo_files(client: &reqwest::Client, repo_id: &str) -> Result<Vec<HfFile>> {
-    // Recursively fetch tree (depth 3 covers subdirectory-organized repos)
     let entries = fetch_tree_recursive(client, repo_id, "", 3).await?;
 
     let files: Vec<HfFile> = entries
@@ -521,9 +500,7 @@ pub async fn get_repo_files(client: &reqwest::Client, repo_id: &str) -> Result<V
 
     let mut files = consolidate_files(files);
 
-    // Nest files under maker/model subfolders, e.g.
-    // `lmstudio-community/Muse-Spark-1.2/model.gguf` — matches the download
-    // destination so Browse rows key consistently with progress events.
+    // Nest under maker/model so Browse rows key like download destinations.
     if let Some(subdir) = repo_subdir(repo_id) {
         for f in &mut files {
             if !f.filename.starts_with(&format!("{}/", subdir)) {
@@ -588,7 +565,6 @@ fn convert_model(m: HfApiModel) -> HfModel {
 }
 
 pub fn extract_quant(filename: &str) -> Option<String> {
-    // Match patterns like Q4_K_M, Q8_0, F16, IQ2_XXS, MXFP4, etc.
     let re = regex::Regex::new(r"(?i)(MXFP\d|IQ\d[_A-Z]*|Q\d[_KM0-9A-Z]+|F16|F32|BF16)").ok()?;
     re.find(filename).map(|m| m.as_str().to_uppercase())
 }
@@ -605,8 +581,7 @@ fn urlencoding_simple(s: &str) -> String {
 
 // ── presets.ini support ───────────────────────────────────────────────────────
 
-/// Sampling parameters parsed from a HuggingFace repo's `presets.ini`.
-/// Fields are `None` when not present in the file.
+/// Sampling params from `presets.ini`; None when absent.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct HfPresetParams {
     pub temperature: Option<f32>,
@@ -632,8 +607,7 @@ impl HfPresetParams {
     }
 }
 
-/// Fetch and parse `presets.ini` from a HuggingFace repo.
-/// Returns `Ok(None)` if the file doesn't exist.
+/// Fetch `presets.ini`; Ok(None) when missing.
 pub async fn fetch_presets_ini(
     client: &reqwest::Client,
     repo_id: &str,
@@ -657,7 +631,6 @@ fn parse_presets_ini(content: &str) -> HfPresetParams {
     let mut params = HfPresetParams::default();
     for line in content.lines() {
         let line = line.trim();
-        // Skip comments and section headers
         if line.starts_with('#') || line.starts_with(';') || line.starts_with('[') || line.is_empty() {
             continue;
         }
@@ -749,16 +722,13 @@ mod tests {
 
     #[test]
     fn auxiliary_file_detection() {
-        // Separate MTP-head sidecars hide from the model list…
         assert!(is_mtp_head_file("mtp-gemma-4-26B-A4B-it.gguf"));
         assert!(is_mtp_head_file("MTP-foo-BF16.GGUF"));
-        // …but full models with embedded MTP stay listed.
         assert!(!is_mtp_head_file("Qwen3.6-27B-MTP-Q4_K_M.gguf"));
         assert!(!is_mtp_head_file("gemma-4-26B-A4B-it-Q8_0.gguf"));
         assert!(has_embedded_mtp("Qwen3.6-27B-MTP-Q4_K_M.gguf"));
         assert!(!has_embedded_mtp("mtp-gemma-4-26B-A4B-it.gguf"));
         assert!(!has_embedded_mtp("gemma-4-26B-A4B-it-Q8_0.gguf"));
-        // DSpark drafts and imatrix files are auxiliary too.
         assert!(is_auxiliary_file("MiniCPM5-2.6B-DSpark.gguf"));
         assert!(is_auxiliary_file("mtp-gemma-4-26B-A4B-it.gguf"));
         assert!(is_auxiliary_file("model.imatrix.gguf"));
@@ -787,7 +757,6 @@ mod tests {
 
     #[test]
     fn parse_split_filename_with_subdir() {
-        // Should parse basename only, ignoring directory prefix
         let (base, part, total) = parse_split_filename("Q4_K_M/model-Q4_K_M-00001-of-00003.gguf").unwrap();
         assert_eq!(base, "model-Q4_K_M");
         assert_eq!(part, 1);
@@ -910,11 +879,9 @@ mod tests {
         assert_eq!(split.filename, "model-Q4_K_M-00001-of-00003.gguf");
         assert_eq!(split.size_bytes, 600); // 200 * 3
         assert_eq!(split.split_parts.len(), 3);
-        // Parts should be sorted by number
         assert!(split.split_parts[0].filename.contains("00001"));
         assert!(split.split_parts[1].filename.contains("00002"));
         assert!(split.split_parts[2].filename.contains("00003"));
-        // Subdirectory should be stripped from filenames
         assert!(!split.filename.contains('/'));
         assert!(!split.split_parts[0].filename.contains('/'));
     }
@@ -933,7 +900,6 @@ mod tests {
 
     #[test]
     fn presets_ini_aliases() {
-        // temp → temperature, top-k → top_k, max_new_tokens → n_predict
         let ini = "temp = 0.6\ntop-k = 30\ntop-p = 0.85\nmin-p = 0.01\nmax_new_tokens = 512\n";
         let p = parse_presets_ini(ini);
         assert_eq!(p.temperature, Some(0.6));
@@ -982,7 +948,6 @@ mod tests {
         let ini = "temperature = 0.7\nsome_unknown_key = 99\nchat_template = llama3\n";
         let p = parse_presets_ini(ini);
         assert_eq!(p.temperature, Some(0.7));
-        // Everything else remains None
         assert_eq!(p.top_k, None);
     }
 

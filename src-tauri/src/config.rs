@@ -44,10 +44,7 @@ fn default_harness_max_turns() -> u32 { 40 }
 
 fn default_harness_subagent_max_turns() -> u32 { 25 }
 
-/// Model-role assignment for the agent harness. Both default to `None` (use
-/// the server's loaded model). A distinct worker model requires router mode
-/// (no single model on the Run page); an orchestrator alone also runs on a
-/// single-model server already serving that file.
+/// Model roles; None uses the server's loaded model. A distinct worker needs router mode.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct HarnessRoles {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,9 +53,7 @@ pub struct HarnessRoles {
     pub worker: Option<String>,
 }
 
-/// Per-model server settings for a harness role, written as overrides into
-/// the role's router-preset section (`ctx-size`, `n-gpu-layers`). `None`
-/// inherits the router/server default (auto-fit).
+/// Per-role overrides written into the router-preset (`ctx-size`, `n-gpu-layers`); None inherits default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct RoleServerParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +62,6 @@ pub struct RoleServerParams {
     pub n_gpu_layers: Option<i32>,
 }
 
-/// Server settings per harness role (orchestrator vs. worker).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct HarnessRoleParams {
     #[serde(default)]
@@ -81,19 +75,16 @@ pub struct HarnessRoleParams {
 pub struct HarnessProject {
     /// Stable id (slug of the path at add time).
     pub id: String,
-    /// Display name (folder name).
     pub name: String,
-    /// Absolute path of the working directory.
     pub path: String,
-    /// Extra read-only paths outside the project the agent may read
-    /// (pre-declared allowlist; never writable).
+    /// Extra read-only paths outside the project (never writable).
     #[serde(default)]
     pub extra_read: Vec<String>,
     #[serde(default)]
     pub created: i64,
 }
 
-/// UI theme preference. `System` follows the OS light/dark setting.
+/// `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -163,48 +154,34 @@ pub struct AppConfig {
     /// Preferred GGUF source owners on HuggingFace, in priority order.
     #[serde(default)]
     pub preferred_owners: Vec<String>,
-    /// Working directory for the llama-server process (where the LLM's file
-    /// tools create and modify files). Persisted across sessions.
+    /// Working dir for the llama-server process (LLM file-tool root).
     #[serde(default)]
     pub server_working_dir: Option<String>,
-    /// UI theme preference: system, dark, light, or the branded Catapult look.
     #[serde(default)]
     pub theme: Theme,
-    /// App-wide selection of built-in file tools (`--tools`). Managed from the
-    /// Tools/MCP page and applied to every server start, overriding whatever a
-    /// preset or the session config carried.
+    /// App-wide file tools (`--tools`); override stale preset names on every start.
     #[serde(default)]
     pub server_tools: Vec<String>,
-    /// Names of MCP servers configured in mcp.json but toggled off on the
-    /// Tools/MCP page. Stored app-wide so mcp.json stays Cursor-compatible;
-    /// disabled servers are filtered out before `--mcp-servers-config` is built.
+    /// MCP servers toggled off; stored here so mcp.json stays Cursor-compatible.
     #[serde(default)]
     pub mcp_disabled: Vec<String>,
-    /// Last preset selected in the Run tab, persisted across app restarts.
     #[serde(default)]
     pub last_preset: Option<String>,
-    /// Show Catapult in the notification area (system tray) and hide the
-    /// window there on close instead of quitting.
     #[serde(default)]
     pub close_to_tray: bool,
-    /// Enable the Quick Bench feature (Run header button/card and Bench tab).
     #[serde(default = "default_true")]
     pub enable_quick_bench: bool,
-    /// Notification sounds (Settings → General). All default on.
+    /// All default on.
     #[serde(default = "default_true")]
     pub sound_agent: bool,
     #[serde(default = "default_true")]
     pub sound_permissions: bool,
     #[serde(default = "default_true")]
     pub sound_errors: bool,
-    /// Model paths registered for llama-server router mode: when the Run page
-    /// has no single model selected, the server starts without `--model` and
-    /// these are exposed via a generated `--models-preset` INI, loadable on
-    /// demand (from the WebUI picker or the API).
+    /// Router-mode model paths: server starts without `--model`, exposed via generated `--models-preset` INI.
     #[serde(default)]
     pub router_models: Vec<String>,
-    /// Chat implementation to use: the Catapult agent harness (default) or
-    /// the classic llama-server WebUI. The WebUI stays fully supported.
+    /// Agent harness (default) vs classic WebUI chat.
     #[serde(default = "default_true")]
     pub harness_chat: bool,
     /// Turn budget for the agent orchestrator loop.
@@ -213,22 +190,17 @@ pub struct AppConfig {
     /// Turn budget for each ephemeral subagent run.
     #[serde(default = "default_harness_subagent_max_turns")]
     pub harness_subagent_max_turns: u32,
-    /// Subagent delegation. When false the orchestrator runs alone on a
-    /// single model (like the plain WebUI chat, but with tools).
+    /// When false the orchestrator runs alone (no worker delegation).
     #[serde(default = "default_true")]
     pub harness_subagents_enabled: bool,
-    /// Custom system prompt override for the agent harness. None = built-in
-    /// default (recommended: keeps the OS/shell guidance intact).
+    /// Custom system prompt override; None = built-in default (keeps OS/shell guidance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_system_prompt: Option<String>,
-    /// Model roles: which model plans (orchestrator) and which executes
-    /// (worker subagents). Requires router mode.
+    /// Which model plans (orchestrator) vs executes (worker). Requires router mode.
     #[serde(default)]
     pub harness_roles: HarnessRoles,
-    /// Per-role server settings (context size / GPU layers overrides).
     #[serde(default)]
     pub harness_role_params: HarnessRoleParams,
-    /// Chat projects: contained working directories shown in the Chat sidebar.
     #[serde(default)]
     pub harness_projects: Vec<HarnessProject>,
     /// Id of the project the Chat view currently has open.
@@ -358,7 +330,6 @@ impl AppConfig {
         }
     }
 
-    /// Returns the directory of the active runtime (for find_server_binary).
     pub fn runtime_dir(&self) -> Result<PathBuf> {
         match &self.active_runtime {
             ActiveRuntime::Managed { build, backend_id } => {
@@ -419,11 +390,6 @@ impl AppConfig {
         }
     }
 
-    pub fn is_managed_runtime(&self) -> bool {
-        matches!(self.active_runtime, ActiveRuntime::Managed { .. })
-    }
-
-    /// Returns the effective preferred owners list, falling back to defaults if empty.
     pub fn effective_owners(&self) -> Vec<String> {
         if self.preferred_owners.is_empty() {
             crate::huggingface::DEFAULT_PREFERRED_OWNERS

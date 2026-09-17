@@ -127,16 +127,7 @@ pub fn find_server_binary(runtime_dir: &Path) -> Option<PathBuf> {
         "llama-server"
     };
 
-    // Recursive search — archives often extract into a nested directory
-    find_file_recursive(runtime_dir, target, 3)
-}
-
-pub fn find_chat_binary(runtime_dir: &Path) -> Option<PathBuf> {
-    let target = if cfg!(target_os = "windows") {
-        "llama-cli.exe"
-    } else {
-        "llama-cli"
-    };
+    // Archives often extract into a nested directory.
     find_file_recursive(runtime_dir, target, 3)
 }
 
@@ -151,7 +142,6 @@ pub fn find_file_recursive(dir: &Path, name: &str, max_depth: u32) -> Option<Pat
             return Some(path);
         }
     }
-    // Recurse into subdirectories
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -164,8 +154,7 @@ pub fn find_file_recursive(dir: &Path, name: &str, max_depth: u32) -> Option<Pat
     None
 }
 
-/// Parse a llama.cpp nightly build tag like "b10662" into its build number.
-/// Returns None for non-build tags (e.g. semver tags like "v0.3.0").
+/// Parse `b<build>` tag; None for semver/other tags.
 fn parse_build_tag(tag: &str) -> Option<u32> {
     let digits = tag.strip_prefix('b')?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -179,11 +168,7 @@ pub async fn fetch_latest_release(
     available_backend_ids: &[String],
     cuda_version: Option<&str>,
 ) -> Result<ReleaseInfo> {
-    // llama.cpp tags binary nightly releases as "b<build>" (e.g. b10662), but
-    // now also publishes semver "stable" releases (v0.x.y) that carry no
-    // binaries. GitHub's "releases/latest" now points at the semver release,
-    // so we list releases and pick the newest b<build> nightly that ships
-    // binaries.
+    // GitHub "latest" points at semver stable (no binaries); list and pick newest b<build> nightly.
     let url = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=100";
     let response = client
         .get(url)
@@ -224,7 +209,6 @@ fn parse_release(release: GithubRelease, available_backend_ids: &[String], cuda_
         .filter_map(|a| score_asset(&a.name, os, arch, a.browser_download_url.clone(), a.size, available_backend_ids, cuda_version))
         .collect();
 
-    // Sort by score descending
     assets.sort_by(|a, b| b.score.cmp(&a.score));
 
     Ok(ReleaseInfo {
@@ -235,8 +219,7 @@ fn parse_release(release: GithubRelease, available_backend_ids: &[String], cuda_
     })
 }
 
-/// Score an asset filename for the current platform/hardware.
-/// Returns None if the asset is clearly for a different platform.
+/// Score asset for platform/hardware; None when for another platform.
 fn score_asset(
     name: &str,
     os: &str,
@@ -248,12 +231,11 @@ fn score_asset(
 ) -> Option<AssetOption> {
     let lower = name.to_lowercase();
 
-    // Skip non-binary assets (SHA checksums, source archives, etc.)
+    // Skip checksums, signatures, and source archives.
     if lower.contains("sha256") || lower.contains(".tar.gz.sig") || lower.contains("source") {
         return None;
     }
 
-    // Platform matching
     let platform_match = match os {
         "linux" => lower.contains("linux") || lower.contains("ubuntu"),
         "windows" => lower.contains("win"),
@@ -264,7 +246,6 @@ fn score_asset(
         return None;
     }
 
-    // Architecture matching
     let arch_match = match arch {
         "x86_64" => lower.contains("x64") || lower.contains("amd64") || lower.contains("x86_64"),
         "aarch64" => lower.contains("arm64") || lower.contains("aarch64"),
@@ -274,18 +255,15 @@ fn score_asset(
         return None;
     }
 
-    // Detect backend from asset name
     let (backend_id, backend_label, base_score) = detect_asset_backend(&lower, os);
 
-    // Penalize backends that are not available on this system.
-    // CPU variants are always usable; accelerated backends need a match.
+    // CPU is always usable; accelerators need a match (penalize otherwise).
     let backend_available = backend_id.starts_with("cpu")
         || available_backend_ids.iter().any(|b| backend_id.starts_with(b.as_str()));
 
     let mut score = if backend_available { base_score } else { base_score - 200 };
 
-    // If CUDA is available but the asset CUDA version doesn't match the installed one,
-    // knock the score below 90 so it doesn't get a "Recommended" badge.
+    // Mismatched CUDA drops below 90 (no "Recommended" badge).
     if backend_id == "cuda" && score >= 90 {
         if let Some(sys_ver) = cuda_version {
             let asset_ver = extract_cuda_version(&lower);
@@ -310,7 +288,6 @@ fn score_asset(
 
 fn detect_asset_backend(lower: &str, os: &str) -> (String, String, i32) {
     if lower.contains("cuda") {
-        // Extract CUDA version if present
         let version = extract_cuda_version(lower).unwrap_or_default();
         (
             "cuda".to_string(),
@@ -351,8 +328,7 @@ fn detect_asset_backend(lower: &str, os: &str) -> (String, String, i32) {
 }
 
 fn extract_cuda_version(lower: &str) -> Option<String> {
-    // Match patterns like "cu12.4", "cu124", "cu11.8" (older naming),
-    // and "cuda-13.3", "cuda13.3" (newer naming).
+    // Matches "cu12.4"/"cu124" (old) and "cuda-13.3" (new).
     let re = regex::Regex::new(r"(?:cu|cuda)[-_]?(\d+)\.?(\d*)").ok()?;
     let caps = re.captures(lower)?;
     let major = caps.get(1)?.as_str();
@@ -364,7 +340,6 @@ fn extract_cuda_version(lower: &str) -> Option<String> {
     }
 }
 
-/// Result of a successful runtime download, ready to be registered into config.
 #[derive(Debug, Clone)]
 pub struct DownloadedRuntime {
     pub managed_runtime: crate::config::ManagedRuntime,
@@ -376,10 +351,8 @@ pub async fn download_runtime(
     tag_name: &str,
     progress_cb: impl Fn(DownloadProgress),
 ) -> Result<DownloadedRuntime> {
-    // Parse build number from tag
     let build = parse_build_tag(tag_name).context("Cannot parse build number from tag")?;
 
-    // Create versioned subdirectory
     let dir_name = format!("b{}-{}", build, asset.backend_id);
     let base_dir = AppConfig::runtimes_base_dir()?;
     let runtime_dir = base_dir.join(&dir_name);
@@ -474,28 +447,20 @@ pub async fn download_runtime(
     })
 }
 
-/// Register a downloaded runtime into the config: add it, set as active,
-/// optionally auto-delete old runtimes of the same backend.
-///
-/// This only mutates the in-memory config. The caller is responsible for
-/// calling `config.save()` afterwards (typically under a lock so that
-/// concurrent changes are not lost).
+/// Mutates in-memory config only; caller must `save()` under lock to avoid clobbering.
 pub fn register_downloaded_runtime(config: &mut AppConfig, downloaded: DownloadedRuntime) -> Result<()> {
     let rt = downloaded.managed_runtime;
     let build = rt.build;
     let backend_id = rt.backend_id.clone();
 
-    // Add to managed runtimes (replace if same build+backend exists)
     config.managed_runtimes.retain(|r| !(r.build == build && r.backend_id == backend_id));
     config.managed_runtimes.push(rt);
 
-    // Set as active
     config.active_runtime = crate::config::ActiveRuntime::Managed {
         build,
         backend_id: backend_id.clone(),
     };
 
-    // Auto-delete old runtimes if configured (only same backend)
     if config.auto_delete_old_runtimes {
         let base_dir = AppConfig::runtimes_base_dir()?;
         let old_runtimes: Vec<_> = config.managed_runtimes.iter()
@@ -512,7 +477,6 @@ pub fn register_downloaded_runtime(config: &mut AppConfig, downloaded: Downloade
         }
     }
 
-    // Sort by build descending
     config.managed_runtimes.sort_by(|a, b| b.build.cmp(&a.build));
 
     Ok(())
@@ -596,7 +560,6 @@ pub fn set_custom_runtime(path: &Path, config: &mut AppConfig) -> Result<()> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Custom".to_string());
 
-    // Add to custom runtimes if not already there
     let index = if let Some(idx) = config.custom_runtimes.iter().position(|c| c.binary_path == binary) {
         idx
     } else {
@@ -611,24 +574,21 @@ pub fn set_custom_runtime(path: &Path, config: &mut AppConfig) -> Result<()> {
     Ok(())
 }
 
-/// A llama-server binary discovered within a custom directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomBuild {
     pub binary_path: PathBuf,
-    /// Human-readable label, e.g. "build/bin/llama-server"
+    /// e.g. "build/bin/llama-server"
     pub label: String,
 }
 
-/// Result of scanning a directory for llama-server binaries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     pub builds: Vec<CustomBuild>,
-    /// True if the scanned directory is a llama.cpp source distribution root.
+    /// True when the scanned dir is a llama.cpp source root.
     pub is_source_distribution: bool,
 }
 
-/// Check whether a directory is a llama.cpp source distribution root
-/// by looking for a CMakeLists.txt containing `project("llama.cpp"`.
+/// True when CMakeLists.txt contains `project("llama.cpp"`.
 fn is_llamacpp_source_dir(root: &Path) -> bool {
     let cmake = root.join("CMakeLists.txt");
     if let Ok(content) = std::fs::read_to_string(&cmake) {
@@ -638,7 +598,7 @@ fn is_llamacpp_source_dir(root: &Path) -> bool {
     }
 }
 
-/// Scan a directory tree for all llama-server binaries (up to depth 5).
+/// Scan for llama-server binaries (depth 5).
 pub fn scan_for_builds(root: &Path) -> Result<ScanResult> {
     if !root.exists() {
         anyhow::bail!("Path does not exist: {}", root.display());
@@ -676,7 +636,7 @@ fn find_all_binaries_recursive(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() && path.file_name().map(|n| n == name).unwrap_or(false) {
-            // Label: "<root_dir_name> - <first_subdir>" e.g. "llama.cpp - build"
+            // "<root> - <first_subdir>", e.g. "llama.cpp - build".
             let label = if let Ok(rel) = path.strip_prefix(root) {
                 let root_name = root.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -695,8 +655,7 @@ fn find_all_binaries_recursive(
                 label,
             });
         } else if path.is_dir() {
-            // Skip hidden dirs (.git, .cache, etc.) and known-irrelevant dirs
-            // to avoid scanning thousands of directories in source trees
+            // Skip hidden/irrelevant dirs to avoid scanning huge source trees.
             if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
                 if dir_name.starts_with('.') || dir_name == "node_modules" || dir_name == "__pycache__" {
                     continue;
@@ -705,31 +664,6 @@ fn find_all_binaries_recursive(
             find_all_binaries_recursive(&path, name, max_depth - 1, root, results);
         }
     }
-}
-
-/// Set a specific binary as the custom runtime.
-#[allow(dead_code)]
-pub fn set_custom_runtime_binary(binary_path: &Path, config: &mut AppConfig) -> Result<()> {
-    if !binary_path.exists() {
-        anyhow::bail!("Binary does not exist: {}", binary_path.display());
-    }
-    let label = binary_path.parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Custom".to_string());
-
-    let index = if let Some(idx) = config.custom_runtimes.iter().position(|c| c.binary_path == binary_path) {
-        idx
-    } else {
-        let idx = config.custom_runtimes.len();
-        config.custom_runtimes.push(crate::config::CustomRuntime {
-            label,
-            binary_path: binary_path.to_path_buf(),
-        });
-        idx
-    };
-    config.active_runtime = crate::config::ActiveRuntime::Custom { index };
-    Ok(())
 }
 
 #[cfg(test)]
