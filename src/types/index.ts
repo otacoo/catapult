@@ -325,6 +325,7 @@ export interface HarnessRunResult {
   gen_tokens: number;
   prompt_tokens?: number | null;
   elapsed_ms: number;
+  reasoning?: string | null;
 }
 
 /** Model capability badges for the chat input row. */

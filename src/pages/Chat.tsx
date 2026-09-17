@@ -1098,7 +1098,7 @@ function HarnessChat() {
           }
           setRunStatus("thinking");
           break;
-        case "reasoning":
+        case "reasoning_delta":
           reasoningAcc += ev.text ?? "";
           setReasoningText(reasoningAcc);
           break;
@@ -1188,7 +1188,7 @@ function HarnessChat() {
           tokps: res.tokens_per_sec ?? null,
           elapsedMs: res.elapsed_ms,
           tokens: res.gen_tokens,
-          reasoning: reasoningAcc || undefined,
+          reasoning: res.reasoning ?? (reasoningAcc || undefined),
         } as Item,
       ]);
       setAttachments([]);

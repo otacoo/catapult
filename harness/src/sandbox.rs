@@ -177,7 +177,7 @@ impl PathJail {
     pub fn check_read(&self, path: &Path) -> Result<PathBuf> {
         let canonical = canonicalize_target(&self.anchored(path))?;
         match self.scope(&canonical) {
-            PathScope::Project | PathScope::ExtraRead | PathScope::ExtraWrite => Ok(canonical),
+            PathScope::Project | PathScope::ExtraRead | PathScope::ExtraWrite => Ok(strip_verbatim(&canonical)),
             PathScope::Denied => bail!(
                 "Read denied: '{}' is outside the sandboxed project and not in the read allowlist",
                 lexical_normalize(path).display()
@@ -190,7 +190,7 @@ impl PathJail {
     pub fn check_write(&self, path: &Path) -> Result<PathBuf> {
         let canonical = canonicalize_target(&self.anchored(path))?;
         match self.scope(&canonical) {
-            PathScope::Project | PathScope::ExtraWrite => Ok(canonical),
+            PathScope::Project | PathScope::ExtraWrite => Ok(strip_verbatim(&canonical)),
             PathScope::ExtraRead => bail!(
                 "Write denied: '{}' is a read-only allowlisted path",
                 lexical_normalize(path).display()
@@ -201,6 +201,12 @@ impl PathJail {
             ),
         }
     }
+}
+
+/// Drop the Windows verbatim prefix for user-visible paths; comparisons still use the canonical form.
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let text = p.to_string_lossy();
+    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
 }
 
 #[cfg(test)]

@@ -282,6 +282,14 @@ impl AppConfig {
             config.download_dir = Some(Self::default_models_dir()?);
         }
 
+        // Repair turn budgets saved as 0 by builds predating the serde defaults.
+        if config.harness_max_turns == 0 {
+            config.harness_max_turns = default_harness_max_turns();
+        }
+        if config.harness_subagent_max_turns == 0 {
+            config.harness_subagent_max_turns = default_harness_subagent_max_turns();
+        }
+
         Ok(config)
     }
 

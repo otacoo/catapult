@@ -990,14 +990,10 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
     args.push("--port".to_string());
     args.push(config.port.to_string());
 
-    // --fit (default: on): llama-server auto-adjusts context size and GPU
-    // layers to fit device memory. Explicit --ctx-size/--n-gpu-layers args
-    // would block this, since fit only adjusts parameters not set by the user.
     // --fit (default: on): auto-adjust context size and GPU layers to device
-    // memory. --ctx-size and --n-gpu-layers are passed only when --fit is off
-    // (except --n-gpu-layers is always passed so the user's explicit value is
-    // honored even with --fit on — llama.cpp's fit logic respects explicit
-    // values for the field it's not sizing).
+    // memory. --ctx-size is passed only when --fit is off; --n-gpu-layers is
+    // always passed so the user's explicit value is honored even with --fit on
+    // (fit logic respects explicit values for the field it's not sizing).
     // In router mode these are per-model concerns; children use their own
     // defaults (the router's base args are merged onto every model preset).
     if !router_mode {
@@ -1020,8 +1016,11 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
         args.push(threads.to_string());
     }
 
-    args.push("--flash-attn".to_string());
-    args.push(config.flash_attn.clone());
+    // "auto" is the upstream default — omit so the flag is nullifiable.
+    if config.flash_attn != "auto" {
+        args.push("--flash-attn".to_string());
+        args.push(config.flash_attn.clone());
+    }
 
     // Cache types: empty = omit, letting llama-server use its own default.
     if !config.cache_type_k.is_empty() {
@@ -1065,9 +1064,8 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
         args.push(config.n_ubatch.to_string());
     }
 
-    if config.cont_batching {
-        args.push("--cont-batching".to_string());
-    } else {
+    // Enabled is the upstream default — only disable explicitly.
+    if !config.cont_batching {
         args.push("--no-cont-batching".to_string());
     }
 
@@ -1344,8 +1342,8 @@ mod tests {
             args[args.iter().position(|a| a == "--n-gpu-layers").unwrap() + 1],
             "-1"
         );
-        assert!(args.contains(&"--flash-attn".to_string()));
-        assert!(args.contains(&"auto".to_string()));
+        // auto flash-attn is omitted (upstream default)
+        assert!(!args.contains(&"--flash-attn".to_string()));
     }
 
     #[test]
@@ -1385,6 +1383,8 @@ mod tests {
         assert!(args.contains(&"42".to_string()));
         assert!(args.contains(&"--parallel".to_string()));
         assert!(args.contains(&"4".to_string()));
+        // Default (auto) flash-attn is omitted — nullifiable.
+        assert!(!args.contains(&"--flash-attn".to_string()));
     }
 
     #[test]
@@ -1953,6 +1953,18 @@ mod tests {
     }
 
     #[test]
+    fn build_args_flash_attn_explicit() {
+        let config = ServerConfig {
+            model_path: "/m.gguf".to_string(),
+            flash_attn: "on".to_string(),
+            ..Default::default()
+        };
+        let args = build_args(&config);
+        let idx = args.iter().position(|a| a == "--flash-attn").unwrap();
+        assert_eq!(args[idx + 1], "on");
+    }
+
+    #[test]
     fn build_args_parallel_emitted_for_higher_values() {
         let config = ServerConfig {
             model_path: "/m.gguf".to_string(),
@@ -1972,7 +1984,8 @@ mod tests {
             ..Default::default()
         };
         let args = build_args(&config);
-        assert!(args.contains(&"--cont-batching".to_string()));
+        // Enabled is upstream default — no flag needed.
+        assert!(!args.contains(&"--cont-batching".to_string()));
         assert!(!args.contains(&"--no-cont-batching".to_string()));
     }
 
@@ -1987,8 +2000,8 @@ mod tests {
         // parallel=1 must be emitted (not omitted)
         let idx = args.iter().position(|a| a == "--parallel").unwrap();
         assert_eq!(args[idx + 1], "1");
-        // cont_batching=true emits --cont-batching
-        assert!(args.contains(&"--cont-batching".to_string()));
+        // cont_batching=true emits nothing (upstream default)
+        assert!(!args.contains(&"--no-cont-batching".to_string()));
     }
 
     #[test]

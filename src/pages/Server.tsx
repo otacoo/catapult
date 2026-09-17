@@ -1344,9 +1344,10 @@ export default function Server() {
             <div className="space-y-3 mt-2">
               <Toggle label="SWA Full" flag="--swa-full" hint="Full-size SWA cache — only applies to SWA models (auto-dropped otherwise)" checked={hasFlag("swa-full")} onChange={(v) => setFlag("swa-full", v)} />
               <Toggle label="KV Offload" flag="--no-kv-offload" hint="Offload KV cache to GPU (default: on)" checked={!hasFlag("no-kv-offload")} onChange={(v) => setFlag("no-kv-offload", !v)} />
-              <Toggle label="KV Unified" flag="--kv-unified" hint="Single unified KV buffer shared across sequences" checked={hasFlag("kv-unified") || (!hasFlag("no-kv-unified") && config.parallel <= 1)}
-                onChange={(v) => { setFlag("kv-unified", v); setFlag("no-kv-unified", !v); }} />
-              <Toggle label="Context Shift" flag="--context-shift" hint="Shift context on infinite generation — not supported by SWA/hybrid models (auto-dropped)" checked={hasFlag("context-shift")} onChange={(v) => { setFlag("context-shift", v); setFlag("no-context-shift", !v); }} />
+              <Toggle label="KV Unified" flag="--kv-unified" hint="Single unified KV buffer shared across sequences (off = omit the flag, server default)" checked={hasFlag("kv-unified")}
+                onChange={(v) => { setFlag("kv-unified", v); if (v) setFlag("no-kv-unified", false); }} />
+              <Toggle label="Context Shift" flag="--context-shift" hint="Shift context on infinite generation — not supported by SWA/hybrid models (auto-dropped); off = omit (server default: disabled)" checked={hasFlag("context-shift")}
+                onChange={(v) => { setFlag("context-shift", v); if (v) setFlag("no-context-shift", false); }} />
               <Toggle label="Cache Prompt" flag="--no-cache-prompt" hint="Enable prompt caching (default: on)" checked={!hasFlag("no-cache-prompt")} onChange={(v) => setFlag("no-cache-prompt", !v)} />
               <Toggle label="Cache Idle Slots" flag="--no-cache-idle-slots" hint="Save and clear idle slots on new task (default: on, requires KV unified + cache-ram)"
                 checked={!hasFlag("no-cache-idle-slots")} onChange={(v) => setFlag("no-cache-idle-slots", !v)} />
@@ -1440,8 +1441,8 @@ export default function Server() {
           {/* ════════════════════════ SAMPLING ════════════════════════ */}
           <div data-tab="Sampling" className="space-y-4" style={{ display: activeTab === "Sampling" ? undefined : "none" }}>
             <div className="space-y-3">
-              <Toggle label="Pass sampling parameters" flag="(omits --temp/--top-k/--min-p/--top-p block)"
-                hint="Uncheck to omit them so the server or harness uses its own defaults."
+              <Toggle label="Use custom sampling parameters" flag="--temp/--top-k/--min-p/--top-p"
+                hint="When off, the sampling flags are omitted and llama-server applies its own defaults (temp 0.8, top-k 40, top-p 0.95, min-p 0.05)."
                 checked={!config.disable_sampling}
                 onChange={(v) => setConfig((c) => ({ ...c, disable_sampling: !v }))} />
             </div>

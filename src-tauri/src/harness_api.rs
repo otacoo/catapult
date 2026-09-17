@@ -743,6 +743,21 @@ fn send_event(on_event: &Channel<String>, ev: impl serde::Serialize) {
     }
 }
 
+/// Reasoning trace for UI/session storage, capped — traces can dwarf the answer.
+fn capped_reasoning(reasoning: &str) -> Option<String> {
+    if reasoning.is_empty() {
+        return None;
+    }
+    const REASONING_CAP: usize = 20_000;
+    if reasoning.chars().count() > REASONING_CAP {
+        let mut t: String = reasoning.chars().take(REASONING_CAP).collect();
+        t.push_str("\n[…reasoning truncated]");
+        Some(t)
+    } else {
+        Some(reasoning.to_string())
+    }
+}
+
 /// Append a line to the Server Logs panel (same cap policy as the server
 /// reader: 500 lines, drain 100). Harness notices live here now — they no
 /// longer render as transcript cards in chat.
@@ -1286,24 +1301,14 @@ pub async fn harness_agent_send(
         None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
     };
     // Footer stats for the finished turn stick to its transcript message so
-    // they survive restarts (recorded before the save below). Reasoning is
-    // capped — traces can dwarf the answer.
+    // they survive restarts (recorded before the save below).
     if let Ok(outcome) = &result {
         let history = state.harness.history.lock().unwrap();
         if let Some(idx) = history
             .iter()
             .rposition(|m| m.role == "assistant" && m.tool_calls.is_none())
         {
-            const REASONING_CAP: usize = 20_000;
-            let reasoning = if outcome.reasoning.is_empty() {
-                None
-            } else if outcome.reasoning.chars().count() > REASONING_CAP {
-                let mut t: String = outcome.reasoning.chars().take(REASONING_CAP).collect();
-                t.push_str("\n[…reasoning truncated]");
-                Some(t)
-            } else {
-                Some(outcome.reasoning.clone())
-            };
+            let reasoning = capped_reasoning(&outcome.reasoning);
             state.harness.meta.lock().unwrap().insert(
                 idx,
                 MessageMeta {
@@ -1330,6 +1335,7 @@ pub async fn harness_agent_send(
                 gen_tokens: outcome.gen_tokens,
                 prompt_tokens: outcome.prompt_tokens,
                 elapsed_ms: outcome.elapsed_ms,
+                reasoning: capped_reasoning(&outcome.reasoning),
             })
         }
         Err(e) => Err(e.to_string()),
@@ -1348,6 +1354,9 @@ pub struct RunResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u64>,
     pub elapsed_ms: u64,
+    /// Full reasoning trace of the final turn, capped (matches the session meta cap).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 /// Capabilities of the active model (GGUF metadata): vision (mmproj) and
@@ -1707,6 +1716,13 @@ pub async fn harness_worktree_remove(
 
 // ── Projects (contained working directories) ────────────────────────────────
 
+/// Drop the Windows verbatim `\\?\` prefix `fs::canonicalize` adds — it leaks
+/// into the UI and confuses other tools.
+fn display_path(p: &std::path::Path) -> String {
+    let text = p.to_string_lossy();
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+}
+
 #[tauri::command]
 pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let path = path.trim().to_string();
@@ -1722,7 +1738,8 @@ pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Re
         .and_then(|n| n.to_str())
         .unwrap_or("project")
         .to_string();
-    let id = abs.to_string_lossy().to_lowercase().replace('\\', "/").replace(':', "");
+    let plain = display_path(&abs);
+    let id = plain.to_lowercase().replace('\\', "/").replace(':', "");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1734,7 +1751,7 @@ pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Re
         config.harness_projects.push(crate::config::HarnessProject {
             id: id.clone(),
             name,
-            path: abs.to_string_lossy().to_string(),
+            path: plain,
             extra_read: Vec::new(),
             created: now,
         });

@@ -26,10 +26,11 @@ const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "about", label: "About", icon: Info },
 ];
 
-function RolePickers({ appConfig, onSet, onSetParams }: {
+function RolePickers({ appConfig, onSet, onSetParams, subagentsEnabled }: {
   appConfig: AppConfig | null;
   onSet: (orchestrator: string | null, worker: string | null) => void;
   onSetParams: (role: "orchestrator" | "worker", ctxSize: number | null, nGpuLayers: number | null) => void;
+  subagentsEnabled: boolean;
 }) {
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [vramMb, setVramMb] = useState<number | null>(null);
@@ -129,11 +130,12 @@ function RolePickers({ appConfig, onSet, onSetParams }: {
           {renderTuning("orchestrator", orchPath, orchSize)}
         </div>
         <div>
-          <label className="flex flex-col gap-1 text-xs text-gray-400">
+          <label className={`flex flex-col gap-1 text-xs ${subagentsEnabled ? "text-gray-400" : "text-gray-600"}`}>
             <span>Worker model (subagents)</span>
             <select
-              className="input py-1 px-2 text-xs"
+              className="input py-1 px-2 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
               value={workerPath ?? ""}
+              disabled={!subagentsEnabled}
               onChange={(e) => onSet(orchPath, e.target.value || null)}
             >
               {[{ value: "", label: "Same as orchestrator" }, ...modelOptions].map((o) => (
@@ -141,7 +143,7 @@ function RolePickers({ appConfig, onSet, onSetParams }: {
               ))}
             </select>
           </label>
-          {renderTuning("worker", workerPath, workerSize)}
+          {subagentsEnabled && renderTuning("worker", workerPath, workerSize)}
         </div>
       </div>
       {sizesKnown && (orchPath || workerPath) && vramMb !== null && vramMb > 0 && (
@@ -380,6 +382,14 @@ export default function OptionsPanel({ open, onClose }: {
       <p className="section-desc">
         Turn budgets and model roles for the Catapult agent harness.
       </p>
+      <div className="space-y-3 mt-3">
+        <Toggle
+          label="Enable subagents"
+          hint="Off runs the orchestrator alone on a single model (WebUI-style chat with tools)."
+          checked={appConfig?.harness_subagents_enabled ?? true}
+          onChange={setSubagentsEnabled}
+        />
+      </div>
       <div className="grid grid-cols-2 gap-3 mt-3">
         <label className="flex items-center justify-between gap-2 text-xs text-gray-400">
           <span>Orchestrator max turns</span>
@@ -404,15 +414,7 @@ export default function OptionsPanel({ open, onClose }: {
           />
         </label>
       </div>
-      <RolePickers appConfig={appConfig} onSet={setRoles} onSetParams={setRoleParams} />
-      <div className="space-y-3 mt-3">
-        <Toggle
-          label="Enable subagents"
-          hint="Off runs the orchestrator alone on a single model (WebUI-style chat with tools)."
-          checked={appConfig?.harness_subagents_enabled ?? true}
-          onChange={setSubagentsEnabled}
-        />
-      </div>
+      <RolePickers appConfig={appConfig} onSet={setRoles} onSetParams={setRoleParams} subagentsEnabled={appConfig?.harness_subagents_enabled ?? true} />
     </div>
   );
 

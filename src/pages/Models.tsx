@@ -524,7 +524,9 @@ export default function Models() {
                               <span title="Reasoning"><Brain size={12} className="text-primary-light shrink-0" /></span>
                             )}
                           </div>
-                          <p className="text-[10px] text-gray-600 truncate font-mono">{m.filename}</p>
+                          <p className="text-[10px] text-gray-600 truncate font-mono">
+                            {(m.repo_id ? m.repo_id.split("/")[0] + "/" : "") + m.filename}
+                          </p>
                         </div>
                         <span className="w-16 text-right text-xs text-gray-400">
                           {m.params_b ?? "—"}

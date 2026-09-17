@@ -69,7 +69,7 @@ pub const RECOMMENDED_MODELS: &[RecommendedModelDef] = &[
         repo_id: "lmstudio-community/Muse-Glimmer-30B-GGUF",
         filename: "Muse-Glimmer-30B-Q4_K_M.gguf",
         name: "Muse Glimmer 30B",
-        description: "Muse 30B MoE glimmer release. Creative and capable.",
+        description: "Muse 30B dense glimmer release. Creative and capable.",
         params_b: 30,
         family: "Muse",
         quant: "Q4_K_M",
