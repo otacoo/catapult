@@ -435,9 +435,6 @@ export default function Tools() {
             </button>
           </div>
         )}
-        {mcp?.path && (
-          <p className="text-xs text-gray-500 mt-2">On Windows, .cmd shims (e.g. npx) are auto-wrapped via cmd /c.</p>
-        )}
       </div>
     </div>
   );
