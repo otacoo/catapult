@@ -284,29 +284,42 @@ export default function Wizard() {
       (m) => selectedModels.has(m.filename) && !m.installed && !modelsDone.has(m.filename)
     );
 
-    for (const m of toDownload) {
-      try {
-        const files = await invoke<{ filename: string; size_bytes: number; download_url: string }[]>(
-          "get_hf_repo_files",
-          { repoId: m.repo_id }
-        );
-        const file = files.find((f) => f.filename === m.filename);
-        if (!file) {
-          setModelsError((prev) => ({ ...prev, [m.filename]: "File not found in repo" }));
-          continue;
-        }
-        // Progress arrives via events so no await here.
-        invoke("download_model", {
-          repoId: m.repo_id,
-          filename: m.filename,
-          downloadUrl: file.download_url,
-          sizeBytes: file.size_bytes,
-        }).catch((e) => {
+    try {
+      for (const m of toDownload) {
+        try {
+          // Clear a previous failure so the row reads as "retrying".
+          setModelsError((prev) => {
+            const { [m.filename]: _, ...rest } = prev;
+            return rest;
+          });
+          const files = await invoke<{ filename: string; size_bytes: number; download_url: string }[]>(
+            "get_hf_repo_files",
+            { repoId: m.repo_id }
+          );
+          // get_hf_repo_files nests filenames under owner/repo — match by basename.
+          const file = files.find(
+            (f) => f.filename === m.filename || f.filename.endsWith("/" + m.filename)
+          );
+          if (!file) {
+            setModelsError((prev) => ({ ...prev, [m.filename]: "File not found in repo" }));
+            continue;
+          }
+          // Progress arrives via events so no await here.
+          invoke("download_model", {
+            repoId: m.repo_id,
+            filename: m.filename,
+            downloadUrl: file.download_url,
+            sizeBytes: file.size_bytes,
+          }).catch((e) => {
+            setModelsError((prev) => ({ ...prev, [m.filename]: String(e) }));
+          });
+        } catch (e) {
           setModelsError((prev) => ({ ...prev, [m.filename]: String(e) }));
-        });
-      } catch (e) {
-        setModelsError((prev) => ({ ...prev, [m.filename]: String(e) }));
+        }
       }
+    } finally {
+      // Rows stay toggleable after spawning; failed models can be re-run.
+      setDownloading(false);
     }
   };
 
