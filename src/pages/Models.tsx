@@ -506,8 +506,16 @@ export default function Models() {
                   <div>
                     {sorted.map((m) => {
                       const isFav = favorites.includes(m.id);
-                      // Author = the model file's parent folder (e.g. mradermacher/Model.gguf).
-                      const author = m.path.split(/[\\/]/).slice(-2, -1)[0] ?? "";
+                      // Author folder: the file's parent, or one level up when
+                      // the parent is a model-named folder (…/author/Model/file.gguf).
+                      const segs = m.path.split(/[\\/]/).filter(Boolean);
+                      const stem = (segs[segs.length - 1] ?? "").replace(/\.gguf$/i, "");
+                      const firstTok = (s: string) => s.split(/[-_.]/)[0]?.toLowerCase() ?? "";
+                      const parent = segs.length >= 2 ? segs[segs.length - 2] : "";
+                      const grandparent = segs.length >= 3 ? segs[segs.length - 3] : "";
+                      const inModelFolder =
+                        !!parent && !!grandparent && firstTok(parent) === firstTok(stem);
+                      const author = inModelFolder ? grandparent : parent;
                       return (
                       <div key={m.id}
                         className="flex items-center gap-2 px-3 py-2 border-b border-border/50 hover:bg-surface-3 transition-colors">
