@@ -506,6 +506,8 @@ export default function Models() {
                   <div>
                     {sorted.map((m) => {
                       const isFav = favorites.includes(m.id);
+                      // Author = the model file's parent folder (e.g. mradermacher/Model.gguf).
+                      const author = m.path.split(/[\\/]/).slice(-2, -1)[0] ?? "";
                       return (
                       <div key={m.id}
                         className="flex items-center gap-2 px-3 py-2 border-b border-border/50 hover:bg-surface-3 transition-colors">
@@ -525,7 +527,7 @@ export default function Models() {
                             )}
                           </div>
                           <p className="text-[10px] text-gray-600 truncate font-mono">
-                            {(m.repo_id ? m.repo_id.split("/")[0] + "/" : "") + m.filename}
+                            {author ? author + "/" : ""}{m.filename}
                           </p>
                         </div>
                         <span className="w-16 text-right text-xs text-gray-400">
