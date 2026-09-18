@@ -729,10 +729,14 @@ export default function OptionsPanel({ open, onClose }: {
               <hr className="border-border" />
               {/* Harness-specific options are inert while the harness is off. */}
               <div className={`grid grid-cols-2 gap-4 items-start ${appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}`}>
-                <SkillsCard />
-                {agentCard}
-                {systemPromptCard}
-                <MemoryCard />
+                <div className="space-y-4">
+                  {agentCard}
+                  {systemPromptCard}
+                  <MemoryCard />
+                </div>
+                <div className="space-y-4">
+                  <SkillsCard />
+                </div>
               </div>
             </>
           )}

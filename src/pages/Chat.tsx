@@ -979,6 +979,17 @@ function HarnessChat() {
   };
   const approvalSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Chat text scale (zoom on the transcript; persists in localStorage).
+  const [chatZoom, setChatZoom] = useState(() => {
+    const z = Number(localStorage.getItem("catapult_chat_zoom"));
+    return z >= 0.85 && z <= 1.4 ? z : 1;
+  });
+  const stepZoom = (d: number) =>
+    setChatZoom((z) => {
+      const next = Math.min(1.4, Math.max(0.85, Math.round((z + d) * 100) / 100));
+      localStorage.setItem("catapult_chat_zoom", String(next));
+      return next;
+    });
 
   const refreshActiveProject = async () => {
     try {
@@ -1321,6 +1332,7 @@ function HarnessChat() {
         attachments: attachments.map((a) => ({
           name: a.name,
           kind: a.kind,
+          path: a.path,
           data_base64:
             a.kind === "image" && a.preview ? a.preview.split(",", 2)[1] ?? null : null,
           text: a.kind === "text" ? (a.text ?? "") : null,
@@ -1494,6 +1506,22 @@ function HarnessChat() {
           >
             {sidebarOpen ? "◀ Sidebar" : "▶ Sidebar"}
           </button>
+          <div className="flex-1 flex items-center justify-center gap-2">
+            <button
+              className="text-gray-500 hover:text-gray-300 leading-none"
+              onClick={() => stepZoom(-0.05)}
+              title="Smaller chat text"
+            >
+              <span className="text-[11px] font-semibold">a</span>
+            </button>
+            <button
+              className="text-gray-500 hover:text-gray-300 leading-none"
+              onClick={() => stepZoom(0.05)}
+              title="Larger chat text"
+            >
+              <span className="text-sm font-semibold">A</span>
+            </button>
+          </div>
           <button
             className="text-xs text-gray-500 hover:text-gray-300"
             onClick={newChat}
@@ -1530,7 +1558,7 @@ function HarnessChat() {
         )}
 
         {/* Messages — select-text re-enables selection (body disables it for the title bar) */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3 select-text">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3 select-text" style={{ zoom: chatZoom }}>
           {items.length === 0 && streamText === null && <EmptyState />}
           {items.map((it, i) => {
             if (it.kind === "msg") {

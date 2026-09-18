@@ -18,6 +18,30 @@ pub struct Attachment {
     pub data_base64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Absolute source path; parent dirs become readable for the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Where each attachment lives; lets the model `read_file` files outside the
+/// project (their parent dirs are added to the jail's read scope).
+fn locations_block(attachments: &[Attachment]) -> Option<String> {
+    let lines: Vec<String> = attachments
+        .iter()
+        .filter_map(|a| {
+            a.path
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| format!("- {}: {}", a.name, p))
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Attachment locations (readable even outside the project):\n{}",
+        lines.join("\n")
+    ))
 }
 
 fn mime_for(name: &str) -> &'static str {
@@ -49,10 +73,10 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
         text_parts.push(message);
     }
     let mut image_parts: Vec<Value> = Vec::new();
-    for a in attachments {
+    for a in &attachments {
         match a.kind.as_str() {
             "image" => {
-                if let Some(b64) = a.data_base64 {
+                if let Some(b64) = a.data_base64.as_deref() {
                     let mime = mime_for(&a.name);
                     text_parts.push(format!("[image: {}]", a.name));
                     image_parts.push(json!({
@@ -62,14 +86,14 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
                 }
             }
             _ => {
-                if let Some(text) = a.text {
+                if let Some(text) = a.text.as_deref() {
                     const TEXT_CAP: usize = 50_000;
                     let shown = if text.chars().count() > TEXT_CAP {
                         let mut t: String = text.chars().take(TEXT_CAP).collect();
                         t.push_str("\n[truncated]");
                         t
                     } else {
-                        text
+                        text.to_string()
                     };
                     text_parts.push(format!("Attached file {}:\n```\n{}\n```", a.name, shown));
                 }
@@ -81,6 +105,10 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
         "(no text)".to_string()
     } else {
         text_parts.join("\n\n")
+    };
+    let combined = match locations_block(&attachments) {
+        Some(block) => format!("{combined}\n\n{block}"),
+        None => combined,
     };
 
     if image_parts.is_empty() {
@@ -227,7 +255,7 @@ mod tests {
     use super::*;
 
     fn img(name: &str) -> Attachment {
-        Attachment { name: name.to_string(), kind: "image".into(), data_base64: Some("QUJD".into()), text: None }
+        Attachment { name: name.to_string(), kind: "image".into(), data_base64: Some("QUJD".into()), text: None, path: None }
     }
 
     #[test]
@@ -247,6 +275,28 @@ mod tests {
     }
 
     #[test]
+    fn user_message_lists_attachment_paths() {
+        let atts = Some(vec![Attachment {
+            name: "shot.jpg".into(),
+            kind: "image".into(),
+            data_base64: Some("QUJD".into()),
+            text: None,
+            path: Some("E:\\Downloads\\shot.jpg".into()),
+        }]);
+        let msg = build_user_message(String::new(), atts);
+        let text = match &msg.content {
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .find_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .unwrap()
+                .to_string(),
+            _ => panic!("expected multimodal parts"),
+        };
+        assert!(text.contains("Attachment locations"));
+        assert!(text.contains("E:\\Downloads\\shot.jpg"));
+    }
+
+    #[test]
     fn strip_leaves_text_only_messages_alone() {
         let msg = ChatMessage::user("hello".to_string());
         let stripped = strip_image_parts(msg);
@@ -263,6 +313,7 @@ mod tests {
             kind: "text".into(),
             data_base64: None,
             text: Some("boom".into()),
+            path: None,
         }]);
         let blocks = fenced_texts(&atts);
         assert_eq!(blocks.len(), 1);

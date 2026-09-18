@@ -705,19 +705,24 @@ fn active_project_path(config: &crate::config::AppConfig) -> Option<String> {
 }
 
 /// Build the project jail including the active project's pre-declared
-/// extra read paths (missing entries are skipped, never fatal).
-fn project_jail(state: &AppState, root: &std::path::Path) -> Result<Arc<PathJail>, String> {
+/// extra read paths plus per-run roots (e.g. attachment sources).
+/// Missing entries are skipped, never fatal.
+fn project_jail(
+    state: &AppState,
+    root: &std::path::Path,
+    extra_roots: &[PathBuf],
+) -> Result<Arc<PathJail>, String> {
     let extra: Vec<PathBuf> = {
         let c = state.config.lock().unwrap();
         let active = c.harness_active_project.as_deref();
         c.harness_projects
             .iter()
             .find(|p| Some(p.id.as_str()) == active)
-            .map(|p| p.extra_read.clone())
+            .map(|p| p.extra_read.iter().map(PathBuf::from).collect::<Vec<_>>())
             .unwrap_or_default()
     }
     .into_iter()
-    .map(PathBuf::from)
+    .chain(extra_roots.iter().cloned())
     .filter(|p| p.is_dir() || p.is_file())
     .collect();
     PathJail::new(root, &extra, &[]).map(Arc::new).map_err(|e| e.to_string())
@@ -1029,7 +1034,7 @@ pub struct ToolListing {
 #[tauri::command]
 pub async fn harness_agent_tools(state: State<'_, AppState>) -> Result<Vec<ToolListing>, String> {
     let root = project_root(&state)?;
-    let jail = project_jail(&state, &root)?;
+    let jail = project_jail(&state, &root, &[])?;
     let (registry, _) = build_registry(jail, &state, &root);
     let registry = if state.config.lock().unwrap().harness_subagents_enabled {
         registry
@@ -1214,7 +1219,22 @@ pub async fn harness_agent_send(
     // Persisted grants follow the active project (global once per app run).
     ensure_permissions_loaded(&state);
     let project_id = state.config.lock().unwrap().harness_active_project.clone();
-    let jail = project_jail(&state, &root)?;
+    // Attachment sources become readable for this run: the model can follow
+    // the absolute paths in the message even though they sit outside the jail.
+    let attachment_roots: Vec<PathBuf> = attachments
+        .as_ref()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| {
+            a.path.as_deref().map(std::path::PathBuf::from).and_then(|p| {
+                p.parent()
+                    .filter(|d| d.is_dir())
+                    .map(|d| d.to_path_buf())
+            })
+        })
+        .collect();
+    let jail = project_jail(&state, &root, &attachment_roots)?;
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
 
