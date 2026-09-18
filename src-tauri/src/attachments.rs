@@ -324,19 +324,27 @@ mod tests {
 
     #[test]
     fn user_message_shows_relative_and_absolute_copy_paths() {
+        let root = std::env::temp_dir();
+        let file = root
+            .join(".catapult")
+            .join("attachments")
+            .join("1")
+            .join("data.csv");
         let atts = Some(vec![Attachment {
             name: "data.csv".into(),
             kind: "text".into(),
             data_base64: None,
             text: Some("a,b".into()),
-            path: Some("E:\\proj\\.catapult\\attachments\\1\\data.csv".into()),
+            path: Some(file.to_string_lossy().to_string()),
         }]);
-        let msg = build_user_message(String::new(), atts, Some(std::path::Path::new("E:\\proj")));
+        let msg = build_user_message(String::new(), atts, Some(&root));
         let text = match &msg.content {
             Some(Value::String(s)) => s.clone(),
             other => panic!("expected string content, got {other:?}"),
         };
-        assert!(text.contains(".catapult\\attachments\\1\\data.csv (absolute:"));
+        let rel = file.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+        assert!(text.contains(&rel));
+        assert!(text.contains(&format!("(absolute: {}", file.display())));
     }
 
     #[test]
