@@ -157,6 +157,8 @@ pub enum AgentEvent {
     /// `branch` is set for sibling-worktree runs.
     SubagentSpawned { call_id: String, kind: String, goal: String, branch: Option<String> },
     SubagentFinished { call_id: String, kind: String, summary: String },
+    /// Transcript was compacted mid-run; the UI shows how much was folded away.
+    Compacted { removed: usize },
     Notice { text: String },
 }
 
@@ -212,6 +214,8 @@ pub struct AgentRun<'a> {
     pub subagents: Option<Subagents>,
     /// Only vision runs receive image parts (pixels 500 text-only models).
     pub vision: bool,
+    /// Effective context size for compaction; None disables it.
+    pub context_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -223,6 +227,8 @@ pub struct AgentOutcome {
     pub elapsed_ms: u64,
     /// Accumulated reasoning; never sent back to the model.
     pub reasoning: String,
+    /// Messages removed per compaction, in order (for footer-meta reindexing).
+    pub compactions: Vec<usize>,
 }
 
 impl AgentRun<'_> {
@@ -237,9 +243,26 @@ impl AgentRun<'_> {
             let mut turns_used = 0usize;
             let mut sub_seq = 0usize;
             let mut reasoning_acc = String::new();
+            let mut compactions: Vec<usize> = Vec::new();
         loop {
             if should_stop() {
                 bail!("aborted");
+            }
+            // Fold the oldest turns into a summary before they overflow the
+            // window; free (no turn spent) and checked every iteration.
+            if let Some(limit) = self.context_limit {
+                if let Some(info) = crate::compact::compact_history(
+                    self.client,
+                    self.model.as_deref(),
+                    history,
+                    limit,
+                    &*should_stop,
+                    &mut on_event,
+                )
+                .await?
+                {
+                    compactions.push(info.cut);
+                }
             }
             turns_used += 1;
             if turns_used > self.max_turns {
@@ -316,6 +339,7 @@ impl AgentRun<'_> {
                     tokens_per_sec: tokens_per_sec.filter(|v| *v > 0.0 && v.is_finite()),
                     elapsed_ms: elapsed.as_millis() as u64,
                     reasoning: std::mem::take(&mut reasoning_acc),
+                    compactions,
                 });
             }
 
@@ -654,6 +678,8 @@ impl AgentRun<'_> {
                 max_turns: sub.max_turns,
                 subagents: None, // stripped above; belt-and-braces
                 vision: sub.vision,
+                // Same window as the orchestrator run (worker models usually match).
+                context_limit: self.context_limit,
             };
             let mut nested = |ev: AgentEvent| {
                 let ev = match ev {
@@ -861,6 +887,7 @@ mod tests {
             max_turns: 5,
             subagents: None,
             vision,
+            context_limit: None,
         }
     }
 

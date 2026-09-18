@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod client;
+pub mod compact;
 pub mod git;
 pub mod jsonfix;
 pub mod mcp;

@@ -213,9 +213,10 @@ fn new_session_id() -> String {
 fn session_title(history: &[ChatMessage]) -> String {
     let first_user = history
         .iter()
-        .find(|m| m.role == "user")
-        .and_then(|m| m.content.as_ref())
-        .and_then(|c| c.as_str())
+        .filter(|m| m.role == "user" && !harness::compact::is_summary(m))
+        .filter_map(|m| m.content.as_ref())
+        .filter_map(|c| c.as_str())
+        .next()
         .unwrap_or_default();
     let mut t: String = first_user.lines().next().unwrap_or("New chat").to_string();
     if t.chars().count() > 60 {
@@ -1467,6 +1468,7 @@ pub async fn harness_agent_send(
         vision: orch_vision,
         reasoning_effort: reasoning_effort.filter(|e| !e.is_empty() && e != "default"),
         max_turns: max_turns as usize,
+        context_limit: effective_context_limit(&state, &client).await,
         subagents: if subagents_enabled {
             Some(harness::agent::Subagents {
                 jail,
@@ -1506,6 +1508,7 @@ pub async fn harness_agent_send(
     // Footer stats for the finished turn stick to its transcript message so
     // they survive restarts (recorded before the save below).
     if let Ok(outcome) = &result {
+        shift_meta_for_compaction(&state, &outcome.compactions);
         let history = state.harness.history.lock().unwrap();
         if let Some(idx) = history
             .iter()
@@ -1855,6 +1858,62 @@ pub async fn harness_session_export(id: String, path: String) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
+/// Effective context size for compaction: live slot size on single-model
+/// servers (reflects --ctx-size/--fit), else the GGUF training length.
+/// Router mode skips the slot query (it would proxy to a child per call).
+async fn effective_context_limit(state: &AppState, client: &LlmClient) -> Option<u64> {
+    if !is_router_mode(state) {
+        if let Ok(Some(ctx)) = client.slot_context().await {
+            if ctx > 0 {
+                return Some(ctx);
+            }
+        }
+    }
+    if let Some(path) = active_model_path(state) {
+        if let Some(n) = crate::models::read_model_metadata(std::path::Path::new(&path))
+            .and_then(|m| m.context_length)
+        {
+            return Some(n);
+        }
+    }
+    router_active_model_path(state, client)
+        .await
+        .and_then(|path| {
+            crate::models::read_model_metadata(std::path::Path::new(&path))
+                .and_then(|m| m.context_length)
+        })
+}
+
+/// Reindex footer metadata after compaction cuts: each cut removed
+/// `history[1..cut]` and inserted one summary at index 1.
+fn shift_meta_for_compaction(state: &AppState, cuts: &[usize]) {
+    if cuts.is_empty() {
+        return;
+    }
+    let mut meta = state.harness.meta.lock().unwrap();
+    let mut shifted = std::collections::HashMap::new();
+    for (idx, mut m) in meta.drain() {
+        if let Some(next) = shifted_index(idx, cuts) {
+            m.index = next;
+            shifted.insert(next, m);
+        }
+    }
+    *meta = shifted;
+}
+
+fn shifted_index(mut idx: usize, cuts: &[usize]) -> Option<usize> {
+    for cut in cuts {
+        if idx == 0 {
+            break;
+        } else if idx < *cut {
+            return None;
+        } else {
+            idx = idx - cut + 2;
+        }
+    }
+    Some(idx)
+}
+
 /// Rewind: drop the most recent user turn (message + everything after it).
 #[tauri::command]
 pub async fn harness_agent_rewind(state: State<'_, AppState>) -> Result<(), String> {
@@ -2106,6 +2165,19 @@ mod tests {
             assert!(same_path("/proj/a", "/proj/a"));
             assert!(!same_path("/proj/a", "/PROJ/A"));
         }
+    }
+
+    #[test]
+    fn shifted_index_reindexes_compaction_cuts() {
+        // Cut at 5: system stays, 1..5 drop, 5+ shift down by 3.
+        assert_eq!(shifted_index(0, &[5]), Some(0));
+        assert_eq!(shifted_index(1, &[5]), None);
+        assert_eq!(shifted_index(4, &[5]), None);
+        assert_eq!(shifted_index(5, &[5]), Some(2));
+        assert_eq!(shifted_index(9, &[5]), Some(6));
+        // Sequential cuts compose.
+        assert_eq!(shifted_index(9, &[5, 4]), Some(4));
+        assert_eq!(shifted_index(3, &[5, 4]), None);
     }
 
     #[test]

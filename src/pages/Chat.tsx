@@ -94,6 +94,7 @@ type Item =
       local?: boolean;
     }
   | { kind: "tool"; callId: string; tool: string; args: string; output?: { ok: boolean; text: string; images?: string[] } }
+  | { kind: "sys"; text: string }
   | {
       kind: "approval";
       seq: number;
@@ -128,6 +129,36 @@ function Markdown({ content }: { content: string }) {
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ── System notice (compaction cards, restored summaries) ────────────────────
+
+function SysNotice({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const nl = text.indexOf("\n");
+  const head = nl < 0 ? text : text.slice(0, nl);
+  const body = nl < 0 ? "" : text.slice(nl + 1).trim();
+  return (
+    <div className="flex justify-center">
+      <div className="max-w-[85%] text-center">
+        <button
+          className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors select-text"
+          onClick={() => body && setOpen((v) => !v)}
+          title={body ? (open ? "Hide" : "Show") : undefined}
+        >
+          {head}
+          {body && (
+            <ChevronDown size={10} className={`inline ml-1 transition-transform ${open ? "rotate-180" : ""}`} />
+          )}
+        </button>
+        {open && body && (
+          <pre className="whitespace-pre-wrap break-words text-left text-[11px] text-gray-400 mt-1.5 max-h-56 overflow-y-auto select-text">
+            {body}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ── Sidebar: projects + sessions ────────────────────────────────────────────
@@ -1097,6 +1128,11 @@ function HarnessChat() {
         if (m.role === "user" && m.content) {
           const { text, images } = splitContent(m.content);
           if (!text && images.length === 0) return;
+          // Compaction summaries read as notices, not user bubbles.
+          if (text.startsWith("[Compacted context")) {
+            restored.push({ kind: "sys", text });
+            return;
+          }
           restored.push({
             kind: "msg",
             role: "user",
@@ -1343,6 +1379,15 @@ function HarnessChat() {
                 : it,
             ),
           );
+          break;
+        case "compacted":
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: "sys",
+              text: `Context compacted — ${Number(ev.removed ?? 0)} older messages summarized to stay within the context window.`,
+            } as Item,
+          ]);
           break;
         case "notice":
           // Notices (model loading, VRAM warnings) live in Server Logs now —
@@ -1653,6 +1698,9 @@ function HarnessChat() {
                   output={it.output}
                 />
               );
+            }
+            if (it.kind === "sys") {
+              return <SysNotice key={`sys-${i}`} text={it.text} />;
             }
             return (
               <div key={i} className="flex justify-start">
