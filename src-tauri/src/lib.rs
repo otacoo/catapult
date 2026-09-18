@@ -1213,6 +1213,7 @@ pub fn run() {
             harness_api::harness_session_rename,
             harness_api::harness_session_export,
             harness_api::harness_project_rename,
+            harness_api::harness_agent_compact,
             harness_api::harness_context_stats,
             harness_api::set_harness_max_turns,
             harness_api::set_harness_system_prompt,

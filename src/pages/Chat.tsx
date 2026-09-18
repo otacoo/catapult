@@ -800,6 +800,7 @@ function ToolCard({ tool, args, output }: {
 const SLASH_COMMANDS: { name: string; hint: string }[] = [
   { name: "/help", hint: "List chat commands" },
   { name: "/new", hint: "Start a new conversation" },
+  { name: "/compact", hint: "Summarize older turns to free context" },
 ];
 
 function ReasoningBlock({ text, streaming, open, onToggle }: {
@@ -1260,6 +1261,16 @@ function HarnessChat() {
       if (cmd === "/new" || cmd === "/reset" || cmd === "/clear") {
         setInput("");
         await newChat();
+        return;
+      }
+      if (cmd === "/compact") {
+        setInput("");
+        try {
+          await invoke("harness_agent_compact");
+        } catch (e) {
+          setError(String(e));
+        }
+        restoreFromBackend();
         return;
       }
       setInput("");

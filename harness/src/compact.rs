@@ -132,16 +132,21 @@ pub struct CompactionInfo {
 }
 
 /// Summarize `history[1..cut]` and splice in one summary message. Returns
-/// `None` when under the trigger; errors when compaction cannot help.
+/// `None` when under the trigger (unless `force`); errors when compaction
+/// cannot help.
 pub async fn compact_history(
     client: &LlmClient,
     model: Option<&str>,
     history: &mut Vec<ChatMessage>,
     context_limit: u64,
+    force: bool,
     should_stop: &(dyn Fn() -> bool + Send + Sync),
     on_event: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<Option<CompactionInfo>> {
-    if context_limit == 0 || estimate_tokens(history) < (context_limit as f64 * TRIGGER_FRACTION) as u64 {
+    if context_limit == 0
+        || (!force
+            && estimate_tokens(history) < (context_limit as f64 * TRIGGER_FRACTION) as u64)
+    {
         return Ok(None);
     }
     let Some(cut) = plan_cut(history, KEEP_RECENT) else {

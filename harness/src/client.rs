@@ -240,31 +240,47 @@ impl LlmClient {
     }
 
     pub async fn slot_context(&self) -> Result<Option<u64>> {
-        let resp = self
-            .http
-            .get(format!("{}/slots", self.base_url))
-            .send()
-            .await
-            .context("Slots request failed")?;
-        if !resp.status().is_success() {
-            return Ok(None);
-        }
-        let text = resp.text().await?;
-        Ok(max_slot_n_ctx(&text))
+        self.slot_context_for(None).await
+    }
+
+    /// Largest slot `n_ctx`; router mode scopes to one model (`?model=`).
+    pub async fn slot_context_for(&self, model: Option<&str>) -> Result<Option<u64>> {
+        Ok(self.slot_fill_for(model).await?.map(|(ctx, _)| ctx))
     }
 
     pub async fn slot_fill(&self) -> Result<Option<(u64, u64)>> {
-        let resp = self
-            .http
-            .get(format!("{}/slots", self.base_url))
-            .send()
-            .await
-            .context("Slots request failed")?;
+        self.slot_fill_for(None).await
+    }
+
+    /// Largest `(n_ctx, prompt + generated)` across slots; router mode scopes
+    /// to one model (`?model=`), otherwise the router would fan out to children.
+    pub async fn slot_fill_for(&self, model: Option<&str>) -> Result<Option<(u64, u64)>> {
+        let mut req = self.http.get(format!("{}/slots", self.base_url));
+        if let Some(m) = model {
+            req = req.query(&[("model", m)]);
+        }
+        let resp = req.send().await.context("Slots request failed")?;
         if !resp.status().is_success() {
             return Ok(None);
         }
         let text = resp.text().await?;
         Ok(max_slot_fill(&text))
+    }
+
+    /// Runtime context size from `/props` (`default_generation_settings.n_ctx`);
+    /// the configured server value, not the model's training limit.
+    pub async fn props_context(&self) -> Result<Option<u64>> {
+        let resp = self
+            .http
+            .get(format!("{}/props", self.base_url))
+            .send()
+            .await
+            .context("Props request failed")?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let text = resp.text().await?;
+        Ok(parse_props_n_ctx(&text))
     }
 
     /// Throughput gauges from `GET /metrics`; router mode needs `?model=<id>`.
@@ -346,6 +362,16 @@ pub fn max_slot_n_ctx(json_text: &str) -> Option<u64> {
     arr.iter()
         .filter_map(|s| s.get("n_ctx")?.as_u64())
         .max()
+}
+
+/// `default_generation_settings.n_ctx` from `/props`: the runtime context
+/// size, not the training limit (`n_ctx_train` via `/v1/models` is metadata).
+pub fn parse_props_n_ctx(json_text: &str) -> Option<u64> {
+    let v: Value = serde_json::from_str(json_text).ok()?;
+    v.get("default_generation_settings")?
+        .get("n_ctx")?
+        .as_u64()
+        .filter(|n| *n > 0)
 }
 
 pub fn max_slot_fill(json_text: &str) -> Option<(u64, u64)> {
@@ -622,6 +648,15 @@ mod tests {
         assert_eq!(max_slot_n_ctx("[]"), None);
         assert_eq!(max_slot_n_ctx("not json"), None);
         assert_eq!(max_slot_n_ctx(r#"{"not":"an array"}"#), None);
+    }
+
+    #[test]
+    fn parses_props_n_ctx() {
+        let payload = r#"{"default_generation_settings":{"n_ctx":8192},"total_slots":1}"#;
+        assert_eq!(parse_props_n_ctx(payload), Some(8192));
+        assert_eq!(parse_props_n_ctx(r#"{"total_slots":1}"#), None);
+        assert_eq!(parse_props_n_ctx(r#"{"default_generation_settings":{"n_ctx":0}}"#), None);
+        assert_eq!(parse_props_n_ctx("not json"), None);
     }
 
     #[test]

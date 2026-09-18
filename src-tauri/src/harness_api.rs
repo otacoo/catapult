@@ -59,6 +59,8 @@ pub struct HarnessRuntime {
     /// Throttled /metrics scrape (at most ~30s; router queries log proxy lines).
     pub metrics_at: Mutex<Option<std::time::Instant>>,
     pub metrics_cache: Mutex<ServerThroughput>,
+    /// Router per-model slot size (id, n_ctx, fill, fetched-at); throttled like metrics.
+    pub router_slot_ctx: Mutex<Option<(String, u64, u64, std::time::Instant)>>,
     /// Global grants loaded this run.
     pub permissions_global_loaded: std::sync::atomic::AtomicBool,
     /// Project whose grants are in memory (None = none yet); tracks switches for eviction.
@@ -400,6 +402,7 @@ impl HarnessRuntime {
             meta: Mutex::new(std::collections::HashMap::new()),
             metrics_at: Mutex::new(None),
             metrics_cache: Mutex::new(ServerThroughput::default()),
+            router_slot_ctx: Mutex::new(None),
             permissions_global_loaded: std::sync::atomic::AtomicBool::new(false),
             permissions_project: Mutex::new(None),
         }
@@ -431,6 +434,27 @@ fn used_figure(last_prompt: Option<u64>, last_gen: Option<u64>, hist_chars: usiz
     }
 }
 
+/// Router per-model slot fill, cached 30s per served model id. The `?model=`
+/// scope keeps the query on one child; the TTL keeps proxy log spam down.
+async fn router_model_slot(state: &AppState, client: &LlmClient) -> Option<(u64, u64)> {
+    let served = router_served_id(state, client).await?;
+    {
+        let cache = state.harness.router_slot_ctx.lock().unwrap();
+        if let Some((id, ctx, used, at)) = cache.as_ref() {
+            if id == &served && at.elapsed().as_secs() < 30 && *ctx > 0 {
+                return Some((*ctx, *used));
+            }
+        }
+    }
+    let (ctx, used) = client.slot_fill_for(Some(&served)).await.ok()??;
+    if ctx == 0 {
+        return None;
+    }
+    *state.harness.router_slot_ctx.lock().unwrap() =
+        Some((served, ctx, used, std::time::Instant::now()));
+    Some((ctx, used))
+}
+
 #[tauri::command]
 
 pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<ContextStats, String> {
@@ -452,18 +476,28 @@ pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<Context
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
     let router = is_router_mode(&state);
-    // Live slot context first: it reflects the effective --ctx-size/--fit,
-    // while the GGUF header is only the training maximum. Router mode skips
-    // the slot query (it would proxy to a child and log a line per call).
+    // Live slot sizes first: they reflect the effective --ctx-size/--fit,
+    // while the GGUF header is only the training maximum.
     let mut total: Option<u64> = None;
-    if !router {
-        if let Ok(Some((ctx, prompt))) = client.slot_fill().await {
-            if ctx > 0 {
-                total = Some(ctx);
-            }
+    if router {
+        if let Some((ctx, prompt)) = router_model_slot(&state, &client).await {
+            total = Some(ctx);
             if prompt > 0 {
                 used = Some(prompt);
             }
+        }
+    } else if let Ok(Some((ctx, prompt))) = client.slot_fill().await {
+        if ctx > 0 {
+            total = Some(ctx);
+        }
+        if prompt > 0 {
+            used = Some(prompt);
+        }
+    }
+    // Runtime default from /props when slots report nothing (single-model).
+    if total.is_none() && !router {
+        if let Ok(Some(n)) = client.props_context().await {
+            total = Some(n);
         }
     }
     // Total from GGUF header when the server reports nothing (router mode,
@@ -700,7 +734,7 @@ impl ApprovalGate for UiGate {
 }
 
 /// The path of the currently active chat project (or None).
-fn active_project_path(config: &crate::config::AppConfig) -> Option<String> {
+pub(crate) fn active_project_path(config: &crate::config::AppConfig) -> Option<String> {
     let id = config.harness_active_project.as_ref()?;
     config
         .harness_projects
@@ -1859,14 +1893,21 @@ pub async fn harness_session_export(id: String, path: String) -> Result<(), Stri
 }
 
 /// Effective context size for compaction: live slot size on single-model
-/// servers (reflects --ctx-size/--fit), else the GGUF training length.
-/// Router mode skips the slot query (it would proxy to a child per call).
+/// servers (reflects --ctx-size/--fit), per-model slots in router mode,
+/// else the GGUF training length.
 async fn effective_context_limit(state: &AppState, client: &LlmClient) -> Option<u64> {
-    if !is_router_mode(state) {
+    if is_router_mode(state) {
+        if let Some((ctx, _)) = router_model_slot(state, client).await {
+            return Some(ctx);
+        }
+    } else {
         if let Ok(Some(ctx)) = client.slot_context().await {
             if ctx > 0 {
                 return Some(ctx);
             }
+        }
+        if let Ok(Some(n)) = client.props_context().await {
+            return Some(n);
         }
     }
     if let Some(path) = active_model_path(state) {
@@ -1912,6 +1953,58 @@ fn shifted_index(mut idx: usize, cuts: &[usize]) -> Option<usize> {
         }
     }
     Some(idx)
+}
+
+/// Manually compact the transcript (/compact): summarize the oldest turns
+/// even below the automatic trigger. Model + limit mirror the chat run.
+#[tauri::command]
+pub async fn harness_agent_compact(state: State<'_, AppState>) -> Result<String, String> {
+    load_session(&state);
+    let port = port_or_err(&state)?;
+    let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
+    let model = if is_router_mode(&state) {
+        client
+            .router_models()
+            .await
+            .ok()
+            .and_then(|models| {
+                models
+                    .iter()
+                    .find(|m| m.status == "loaded")
+                    .or_else(|| models.first())
+                    .map(|m| m.id.clone())
+            })
+    } else {
+        None
+    };
+    let limit = effective_context_limit(&state, &client)
+        .await
+        .ok_or("Cannot determine the context size — is a model loaded?")?;
+    let mut history = state.harness.history.lock().unwrap().clone();
+    let mut noop = |_: harness::agent::AgentEvent| {};
+    let info = harness::compact::compact_history(
+        &client,
+        model.as_deref(),
+        &mut history,
+        limit,
+        true,
+        &|| false,
+        &mut noop,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    match info {
+        None => Ok("Nothing to compact — the transcript is already small.".to_string()),
+        Some(info) => {
+            *state.harness.history.lock().unwrap() = history;
+            shift_meta_for_compaction(&state, &[info.cut]);
+            save_session(&state);
+            Ok(format!(
+                "Compacted {} older messages into a summary.",
+                info.removed
+            ))
+        }
+    }
 }
 
 /// Rewind: drop the most recent user turn (message + everything after it).

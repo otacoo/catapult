@@ -256,6 +256,7 @@ impl AgentRun<'_> {
                     self.model.as_deref(),
                     history,
                     limit,
+                    false,
                     &*should_stop,
                     &mut on_event,
                 )
