@@ -451,28 +451,32 @@ pub async fn harness_context_stats(state: State<'_, AppState>) -> Result<Context
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
     let router = is_router_mode(&state);
-    // Total from GGUF header (stable; unlike --fit/live slot sizes).
+    // Live slot context first: it reflects the effective --ctx-size/--fit,
+    // while the GGUF header is only the training maximum. Router mode skips
+    // the slot query (it would proxy to a child and log a line per call).
     let mut total: Option<u64> = None;
-    if let Some(path) = active_model_path(&state) {
-        total = crate::models::read_model_metadata(std::path::Path::new(&path))
-            .and_then(|m| m.context_length);
-    }
-    if total.is_none() {
-        if let Some(path) = router_active_model_path(&state, &client).await {
-            total = crate::models::read_model_metadata(std::path::Path::new(&path))
-                .and_then(|m| m.context_length);
-        }
-    }
-    // Live slot fill refines both figures on single-model servers (router
-    // mode skips it: unproxied here, and every query logs a proxy line).
     if !router {
         if let Ok(Some((ctx, prompt))) = client.slot_fill().await {
-            if total.is_none() {
+            if ctx > 0 {
                 total = Some(ctx);
             }
             if prompt > 0 {
                 used = Some(prompt);
             }
+        }
+    }
+    // Total from GGUF header when the server reports nothing (router mode,
+    // empty slots). Unlike slot sizes it never reflects --fit.
+    if total.is_none() {
+        if let Some(path) = active_model_path(&state) {
+            total = crate::models::read_model_metadata(std::path::Path::new(&path))
+                .and_then(|m| m.context_length);
+        }
+    }
+    if total.is_none() {
+        if let Some(path) = router_active_model_path(&state, &client).await {
+            total = crate::models::read_model_metadata(std::path::Path::new(&path))
+                .and_then(|m| m.context_length);
         }
     }
     // Live server gauges (best-effort): only when launched with the Metrics
