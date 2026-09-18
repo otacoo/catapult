@@ -966,6 +966,26 @@ function HarnessChat() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<"thinking" | "loading" | "working" | null>(null);
+  // Live run stats: deltas ≈ tokens (fallback), server usage when reported.
+  const [liveDeltas, setLiveDeltas] = useState(0);
+  const [liveUsage, setLiveUsage] = useState<{ prompt: number; gen: number } | null>(null);
+  const runStartRef = useRef(0);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!streaming) return;
+    const id = setInterval(() => setTick((t) => t + 1), 500);
+    return () => clearInterval(id);
+  }, [streaming]);
+  const liveElapsed = streaming && runStartRef.current
+    ? Math.max(0, Math.round((Date.now() - runStartRef.current) / 1000))
+    : null;
+  const liveTps = streaming
+    ? (() => {
+        const secs = (Date.now() - runStartRef.current) / 1000;
+        if (secs <= 0) return null;
+        return liveUsage ? liveUsage.gen / secs : liveDeltas / secs;
+      })()
+    : null;
   // Live subagent count (ref: updated from stream events, no re-render needed
   // beyond the status line it drives).
   const liveSubs = useRef(0);
@@ -1229,6 +1249,9 @@ function HarnessChat() {
     setReasoningText(null);
     setReasoningOpen(false);
     setReasoningLive(false);
+    setLiveDeltas(0);
+    setLiveUsage(null);
+    runStartRef.current = Date.now();
     liveSubs.current = 0;
     setRunStatus("thinking");
     setError(null);
@@ -1248,6 +1271,7 @@ function HarnessChat() {
         case "content":
           acc += ev.text ?? "";
           setStreamText(acc);
+          setLiveDeltas((d) => d + 1);
           // The answer started — collapse the reasoning block automatically
           // (the user can still expand it manually afterwards).
           if (!contentStarted) {
@@ -1261,6 +1285,13 @@ function HarnessChat() {
           reasoningAcc += ev.text ?? "";
           setReasoningText(reasoningAcc);
           setReasoningLive(true);
+          setLiveDeltas((d) => d + 1);
+          break;
+        case "usage":
+          setLiveUsage({
+            prompt: Number(ev.prompt_tokens ?? 0),
+            gen: Number(ev.completion_tokens ?? 0),
+          });
           break;
         case "tool_call":
           setStreamText(null);
@@ -1709,6 +1740,11 @@ function HarnessChat() {
                   <span className="w-1.5 h-1.5 rounded-full bg-primary-light animate-pulse" />
                   <span>Thinking…</span>
                 </>
+              )}
+              {liveTps !== null && <span className="tabular-nums">· {liveTps.toFixed(1)} t/s</span>}
+              {liveElapsed !== null && <span className="tabular-nums">· {liveElapsed}s</span>}
+              {liveUsage?.prompt != null && liveUsage.prompt > 0 && (
+                <span className="tabular-nums">· ctx {fmtTok(liveUsage.prompt)}</span>
               )}
             </div>
           )}

@@ -1406,6 +1406,12 @@ pub async fn harness_agent_send(
     });
 
     let mut sink = |ev: StreamEvent| {
+        // Each turn's usage IS the current context fill — feed the ring live
+        // (the poll picks it up mid-run, not only after the run ends).
+        if let StreamEvent::Usage { prompt_tokens, completion_tokens } = &ev {
+            *state.harness.last_prompt_tokens.lock().unwrap() = Some(*prompt_tokens);
+            *state.harness.last_gen_tokens.lock().unwrap() = Some(*completion_tokens);
+        }
         if let StreamEvent::Notice { text } = &ev {
             push_server_log(&state, text);
         }

@@ -52,6 +52,7 @@ libc = "0.2"
 
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
