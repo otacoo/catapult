@@ -96,7 +96,7 @@ export default function Layout() {
   return (
     <div className="relative flex flex-col h-full bg-surface-0">
       <div
-        className="relative flex items-center h-11 px-3 border-b border-primary/25 shrink-0 bg-primary/8"
+        className="relative flex items-center h-11 pl-3 pr-0 border-b border-primary/25 shrink-0 bg-primary/8"
       >
         {/* Drag region fills the bar behind buttons so empty areas still drag. */}
         <div

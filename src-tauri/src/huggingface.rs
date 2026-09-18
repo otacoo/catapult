@@ -116,17 +116,6 @@ pub const RECOMMENDED_MODELS: &[RecommendedModelDef] = &[
         quant: "Q4_K_M",
         context: None,
     },
-    // ── Bonsai (MLX 1-bit reference, GGUF available via LM Studio) ─
-    RecommendedModelDef {
-        repo_id: "lmstudio-community/Bonsai-27B-GGUF",
-        filename: "Bonsai-27B-Q4_K_M.gguf",
-        name: "Bonsai 27B (prism-ml)",
-        description: "Bonsai 27B from prism-ml/Bonsai-27B-mlx-1bit lineage. Strong 1-bit hybrid; GGUF Q4_K_M here.",
-        params_b: 27,
-        family: "Bonsai",
-        quant: "Q4_K_M",
-        context: None,
-    },
 ];
 
 pub struct RecommendedModelDef {

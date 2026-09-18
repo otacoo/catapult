@@ -34,6 +34,8 @@ pub struct AppState {
     /// Cooperative abort flag for the harness loop. Polled between chunks and tool calls.
     pub harness_abort: Arc<std::sync::atomic::AtomicBool>,
     pub harness: Arc<harness_api::HarnessRuntime>,
+    /// Window geometry observed since the last persist (flushed on close/exit).
+    pub pending_window: Mutex<Option<crate::config::WindowState>>,
 }
 
 // ── Hardware commands ─────────────────────────────────────────────────────────
@@ -1069,21 +1071,59 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             tray::sync_tray(app.handle())?;
+            // Restore the saved window geometry before first paint.
+            let saved = app
+                .state::<AppState>()
+                .config
+                .lock()
+                .unwrap()
+                .window
+                .clone();
+            if let (Some(win), Some(w)) = (app.get_webview_window("main"), saved) {
+                if w.maximized {
+                    let _ = win.maximize();
+                } else {
+                    let _ = win.set_size(tauri::PhysicalSize::new(w.width, w.height));
+                    let _ = win.set_position(tauri::PhysicalPosition::new(w.x, w.y));
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let close_to_tray = window
-                    .app_handle()
-                    .state::<AppState>()
-                    .config
-                    .lock()
-                    .unwrap()
-                    .close_to_tray;
-                if close_to_tray {
-                    api.prevent_close();
-                    let _ = window.hide();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    persist_window_state(window);
+                    let close_to_tray = window
+                        .app_handle()
+                        .state::<AppState>()
+                        .config
+                        .lock()
+                        .unwrap()
+                        .close_to_tray;
+                    if close_to_tray {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
                 }
+                // Track geometry; flushing happens on close/exit to avoid
+                // rewriting config.json on every pixel of a drag.
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    let state = window.app_handle().state::<AppState>();
+                    let maximized = window.is_maximized().unwrap_or(false);
+                    if let (Ok(pos), Ok(size)) =
+                        (window.outer_position(), window.inner_size())
+                    {
+                        *state.pending_window.lock().unwrap() =
+                            Some(crate::config::WindowState {
+                                x: pos.x,
+                                y: pos.y,
+                                width: size.width,
+                                height: size.height,
+                                maximized,
+                            });
+                    }
+                }
+                _ => {}
             }
         })
         .manage(AppState {
@@ -1093,6 +1133,7 @@ pub fn run() {
             downloads: Mutex::new(HashMap::new()),
             harness_abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             harness: Arc::new(harness_api::HarnessRuntime::new()),
+            pending_window: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             // Hardware
@@ -1212,9 +1253,24 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
+                if let Some(win) = app.get_webview_window("main") {
+                    persist_window_state(&win);
+                }
                 // Drop MCP sessions so child processes die with the app (no orphans).
                 harness_api::invalidate_mcp(&state);
                 server::kill_server_sync(&state.server);
             }
         });
+}
+
+/// Flush the tracked window geometry into the config (skipped while maximized:
+/// the OS restores the pre-maximize geometry, so only the flag matters).
+fn persist_window_state(window: &impl tauri::Manager<tauri::Wry>) {
+    let state = window.app_handle().state::<AppState>();
+    let Some(w) = state.pending_window.lock().unwrap().clone() else {
+        return;
+    };
+    let mut config = state.config.lock().unwrap();
+    config.window = Some(w);
+    let _ = config.save();
 }

@@ -84,6 +84,17 @@ pub struct HarnessProject {
     pub created: i64,
 }
 
+/// Window geometry in physical pixels, saved on change/exit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
 /// `System` follows the OS light/dark setting.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -169,6 +180,9 @@ pub struct AppConfig {
     pub last_preset: Option<String>,
     #[serde(default)]
     pub close_to_tray: bool,
+    /// Last window geometry (physical px); restored on startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
     #[serde(default = "default_true")]
     pub enable_quick_bench: bool,
     /// All default on.

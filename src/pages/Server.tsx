@@ -652,6 +652,10 @@ export default function Server() {
     if (cfg.server_working_dir && !config.working_dir) {
       setConfig((c) => ({ ...c, working_dir: cfg.server_working_dir }));
     }
+    // Restore the last preset across app restarts (session wins within a run)
+    if (cfg.last_preset && !sessionStorage.getItem(SESSION_PRESET_KEY)) {
+      setActivePreset(cfg.last_preset);
+    }
     // No model is auto-selected: an empty model_path means router mode — the
     // user picks models on demand (WebUI picker / harness roles).
   };
