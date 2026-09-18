@@ -498,10 +498,10 @@ fn scan_gguf_recursive(
                 continue;
             }
 
-            let name = cached_meta.name
+            let header_name = cached_meta.name
                 .map(|n| n.rsplit('/').next().unwrap_or(&n).to_string())
-                .filter(|n| n.len() >= 4)
-                .unwrap_or(fallback_name);
+                .filter(|n| n.len() >= 4 && !looks_like_hash(n));
+            let name = header_name.unwrap_or(fallback_name);
             let params_b = cached_meta.size_label
                 .or_else(|| extract_params_from_filename(&filename).map(|p| format!("{}B", p)));
 
@@ -529,6 +529,15 @@ fn scan_gguf_recursive(
         }
     }
 }
+
+fn looks_like_hash(s: &str) -> bool {
+    let clean = s.trim_start_matches(['\\', '/']);
+    clean.len() >= 8
+        && clean.chars().all(|c| c.is_ascii_hexdigit())
+        && clean.chars().any(|c| c.is_ascii_uppercase())
+        && clean.chars().any(|c| c.is_ascii_lowercase())
+}
+
 /// Base segments for companion matching; trailing quant stripped so files pair across quants.
 fn companion_segments(model_filename: &str) -> Vec<String> {
     let stem = model_filename.trim_end_matches(".gguf");
