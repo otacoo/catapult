@@ -715,7 +715,7 @@ export default function OptionsPanel({ open, onClose }: {
       </aside>
 
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-3xl space-y-4">
+        <div className={section === "chat" ? "space-y-4" : "max-w-3xl space-y-4"}>
           {section === "general" && (
             <>
               {generalCard}
