@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, ipc::Channel, State};
+use anyhow::Context as _;
 
 use crate::AppState;
 use harness::agent::{AgentEvent, AgentRun, ApprovalGate, ApprovalRequest, Approved};
@@ -76,6 +77,13 @@ pub struct PersistedSession {
     /// Footer metadata by message index; old files without it still load.
     #[serde(default)]
     pub meta: Vec<MessageMeta>,
+    /// User renamed this session; auto-titling must not clobber it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub title_custom: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Footer metadata for one turn; persisted, never sent to the model.
@@ -324,10 +332,14 @@ fn save_session(state: &AppState) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let created = session_file(&id)
-        .and_then(|p| read_session_file(&p))
-        .map(|s| s.created)
-        .unwrap_or(now);
+    let prev = session_file(&id).and_then(|p| read_session_file(&p));
+    let created = prev.as_ref().map(|s| s.created).unwrap_or(now);
+    // Renamed sessions keep their title; others re-title from the first message.
+    let title_custom = prev.as_ref().map(|s| s.title_custom).unwrap_or(false);
+    let title = match prev.as_ref() {
+        Some(s) if title_custom => s.title.clone(),
+        _ => session_title(&history),
+    };
     let project = {
         let c = state.config.lock().unwrap();
         c.harness_active_project
@@ -337,12 +349,13 @@ fn save_session(state: &AppState) {
     };
     let session = PersistedSession {
         id: id.clone(),
-        title: session_title(&history),
+        title,
         project,
         created,
         updated: now,
         messages: history,
         meta: stored_meta(state),
+        title_custom,
     };
     if let Some(file) = session_file(&id) {
         if let Ok(json) = serde_json::to_string(&session) {
@@ -1718,6 +1731,32 @@ pub async fn harness_session_delete(id: String, state: State<'_, AppState>) -> R
     Ok(())
 }
 
+/// Rename a session; the custom title survives auto-re-titling on save.
+#[tauri::command]
+pub async fn harness_session_rename(id: String, title: String) -> Result<(), String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("Empty title".to_string());
+    }
+    let path = session_file(&id).ok_or("Unknown session")?;
+    let mut s = read_session_file(&path).ok_or("Session file is corrupt")?;
+    s.title = title;
+    s.title_custom = true;
+    let json = serde_json::to_string(&s).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+/// Export the full conversation (messages, metadata, reasoning) as JSON.
+#[tauri::command]
+pub async fn harness_session_export(id: String, path: String) -> Result<(), String> {
+    let src = session_file(&id).ok_or("Unknown session")?;
+    let s = read_session_file(&src).ok_or("Session file is corrupt")?;
+    let json = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json)
+        .with_context(|| format!("Cannot write {}", path))
+        .map_err(|e| e.to_string())
+}
+
 /// Rewind: drop the most recent user turn (message + everything after it).
 #[tauri::command]
 pub async fn harness_agent_rewind(state: State<'_, AppState>) -> Result<(), String> {
@@ -1853,6 +1892,22 @@ pub async fn harness_project_add(path: String, state: State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
+pub async fn harness_project_rename(id: String, name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Empty name".to_string());
+    }
+    let mut config = state.config.lock().unwrap();
+    let project = config
+        .harness_projects
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or("Unknown project")?;
+    project.name = name;
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn harness_project_remove(id: String, state: State<'_, AppState>) -> Result<(), String> {
     // Remember the path first — its sessions are deleted with the project so
     // no stale transcript can leak into a later conversation.
@@ -1981,6 +2036,7 @@ mod tests {
                 })
                 .collect(),
             meta: vec![],
+            title_custom: false,
         }
     }
 

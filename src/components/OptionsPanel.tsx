@@ -164,24 +164,17 @@ function RolePickers({ appConfig, onSet, onSetParams, subagentsEnabled }: {
   );
 }
 
-function MemorySkillsCard() {
+function MemoryCard() {
   interface MemoryFile {
     scope: string;
     path: string;
     exists: boolean;
     text: string;
   }
-  interface SkillEntry {
-    name: string;
-    description: string;
-    scope: string;
-    dir: string;
-  }
   const [files, setFiles] = useState<MemoryFile[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
-  const [skills, setSkills] = useState<SkillEntry[] | null>(null);
 
   const load = () => {
     for (const scope of ["global", "project"]) {
@@ -192,7 +185,6 @@ function MemorySkillsCard() {
         })
         .catch(() => {});
     }
-    invoke<SkillEntry[]>("harness_skills_list").then(setSkills).catch(() => setSkills([]));
   };
 
   useEffect(load, []);
@@ -256,74 +248,88 @@ function MemorySkillsCard() {
 
   return (
     <div className="card">
-      <h2 className="section-title mb-1">Memory & skills</h2>
+      <h2 className="section-title mb-1">Memory</h2>
       <p className="section-desc">
-        What the agent remembers across sessions and the procedures it has learned.
-        Both are injected into its system prompt; the agent curates them via the
-        remember and manage_skill tools (writes need your approval).
+        What the agent remembers across sessions. Injected into its system prompt;
+        the agent curates it via the remember tool (writes need your approval).
       </p>
       <div className="space-y-3 mt-3">
         {editor("global", "Global memory (MEMORY.md)", "Applies to every project — facts about you and your preferences.")}
         {editor("project", "Project memory (MEMORY.md)", "Applies to the active project only — conventions and corrections.")}
       </div>
-      <div className="mt-4">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-medium text-gray-300">Skills</p>
-          <div className="flex items-center gap-1">
-            <button
-              className="btn-ghost text-[10px] py-0.5 px-1.5"
-              title="Open global skills folder"
-              onClick={async () => {
-                const mem = files.find((f) => f.scope === "global");
-                const base = mem?.path ? mem.path.split(/[\\/]/).slice(0, -1).join("/") : null;
-                if (!base) return;
-                try { await openPath(`${base}/skills`); } catch {}
-              }}
-            >
-              <FolderOpen size={11} /> Global
-            </button>
-            <button
-              className="btn-ghost text-[10px] py-0.5 px-1.5"
-              title="Refresh list"
-              onClick={load}
-            >
-              <RefreshCw size={11} />
-            </button>
-          </div>
-        </div>
-        <p className="text-[10px] text-gray-600 mt-1">
-          Each skill is a folder with a SKILL.md (name + description + instructions).
-          The agent sees only names/descriptions until it loads one via its skill tool.
-        </p>
-        {skills && skills.length === 0 && (
-          <p className="text-[11px] text-gray-500 mt-2">No skills yet — ask the agent to save one (manage_skill).</p>
-        )}
-        {skills && skills.length > 0 && (
-          <div className="space-y-1 mt-2">
-            {skills.map((s) => (
-              <div key={`${s.scope}:${s.name}`} className="flex items-center gap-2 border border-border px-2.5 py-1.5">
-                <span className={`badge-${s.scope === "project" ? "blue" : "purple"} text-[9px] shrink-0`}>
-                  {s.scope}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-gray-200 truncate">{s.name}</p>
-                  {s.description && <p className="text-[10px] text-gray-500 truncate">{s.description}</p>}
-                </div>
-                <button
-                  className="btn-ghost text-[10px] py-0.5 px-1.5 shrink-0"
-                  title="Open skill folder"
-                  onClick={async () => {
-                    try { await openPath(s.dir); } catch {}
-                  }}
-                >
-                  <FolderOpen size={11} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
       {error && <p className="text-xs text-accent-red mt-2">{error}</p>}
+    </div>
+  );
+}
+
+function SkillsCard() {
+  const [skills, setSkills] = useState<{ name: string; description: string; scope: string; dir: string }[] | null>(null);
+
+  const load = () => {
+    invoke<{ name: string; description: string; scope: string; dir: string }[]>("harness_skills_list")
+      .then(setSkills)
+      .catch(() => setSkills([]));
+  };
+
+  useEffect(load, []);
+
+  return (
+    <div className="card">
+      <h2 className="section-title mb-1">Skills</h2>
+      <p className="section-desc">
+        Procedures the agent has learned. Each skill is a folder with a SKILL.md
+        (name + description + instructions); only names/descriptions reach the
+        system prompt — the agent loads the rest via its skill tool.
+      </p>
+      <div className="flex items-center gap-1 mt-3">
+        <button
+          className="btn-ghost text-[10px] py-0.5 px-1.5"
+          title="Open global skills folder"
+          onClick={async () => {
+            try {
+              const mem = await invoke<{ path: string }>("harness_memory_get", { scope: "global" });
+              const base = mem.path.split(/[\\/]/).slice(0, -1).join("/");
+              await openPath(`${base}/skills`);
+            } catch {}
+          }}
+        >
+          <FolderOpen size={11} /> Global folder
+        </button>
+        <button
+          className="btn-ghost text-[10px] py-0.5 px-1.5"
+          title="Refresh list"
+          onClick={load}
+        >
+          <RefreshCw size={11} /> Refresh
+        </button>
+      </div>
+      {skills && skills.length === 0 && (
+        <p className="text-[11px] text-gray-500 mt-2">No skills yet — ask the agent to save one (manage_skill).</p>
+      )}
+      {skills && skills.length > 0 && (
+        <div className="space-y-1 mt-2">
+          {skills.map((s) => (
+            <div key={`${s.scope}:${s.name}`} className="flex items-center gap-2 border border-border px-2.5 py-1.5">
+              <span className={`badge-${s.scope === "project" ? "blue" : "purple"} text-[9px] shrink-0`}>
+                {s.scope}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-gray-200 truncate">{s.name}</p>
+                {s.description && <p className="text-[10px] text-gray-500 truncate">{s.description}</p>}
+              </div>
+              <button
+                className="btn-ghost text-[10px] py-0.5 px-1.5 shrink-0"
+                title="Open skill folder"
+                onClick={async () => {
+                  try { await openPath(s.dir); } catch {}
+                }}
+              >
+                <FolderOpen size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -720,11 +726,14 @@ export default function OptionsPanel({ open, onClose }: {
           {section === "chat" && (
             <>
               {chatEngineCard}
+              <hr className="border-border" />
               {/* Harness-specific options are inert while the harness is off. */}
               <div className={`space-y-4 ${appConfig?.harness_chat === false ? "opacity-50 pointer-events-none" : ""}`}>
+                <SkillsCard />
                 {agentCard}
                 {systemPromptCard}
-                <MemorySkillsCard />
+                <hr className="border-border" />
+                <MemoryCard />
               </div>
             </>
           )}

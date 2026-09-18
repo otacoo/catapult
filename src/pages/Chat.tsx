@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, Fragment } from "react";
 import type { ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { playNotificationSound } from "../utils/sounds";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -16,10 +16,13 @@ import {
   Brain,
   Check,
   Copy,
+  Download,
   Eye,
   FileWarning,
   FolderOpen,
+  MoreHorizontal,
   Paperclip,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -129,6 +132,68 @@ function formatTime(ts: number): string {
 
 // ── Sidebar: projects + sessions ────────────────────────────────────────────
 
+type RowMenuItems = { label: string; icon: ReactNode; danger?: boolean; onClick: () => void }[];
+
+function RowMenu({ items }: { items: RowMenuItems }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative shrink-0">
+      <button
+        className={`text-gray-600 hover:text-gray-300 ${open ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        title="Actions"
+      >
+        <MoreHorizontal size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
+          <div className="absolute right-0 top-full z-50 min-w-[170px] bg-surface-2 border border-border shadow-lg py-1">
+            {items.map((it) => (
+              <button
+                key={it.label}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors ${it.danger ? "text-accent-red hover:bg-surface-3" : "text-gray-300 hover:bg-surface-3"}`}
+                onClick={(e) => { e.stopPropagation(); setOpen(false); it.onClick(); }}
+              >
+                {it.icon}
+                {it.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Inline row editor for Rename (Enter commits, Esc/blur cancels).
+function RenameInput({ value, onCommit, onCancel }: {
+  value: string;
+  onCommit: (v: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <input
+      autoFocus
+      className="input flex-1 min-w-0 py-0.5 px-1.5 text-xs"
+      value={draft}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") onCommit(draft.trim() || value);
+        else if (e.key === "Escape") onCancel();
+      }}
+      onBlur={onCancel}
+    />
+  );
+}
+
+// Sidebar width limits (persisted in localStorage).
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 480;
+
 function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   onProjectChanged: () => void;
   onSessionPicked: () => void;
@@ -144,6 +209,11 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [newBranch, setNewBranch] = useState("");
   const [wtError, setWtError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ kind: "session" | "project"; id: string; value: string } | null>(null);
+  const [width, setWidth] = useState(() => {
+    const w = Number(localStorage.getItem("catapult_chat_sidebar_w"));
+    return w >= SIDEBAR_MIN && w <= SIDEBAR_MAX ? w : 240;
+  });
 
   const refreshProjects = async () => {
     try {
@@ -214,6 +284,12 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
     onProjectChanged();
   };
 
+  const renameProject = async (id: string, name: string) => {
+    await invoke("harness_project_rename", { id, name }).catch(() => {});
+    await refreshProjects();
+    onProjectChanged();
+  };
+
   const activateProject = async (id: string | null) => {
     await invoke("harness_project_active", { id }).catch(() => {});
     setActive(id);
@@ -226,6 +302,22 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
     await invoke("harness_session_delete", { id }).catch(() => {});
     await refreshSessions();
     onSessionPicked();
+  };
+
+  const renameSession = async (id: string, title: string) => {
+    await invoke("harness_session_rename", { id, title }).catch(() => {});
+    await refreshSessions();
+  };
+
+  const exportSession = async (s: SessionInfo) => {
+    try {
+      const path = await saveDialog({
+        defaultPath: `${s.title.replace(/[\\/:*?"<>|]/g, "_")}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await invoke("harness_session_export", { id: s.id, path });
+    } catch {}
   };
 
   const loadSession = async (id: string) => {
@@ -288,8 +380,35 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
     refreshWorktrees(activePath);
   };
 
+  // Drag the right edge to resize; persists to localStorage on release.
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    let cur = startW;
+    const move = (ev: MouseEvent) => {
+      cur = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + (ev.clientX - startX)));
+      setWidth(cur);
+    };
+    const up = () => {
+      localStorage.setItem("catapult_chat_sidebar_w", String(cur));
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   return (
-    <aside className="w-60 shrink-0 border-r border-border bg-surface-1 flex flex-col overflow-y-auto">
+    <aside
+      className="shrink-0 border-r border-border bg-surface-1 flex flex-col overflow-y-auto relative"
+      style={{ width }}
+    >
+      <div
+        className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/40 transition-colors z-10"
+        onMouseDown={startDrag}
+        title="Drag to resize"
+      />
       <div className="p-3 border-b border-border">
         <div className="flex items-center justify-between px-1 mb-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Projects</span>
@@ -308,18 +427,30 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
               className={`group flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer transition-colors ${
                 p.id === active ? "bg-primary/20 text-primary-light" : "text-gray-400 hover:text-gray-200 hover:bg-primary/10"
               }`}
-              onClick={() => activateProject(p.id)}
+              onClick={(e) => {
+                if (e.shiftKey) { removeProject(p.id); return; }
+                if (!editing) activateProject(p.id);
+              }}
               title={p.path}
             >
               <FolderOpen size={12} className="shrink-0" />
-              <span className="flex-1 truncate">{p.name}</span>
-              <button
-                className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-accent-red"
-                onClick={(e) => { e.stopPropagation(); removeProject(p.id); }}
-                title="Remove project (files stay untouched)"
-              >
-                <Trash2 size={11} />
-              </button>
+              {editing?.kind === "project" && editing.id === p.id ? (
+                <RenameInput
+                  value={editing.value}
+                  onCommit={(v) => { setEditing(null); renameProject(p.id, v); }}
+                  onCancel={() => setEditing(null)}
+                />
+              ) : (
+                <>
+                  <span className="flex-1 truncate">{p.name}</span>
+                  <RowMenu
+                    items={[
+                      { label: "Rename", icon: <Pencil size={11} />, onClick: () => setEditing({ kind: "project", id: p.id, value: p.name }) },
+                      { label: "Delete (Shift+Click)", icon: <Trash2 size={11} />, danger: true, onClick: () => removeProject(p.id) },
+                    ]}
+                  />
+                </>
+              )}
             </div>
           ))}
           {projects.length === 0 && (
@@ -469,17 +600,30 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
             <div
               key={s.id}
               className="group flex items-center gap-2 px-2 py-1.5 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-primary/10 cursor-pointer transition-colors"
-              onClick={() => loadSession(s.id)}
+              onClick={(e) => {
+                if (e.shiftKey) { deleteSession(s.id); return; }
+                if (!editing) loadSession(s.id);
+              }}
               title={new Date(s.updated * 1000).toLocaleString()}
             >
-              <span className="flex-1 truncate">{s.title}</span>
-              <button
-                className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-accent-red"
-                onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                title="Delete session"
-              >
-                <Trash2 size={11} />
-              </button>
+              {editing?.kind === "session" && editing.id === s.id ? (
+                <RenameInput
+                  value={editing.value}
+                  onCommit={(v) => { setEditing(null); renameSession(s.id, v); }}
+                  onCancel={() => setEditing(null)}
+                />
+              ) : (
+                <>
+                  <span className="flex-1 truncate">{s.title}</span>
+                  <RowMenu
+                    items={[
+                      { label: "Rename", icon: <Pencil size={11} />, onClick: () => setEditing({ kind: "session", id: s.id, value: s.title }) },
+                      { label: "Export…", icon: <Download size={11} />, onClick: () => exportSession(s) },
+                      { label: "Delete (Shift+Click)", icon: <Trash2 size={11} />, danger: true, onClick: () => deleteSession(s.id) },
+                    ]}
+                  />
+                </>
+              )}
             </div>
           ))}
           {sessions.length === 0 && (
