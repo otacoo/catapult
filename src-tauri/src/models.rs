@@ -1482,33 +1482,35 @@ mod tests {
     }
 
     #[test]
-    fn gguf_parser_reads_real_file() {
-        // Test with an actual GGUF file if available
-        let test_paths = [
-            "/mnt/win/k/models/GLM-4.6V-Flash-Q4_K_M.gguf",
-            "/mnt/win/h/models/Falcon-H1R-7B-Q8_0.gguf",
-            r"H:\models\LLM\lmstudio-community\Bonsai-27B-GGUF\Bonsai-27B-Q1_0.gguf",
-        ];
-        for path_str in &test_paths {
-            let path = std::path::Path::new(path_str);
-            if !path.exists() {
-                continue;
-            }
-            let meta = read_gguf_metadata(path).expect("should parse valid GGUF");
-            assert!(meta.architecture.is_some(), "should have architecture");
-            assert!(meta.size_label.is_some() || meta.name.is_some(),
-                "should have size_label or name for {}", path_str);
-            if meta.architecture.is_some() {
-                assert!(meta.context_length.is_some(),
-                    "should have context_length for {}", path_str);
-            }
-            if path_str.ends_with("Bonsai-27B-Q1_0.gguf") {
-                assert_eq!(meta.block_count, Some(64), "block_count");
-                assert_eq!(meta.embedding_length, Some(5120), "embedding_length");
-                assert_eq!(meta.attention_head_count, Some(24), "head_count");
-                assert_eq!(meta.attention_head_count_kv, Some(4), "head_count_kv");
-            }
-        }
+    fn gguf_parser_reads_full_metadata() {
+        let dir = std::env::temp_dir().join("catapult_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("full_meta_test.gguf");
+        write_test_gguf(
+            &path,
+            &[
+                ("general.architecture", 8, gguf_str("testarch")),
+                ("general.name", 8, gguf_str("Test Model")),
+                ("general.size_label", 8, gguf_str("7.5B")),
+                ("testarch.context_length", 4, 32768u32.to_le_bytes().to_vec()),
+                ("testarch.block_count", 4, 32u32.to_le_bytes().to_vec()),
+                ("testarch.embedding_length", 4, 4096u32.to_le_bytes().to_vec()),
+                ("testarch.attention.head_count", 4, 24u32.to_le_bytes().to_vec()),
+                ("testarch.attention.head_count_kv", 4, 4u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        let meta = read_gguf_metadata(&path).expect("should parse synthetic GGUF");
+        assert_eq!(meta.architecture.as_deref(), Some("testarch"));
+        assert_eq!(meta.name.as_deref(), Some("Test Model"));
+        assert_eq!(meta.size_label.as_deref(), Some("7.5B"));
+        assert_eq!(meta.context_length, Some(32768));
+        assert_eq!(meta.block_count, Some(32));
+        assert_eq!(meta.embedding_length, Some(4096));
+        assert_eq!(meta.attention_head_count, Some(24));
+        assert_eq!(meta.attention_head_count_kv, Some(4));
+
+        std::fs::remove_file(&path).ok();
     }
 
     // ── delete_model: companion + empty-folder cleanup ──

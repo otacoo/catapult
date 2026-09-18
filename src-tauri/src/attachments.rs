@@ -307,7 +307,7 @@ mod tests {
             kind: "image".into(),
             data_base64: Some("QUJD".into()),
             text: None,
-            path: Some("E:\\Downloads\\shot.jpg".into()),
+            path: Some("/data/attachments/shot.jpg".into()),
         }]);
         let msg = build_user_message(String::new(), atts, None);
         let text = match &msg.content {
@@ -319,7 +319,7 @@ mod tests {
             _ => panic!("expected multimodal parts"),
         };
         assert!(text.contains("Attachment locations"));
-        assert!(text.contains("E:\\Downloads\\shot.jpg"));
+        assert!(text.contains("/data/attachments/shot.jpg"));
     }
 
     #[test]

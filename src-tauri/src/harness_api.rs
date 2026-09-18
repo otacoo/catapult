@@ -2090,8 +2090,8 @@ mod tests {
     #[test]
     fn same_path_respects_platform_casing() {
         if cfg!(windows) {
-            assert!(same_path("H:\\Proj\\A", "h:\\proj\\a"));
-            assert!(!same_path("H:\\Proj\\A", "H:\\Proj\\B"));
+            assert!(same_path("X:\\Proj\\A", "x:\\proj\\a"));
+            assert!(!same_path("X:\\Proj\\A", "X:\\Proj\\B"));
         } else {
             assert!(same_path("/proj/a", "/proj/a"));
             assert!(!same_path("/proj/a", "/PROJ/A"));

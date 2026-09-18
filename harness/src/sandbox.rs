@@ -64,7 +64,7 @@ fn canonicalize_target(path: &Path) -> Result<PathBuf> {
 }
 
 /// Component-boundary prefix test: `dir` contains `path`. Trailing components
-/// are preserved; `H:\a\b` does NOT match a dir `H:\projects\foobar`.
+/// are preserved; `X:\a\b` does NOT match a dir `X:\projects\foobar`.
 fn starts_with_dir(dir: &Path, path: &Path) -> bool {
     path.strip_prefix(dir).is_ok()
 }
