@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.5.4] - 2026-09-18
+
+### Added
+
+- Memory & Skills cards in Settings → Chat: edit global/project MEMORY.md, list and open discovered skills
+- Chat sessions: rename (survives auto-titling), export the full conversation as JSON, three-dot row menus; shift+click quick-deletes sessions and projects
+- Manually resizable chat sidebar (width persists)
+- Chat text size controls (A / a) next to New chat
+- Run tab options for current llama.cpp: Load Mode, Lazy Mode, KV per slot, reasoning effort, mmproj device, image batch tokens, embedding normalization, SSE ping, tensor split mode, draft-dflash spec type
+- Attachments are copied into the project sandbox and listed with relative + absolute paths, so the model (and worktree subagents) can always read them
+- System prompt now instructs the agent when to save memories (remember) and skills (manage_skill)
+
+### Changed
+
+- Run tab synced with current llama.cpp flags: retired flags mapped or dropped (--mlock/--no-mmap/--direct-io → --load-mode, --checkpoint-every-n-tokens → --checkpoint-min-step); defaults no longer emit no-op flags
+- Settings → Chat spans the full page width with two columns (Agent, System prompt, Memory left; Skills right)
+- Installed model list shows author/filename derived from the model's folder
+- Comment and dead-code cleanup across backend, frontend, and harness
+
+### Fixed
+
+- Reasoning streams into the chat live; its block ends with the reasoning phase instead of lingering after the answer
+- Stale flags in old presets/sessions no longer abort startup (embedding/classification separators, vocoder, TTS, profile, verbose-prompt, grp-attn, draft ctx)
+- Muse Glimmer no longer labeled MoE in the wizard
+- Orchestrator/subagent turn budgets saved as 0 repair to the defaults on load
+- Subagents toggle sits above model selection; worker picker disabled when subagents are off
+- Clearer wording for the sampling parameters toggle
+- Windows verbatim `\\?\` prefixes stripped from user-visible paths
+- Speculative draft sidecars with short names now pair; quant matching is case-insensitive
+
 ## [0.5.3] - 2026-09-14
 
 ### Added
