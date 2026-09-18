@@ -68,9 +68,19 @@ Pre-built binaries for Linux, macOS (Universal), and Windows are available on th
 
 | Platform | Format |
 |----------|--------|
-| Linux    | AppImage, .deb |
+| Linux    | AppImage, .deb, AUR |
 | macOS    | .dmg (Universal: Intel + Apple Silicon) |
 | Windows  | .msi, .nsis |
+
+#### Arch-based distributions
+
+```bash
+git clone https://github.com/otacoo/catapult
+cd catapult/packaging/arch
+makepkg -si
+```
+
+The PKGBUILD version tracks the app version — `release.cmd`'s bump step updates it automatically, so it ships with each release.
 
 ## Building from Source
 
@@ -80,10 +90,16 @@ Pre-built binaries for Linux, macOS (Universal), and Windows are available on th
 - [Rust](https://www.rust-lang.org/tools/install) (stable)
 - Platform-specific dependencies (see below)
 
-#### Linux
+#### Debian/Ubuntu
 
 ```bash
 sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev librsvg2-dev patchelf
+```
+
+#### Arch Linux
+
+```bash
+sudo pacman -S --needed webkit2gtk-4.1 gtk3 librsvg gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad patchelf
 ```
 
 #### macOS / Windows

@@ -61,6 +61,27 @@ function updateCargoLock(relPath) {
   console.log(`  ${relPath}: updated`);
 }
 
+function updatePkgbuild(relPath) {
+  const path = resolve(root, relPath);
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    console.log(`  ${relPath}: not present, skipping`);
+    return;
+  }
+  if (!text.includes("pkgver=")) {
+    console.error(`  ${relPath}: could not find pkgver`);
+    process.exit(1);
+  }
+  if (text.includes(`pkgver=${version}`)) {
+    console.log(`  ${relPath}: already at target`);
+    return;
+  }
+  writeFileSync(path, text.replace(/^pkgver=.*$/m, `pkgver=${version}`));
+  console.log(`  ${relPath}: updated`);
+}
+
 console.log(`Bumping version to ${version}`);
 
 updateJson("package.json", (p) => {
@@ -81,5 +102,7 @@ updateJson("src-tauri/tauri.conf.json", (p) => {
 updateCargoToml("src-tauri/Cargo.toml");
 
 updateCargoLock("src-tauri/Cargo.lock");
+
+updatePkgbuild("packaging/arch/PKGBUILD");
 
 console.log("Done. Don't forget to update CHANGELOG.md and commit.");
