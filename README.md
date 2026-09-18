@@ -80,8 +80,6 @@ cd catapult/packaging/arch
 makepkg -si
 ```
 
-The PKGBUILD version tracks the app version — `release.cmd`'s bump step updates it automatically, so it ships with each release.
-
 ## Building from Source
 
 ### Prerequisites
