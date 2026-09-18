@@ -381,9 +381,16 @@ pub fn max_slot_fill(json_text: &str) -> Option<(u64, u64)> {
     let used = arr
         .iter()
         .map(|s| {
-            let num = |k: &str| s.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
-            // Schemas vary; take the larger reading so nothing double-counts.
-            (num("n_prompt") + num("n_predicted")).max(num("n_tokens"))
+            let num = |v: &Value, k: &str| v.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
+            // Schemas vary across builds: `n_prompt`/`n_predicted` (old) vs
+            // `n_prompt_tokens`/`next_token.n_decoded` (new). Take the larger
+            // reading so nothing double-counts.
+            let prompt = num(s, "n_prompt_tokens").max(num(s, "n_prompt"));
+            let decoded = s
+                .get("next_token")
+                .map(|nt| num(nt, "n_decoded").max(num(nt, "n_predicted")))
+                .unwrap_or(0);
+            (prompt + decoded.max(num(s, "n_predicted"))).max(num(s, "n_tokens"))
         })
         .max()
         .unwrap_or(0);
@@ -635,6 +642,19 @@ mod tests {
         assert_eq!(max_slot_fill(payload), Some((65536, 500)));
         assert_eq!(max_slot_fill("[]"), None);
         assert_eq!(max_slot_fill("not json"), None);
+    }
+
+    #[test]
+    fn max_slot_fill_reads_current_schema() {
+        // Newer builds: n_prompt_tokens + next_token.n_decoded.
+        let payload = r#"[
+            {"id":0,"n_ctx":65536,"is_processing":true,"n_prompt_tokens":1200,
+             "next_token":{"n_decoded":300}}
+        ]"#;
+        assert_eq!(max_slot_fill(payload), Some((65536, 1500)));
+        // Old fields still honored alongside the new ones.
+        let mixed = r#"[{"n_ctx":4096,"n_prompt_tokens":100,"n_predicted":10}]"#;
+        assert_eq!(max_slot_fill(mixed), Some((4096, 110)));
     }
 
     #[test]

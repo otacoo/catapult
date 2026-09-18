@@ -1245,16 +1245,20 @@ pub fn write_router_preset(
         .join("catapult");
     std::fs::create_dir_all(&dir)?;
     // Register every installed model so the router (and the harness roles)
-    // can load any of them on demand — an unloaded entry is cheap. Role
-    // models carry their per-role server overrides.
+    // can load any of them on demand — an unloaded entry is cheap. The Run
+    // tab's context override (when set) seeds every entry's ctx-size; role
+    // overrides still win. Children otherwise inherit nothing and pick their
+    // own (fit/auto) context.
+    let base_ctx = if config.n_ctx > 0 { Some(config.n_ctx) } else { None };
     let mut entries: Vec<PresetEntry> = app_config
         .router_models
         .iter()
-        .map(|p| PresetEntry { path: p.clone(), ..Default::default() })
+        .map(|p| PresetEntry { path: p.clone(), ctx_size: base_ctx, ..Default::default() })
         .collect();
     if let Ok(installed) = crate::models::list_installed_models(app_config) {
         entries.extend(installed.iter().map(|m| PresetEntry {
             path: m.path.to_string_lossy().to_string(),
+            ctx_size: base_ctx,
             ..Default::default()
         }));
     }
@@ -1262,14 +1266,14 @@ pub fn write_router_preset(
     if let Some(p) = app_config.harness_roles.orchestrator.clone() {
         entries.push(PresetEntry {
             path: p,
-            ctx_size: params.orchestrator.ctx_size,
+            ctx_size: params.orchestrator.ctx_size.or(base_ctx),
             n_gpu_layers: params.orchestrator.n_gpu_layers,
         });
     }
     if let Some(p) = app_config.harness_roles.worker.clone() {
         entries.push(PresetEntry {
             path: p,
-            ctx_size: params.worker.ctx_size,
+            ctx_size: params.worker.ctx_size.or(base_ctx),
             n_gpu_layers: params.worker.n_gpu_layers,
         });
     }
