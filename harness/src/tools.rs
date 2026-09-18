@@ -161,13 +161,13 @@ impl Tool for ReadFileTool {
         "read_file".to_string()
     }
     fn description(&self) -> String {
-        "Read a file inside the project. Text files return content (large files truncated); image files (png/jpg/webp/gif/bmp) are attached for visual inspection.".to_string()
+        "Read a file. Text files return content (large files truncated); image files (png/jpg/webp/gif/bmp) are attached for visual inspection. Absolute paths are accepted (e.g. attached files outside the project).".to_string()
     }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Path relative to the project root (or an allowlisted read path)" }
+                "path": { "type": "string", "description": "Path relative to the project root, an allowlisted read path, or an absolute path (attached files carry their absolute path in the message)" }
             },
             "required": ["path"]
         })

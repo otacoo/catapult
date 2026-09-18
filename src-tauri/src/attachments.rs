@@ -23,23 +23,37 @@ pub struct Attachment {
     pub path: Option<String>,
 }
 
-/// Where each attachment lives; lets the model `read_file` files outside the
-/// project (their parent dirs are added to the jail's read scope).
-fn locations_block(attachments: &[Attachment]) -> Option<String> {
+/// Where each attachment lives; lets the model `read_file` attachments with
+/// either form (relative resolves from the project root; absolute covers
+/// subagents rooted elsewhere, e.g. worktrees).
+fn locations_block(
+    attachments: &[Attachment],
+    project_root: Option<&std::path::Path>,
+) -> Option<String> {
     let lines: Vec<String> = attachments
         .iter()
         .filter_map(|a| {
-            a.path
-                .as_deref()
-                .filter(|p| !p.trim().is_empty())
-                .map(|p| format!("- {}: {}", a.name, p))
+            let p = a.path.as_deref()?.trim();
+            if p.is_empty() {
+                return None;
+            }
+            let abs = std::path::Path::new(p);
+            match project_root.and_then(|r| abs.strip_prefix(r).ok()) {
+                Some(rel) => Some(format!(
+                    "- {}: {} (absolute: {})",
+                    a.name,
+                    rel.display(),
+                    abs.display()
+                )),
+                None => Some(format!("- {}: {}", a.name, abs.display())),
+            }
         })
         .collect();
     if lines.is_empty() {
         return None;
     }
     Some(format!(
-        "Attachment locations (readable even outside the project):\n{}",
+        "Attachment locations (relative paths resolve from the project root; absolute paths work everywhere):\n{}",
         lines.join("\n")
     ))
 }
@@ -62,7 +76,11 @@ fn mime_for(name: &str) -> &'static str {
 
 /// Fold message + attachments into one OpenAI user message (parts array with
 /// images, else string with fenced text blocks).
-pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>) -> ChatMessage {
+pub fn build_user_message(
+    message: String,
+    attachments: Option<Vec<Attachment>>,
+    project_root: Option<&std::path::Path>,
+) -> ChatMessage {
     let attachments = attachments.unwrap_or_default();
     if attachments.is_empty() {
         return ChatMessage::user(message);
@@ -78,7 +96,10 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
             "image" => {
                 if let Some(b64) = a.data_base64.as_deref() {
                     let mime = mime_for(&a.name);
-                    text_parts.push(format!("[image: {}]", a.name));
+                    text_parts.push(format!(
+                        "[image: {} — already attached and visible; no need to read it]",
+                        a.name
+                    ));
                     image_parts.push(json!({
                         "type": "image_url",
                         "image_url": { "url": format!("data:{};base64,{}", mime, b64) }
@@ -106,7 +127,7 @@ pub fn build_user_message(message: String, attachments: Option<Vec<Attachment>>)
     } else {
         text_parts.join("\n\n")
     };
-    let combined = match locations_block(&attachments) {
+    let combined = match locations_block(&attachments, project_root) {
         Some(block) => format!("{combined}\n\n{block}"),
         None => combined,
     };
@@ -144,18 +165,23 @@ pub fn image_parts(attachments: &Option<Vec<Attachment>>) -> Vec<Value> {
 pub fn fenced_texts(attachments: &Option<Vec<Attachment>>) -> Vec<String> {
     let mut out = Vec::new();
     for a in attachments.as_ref().map(|v| v.as_slice()).unwrap_or(&[]) {
-        if a.kind != "image" {
-            if let Some(text) = &a.text {
-                const TEXT_CAP: usize = 50_000;
-                let shown = if text.chars().count() > TEXT_CAP {
-                    let mut t: String = text.chars().take(TEXT_CAP).collect();
-                    t.push_str("\n[truncated]");
-                    t
-                } else {
-                    text.clone()
-                };
-                out.push(format!("Attached file {}:\n```\n{}\n```", a.name, shown));
-            }
+        if a.kind == "image" {
+            continue;
+        }
+        if let Some(text) = &a.text {
+            const TEXT_CAP: usize = 50_000;
+            let shown = if text.chars().count() > TEXT_CAP {
+                let mut t: String = text.chars().take(TEXT_CAP).collect();
+                t.push_str("\n[truncated]");
+                t
+            } else {
+                text.clone()
+            };
+            let source = match a.path.as_deref().filter(|p| !p.trim().is_empty()) {
+                Some(p) => format!(" (source: {p})"),
+                None => String::new(),
+            };
+            out.push(format!("Attached file {}{source}:\n```\n{}\n```", a.name, shown));
         }
     }
     out
@@ -263,7 +289,7 @@ mod tests {
         let atts = Some(vec![img("pic.png")]);
         let parts = image_parts(&atts);
         assert_eq!(parts.len(), 1);
-        let msg = build_user_message("describe this".to_string(), atts);
+        let msg = build_user_message("describe this".to_string(), atts, None);
         // Multimodal for capable models…
         assert!(matches!(msg.content, Some(Value::Array(_))));
         // …delegation hint for text-only ones.
@@ -283,7 +309,7 @@ mod tests {
             text: None,
             path: Some("E:\\Downloads\\shot.jpg".into()),
         }]);
-        let msg = build_user_message(String::new(), atts);
+        let msg = build_user_message(String::new(), atts, None);
         let text = match &msg.content {
             Some(Value::Array(parts)) => parts
                 .iter()
@@ -294,6 +320,23 @@ mod tests {
         };
         assert!(text.contains("Attachment locations"));
         assert!(text.contains("E:\\Downloads\\shot.jpg"));
+    }
+
+    #[test]
+    fn user_message_shows_relative_and_absolute_copy_paths() {
+        let atts = Some(vec![Attachment {
+            name: "data.csv".into(),
+            kind: "text".into(),
+            data_base64: None,
+            text: Some("a,b".into()),
+            path: Some("E:\\proj\\.catapult\\attachments\\1\\data.csv".into()),
+        }]);
+        let msg = build_user_message(String::new(), atts, Some(std::path::Path::new("E:\\proj")));
+        let text = match &msg.content {
+            Some(Value::String(s)) => s.clone(),
+            other => panic!("expected string content, got {other:?}"),
+        };
+        assert!(text.contains(".catapult\\attachments\\1\\data.csv (absolute:"));
     }
 
     #[test]

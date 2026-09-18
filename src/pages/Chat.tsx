@@ -1506,30 +1506,31 @@ function HarnessChat() {
           >
             {sidebarOpen ? "◀ Sidebar" : "▶ Sidebar"}
           </button>
-          <div className="flex-1 flex items-center justify-center gap-2">
+          <div className="flex items-center gap-5">
+            <div className="flex items-center gap-1.5 select-none" title="Chat text size">
+              <button
+                className="text-gray-500 hover:text-gray-300 leading-none"
+                onClick={() => stepZoom(0.05)}
+              >
+                <span className="text-sm font-semibold">A</span>
+              </button>
+              <span className="text-gray-700 text-xs leading-none">/</span>
+              <button
+                className="text-gray-500 hover:text-gray-300 leading-none"
+                onClick={() => stepZoom(-0.05)}
+              >
+                <span className="text-[11px] font-semibold">a</span>
+              </button>
+            </div>
             <button
-              className="text-gray-500 hover:text-gray-300 leading-none"
-              onClick={() => stepZoom(-0.05)}
-              title="Smaller chat text"
+              className="text-xs text-gray-500 hover:text-gray-300"
+              onClick={newChat}
+              disabled={streaming}
+              title="Start a new conversation"
             >
-              <span className="text-[11px] font-semibold">a</span>
-            </button>
-            <button
-              className="text-gray-500 hover:text-gray-300 leading-none"
-              onClick={() => stepZoom(0.05)}
-              title="Larger chat text"
-            >
-              <span className="text-sm font-semibold">A</span>
+              New chat
             </button>
           </div>
-          <button
-            className="text-xs text-gray-500 hover:text-gray-300"
-            onClick={newChat}
-            disabled={streaming}
-            title="Start a new conversation"
-          >
-            New chat
-          </button>
         </div>
 
         {!serverRunning && (

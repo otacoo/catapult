@@ -750,6 +750,83 @@ fn project_root(state: &AppState) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Copy outside attachments into `{project}/.catapult/attachments/<ts>/` so
+/// the model reads them with plain paths. Files already inside the project
+/// stay put; the copies' dir doubles as an extra read root for worktree
+/// subagents. Copies older than a day are pruned.
+fn sandbox_attachments(
+    root: &std::path::Path,
+    attachments: &mut [crate::attachments::Attachment],
+) -> Vec<PathBuf> {
+    let Ok(root_abs) = std::fs::canonicalize(root) else {
+        return vec![];
+    };
+    let base = root.join(".catapult").join("attachments");
+    let mut dir: Option<PathBuf> = None;
+    for a in attachments.iter_mut() {
+        let Some(src) = a
+            .path
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .map(PathBuf::from)
+        else {
+            continue;
+        };
+        let Ok(src_abs) = std::fs::canonicalize(&src) else {
+            a.path = None;
+            continue;
+        };
+        if src_abs.starts_with(&root_abs) {
+            a.path = Some(src_abs.to_string_lossy().to_string());
+            continue;
+        }
+        let d = dir.get_or_insert_with(|| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|t| t.as_millis())
+                .unwrap_or(0);
+            let d = base.join(ts.to_string());
+            let _ = std::fs::create_dir_all(&d);
+            prune_attachment_dirs(&base);
+            d
+        });
+        let name = src_abs
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+        let mut target = d.join(&name);
+        let mut i = 1;
+        while target.exists() {
+            target = d.join(format!("{i}-{name}"));
+            i += 1;
+        }
+        if std::fs::copy(&src_abs, &target).is_ok() {
+            a.path = Some(target.to_string_lossy().to_string());
+        } else {
+            a.path = None;
+        }
+    }
+    dir.into_iter().collect()
+}
+
+fn prune_attachment_dirs(base: &std::path::Path) {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+    if let Ok(entries) = std::fs::read_dir(base) {
+        for e in entries.flatten() {
+            let stale = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .map(|age| age >= MAX_AGE)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
 fn port_or_err(state: &AppState) -> Result<u16, String> {
     let s = state.server.lock().unwrap();
     match &s.status {
@@ -1216,25 +1293,16 @@ pub async fn harness_agent_send(
 
     load_session(&state);
     let root = project_root(&state)?;
+    // Copy outside attachments into the project sandbox so the model can read
+    // them with plain relative paths (every jail, including worktree
+    // subagents, can reach the copies). Returns the copies' dir.
+    let mut atts = attachments.unwrap_or_default();
+    let att_dir = sandbox_attachments(&root, &mut atts);
+    let attachments = if atts.is_empty() { None } else { Some(atts) };
     // Persisted grants follow the active project (global once per app run).
     ensure_permissions_loaded(&state);
     let project_id = state.config.lock().unwrap().harness_active_project.clone();
-    // Attachment sources become readable for this run: the model can follow
-    // the absolute paths in the message even though they sit outside the jail.
-    let attachment_roots: Vec<PathBuf> = attachments
-        .as_ref()
-        .map(|v| v.as_slice())
-        .unwrap_or(&[])
-        .iter()
-        .filter_map(|a| {
-            a.path.as_deref().map(std::path::PathBuf::from).and_then(|p| {
-                p.parent()
-                    .filter(|d| d.is_dir())
-                    .map(|d| d.to_path_buf())
-            })
-        })
-        .collect();
-    let jail = project_jail(&state, &root, &attachment_roots)?;
+    let jail = project_jail(&state, &root, att_dir.as_slice())?;
     let port = port_or_err(&state)?;
     let client = LlmClient::new(format!("http://127.0.0.1:{port}"));
 
@@ -1316,7 +1384,7 @@ pub async fn harness_agent_send(
     // the text with a delegation hint instead of pixels it cannot process.
     let sub_images = crate::attachments::image_parts(&attachments);
     let sub_texts = crate::attachments::fenced_texts(&attachments);
-    let mut user_msg = crate::attachments::build_user_message(message, attachments);
+    let mut user_msg = crate::attachments::build_user_message(message, attachments, Some(&root));
     if !sub_images.is_empty() && !orch_vision {
         user_msg = crate::attachments::strip_image_parts(user_msg);
     }
