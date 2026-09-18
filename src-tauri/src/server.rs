@@ -942,6 +942,20 @@ pub fn build_args_with_notes(config: &ServerConfig) -> (Vec<String>, Vec<String>
             args.push("--mmproj".to_string());
             args.push(mmproj.clone());
         }
+    } else if !router_mode {
+        // No explicit projector: auto-attach a vision sibling (models with
+        // mmproj support crash on image input otherwise — 500 "you may need
+        // to provide the mmproj"). Router mode attaches per preset section.
+        if let Some(sibling) =
+            crate::models::find_mmproj_sibling(std::path::Path::new(&config.model_path))
+        {
+            args.push("--mmproj".to_string());
+            args.push(sibling.to_string_lossy().to_string());
+            notes.push(format!(
+                "--mmproj auto-attached: {}",
+                sibling.to_string_lossy()
+            ));
+        }
     }
 
     // Speculative decoding (single-model only — router preset sections can't

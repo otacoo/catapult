@@ -166,13 +166,42 @@ pub fn estimate_memory(
     let embd = meta.as_ref().and_then(|m| m.embedding_length).unwrap_or(4096);
     let model_ctx = meta.as_ref().and_then(|m| m.context_length);
 
-    // GQA: KV cache stores embd × kv_heads / heads per layer.
-    let gqa_factor = match (meta.as_ref().and_then(|m| m.attention_head_count),
-                            meta.as_ref().and_then(|m| m.attention_head_count_kv)) {
-        (Some(heads), Some(kv_heads)) if heads > 0 => kv_heads as f64 / heads as f64,
-        _ => 1.0,
+    // KV per token per layer = kv_heads × head_dim (head_dim from key_length,
+    // else embd/heads). The old embd×GQA approximation breaks models whose
+    // head_dim ≠ embd/heads (e.g. hybrid SSM architectures).
+    let heads = meta.as_ref().and_then(|m| m.attention_head_count);
+    let kv_heads = meta
+        .as_ref()
+        .and_then(|m| m.attention_head_count_kv)
+        .or(heads)
+        .unwrap_or(8);
+    let head_dim = meta
+        .as_ref()
+        .and_then(|m| m.attention_key_length)
+        .unwrap_or_else(|| {
+            heads
+                .filter(|h| *h > 0)
+                .map(|h| (embd / h).max(1))
+                .unwrap_or(128)
+        });
+    let kv_embd = (kv_heads * head_dim).max(1);
+
+    // Hybrid SSM/linear-attention archs keep KV in only a fraction of their
+    // blocks; estimating every block massively overstates the cache.
+    let arch = meta.as_ref().and_then(|m| m.architecture.clone());
+    let kv_layers = match arch.as_deref().and_then(crate::models::hybrid_kv_arch_divisor) {
+        Some((divisor, note)) => {
+            if let Some(note) = note {
+                notes.push(note);
+            }
+            if divisor.is_infinite() {
+                0
+            } else {
+                (layers as f64 / divisor).max(1.0) as u64
+            }
+        }
+        None => layers,
     };
-    let kv_embd = (embd as f64 * gqa_factor).max(1.0) as u64;
 
     // Effective context: 0 means "use model default"
     let effective_ctx = if n_ctx > 0 {
@@ -184,7 +213,7 @@ pub fn estimate_memory(
         notes.push(format!("Context: model default ({})", effective_ctx));
     }
 
-    let kv_cache_mb = kv_cache_mb(layers, kv_embd, effective_ctx, cache_type_k, cache_type_v);
+    let kv_cache_mb = kv_cache_mb(kv_layers, kv_embd, effective_ctx, cache_type_k, cache_type_v);
 
     let offload_layers = if n_gpu_layers < 0 {
         layers as i64 // -1 = all layers
@@ -999,6 +1028,24 @@ mod tests {
         let config = suggest_config(4000, &system); // 4GB model
         assert_eq!(config.n_gpu_layers, -1);
         assert!(config.can_fit_fully_in_vram);
+    }
+
+    #[test]
+    fn hybrid_archs_divide_kv_layers() {
+        // lfm2: ~1 in 4 blocks keeps KV.
+        assert_eq!(
+            crate::models::hybrid_kv_arch_divisor("lfm2").map(|(d, _)| d),
+            Some(4.0)
+        );
+        // SWA-only archs: every block has KV — no divisor.
+        assert_eq!(crate::models::hybrid_kv_arch_divisor("gemma3"), None);
+        // RWKV/mamba: no growing KV cache at all.
+        assert_eq!(
+            crate::models::hybrid_kv_arch_divisor("mamba2").map(|(d, _)| d.is_infinite()),
+            Some(true)
+        );
+        // Standard transformers: no entry at all.
+        assert_eq!(crate::models::hybrid_kv_arch_divisor("llama"), None);
     }
 
     #[test]

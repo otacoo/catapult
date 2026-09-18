@@ -43,6 +43,8 @@ pub struct GgufMeta {
     pub embedding_length: Option<u64>,
     pub attention_head_count: Option<u64>,
     pub attention_head_count_kv: Option<u64>,
+    /// `{arch}.attention.key_length` — per-head KV dim; falls back to embd/heads.
+    pub attention_key_length: Option<u64>,
     /// `<arch>.expert_count` when present — model is MoE if > 0.
     pub expert_count: Option<u64>,
     pub tags: Vec<String>,
@@ -117,6 +119,29 @@ pub fn cache_cannot_shift_arch(arch: &str) -> bool {
     )
 }
 
+/// Hybrid SSM/linear-attention archs keep full KV in only some blocks:
+/// (approximate attention-layer divisor, optional estimator note). Returns
+/// None for standard transformer archs (every block has KV).
+pub fn hybrid_kv_arch_divisor(arch: &str) -> Option<(f64, Option<String>)> {
+    let note = format!(
+        "Hybrid architecture ({arch}): only a fraction of blocks keep a KV cache — estimate is approximate."
+    );
+    match arch {
+        // Full attention every block: no divisor needed, but non-shiftable.
+        "gemma2" | "gemma3" | "gemma3n" | "gemma4" | "gemma4-assistant" | "gemma-embedding"
+        | "llama4" | "exaone4" | "granite_swa" | "qwen2vl" | "qwen3vl" | "qwen3vlmoe" => None,
+        // ~1 in 4 blocks is full attention; the rest are linear/SSM (no KV).
+        "qwen3next" | "qwen35" | "qwen35moe" | "qwen4exp" | "granitehybrid" | "lfm2"
+        | "lfm2moe" | "minimax-m2" | "kimi-linear" | "kimi-k3" | "glm-dsa" | "step35"
+        | "nemotron-h" | "nemotron-h-moe" | "falcon-h1" | "jamba" => Some((4.0, Some(note))),
+        // RWKV-family keeps token-shift state, not a growing KV cache.
+        "mamba" | "mamba2" | "rwkv6" | "rwkv6qwen2" | "rwkv7" | "arwkv7" => {
+            Some((f64::INFINITY, Some(note)))
+        }
+        _ => None,
+    }
+}
+
 /// Read GGUF header; None when invalid/unreadable.
 pub fn read_model_metadata(path: &Path) -> Option<GgufMeta> {
     read_gguf_metadata(path)
@@ -188,6 +213,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val as u64);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val as u64);
+                } else if key.ends_with(".attention.key_length") {
+                    meta.attention_key_length = Some(val as u64);
                 } else if key.ends_with(".expert_count") {
                     meta.expert_count = Some(val as u64);
                 } else if key.ends_with(".attention.slide_window")
@@ -210,6 +237,8 @@ fn read_gguf_metadata(path: &Path) -> Option<GgufMeta> {
                     meta.attention_head_count = Some(val);
                 } else if key.ends_with(".attention.head_count_kv") {
                     meta.attention_head_count_kv = Some(val);
+                } else if key.ends_with(".attention.key_length") {
+                    meta.attention_key_length = Some(val);
                 } else if key.ends_with(".expert_count") {
                     meta.expert_count = Some(val);
                 } else if key.ends_with(".attention.slide_window")
@@ -623,14 +652,20 @@ pub fn find_spec_draft(model_path: &Path) -> Option<(PathBuf, SpecDraftKind)> {
 
 /// Same pairing rule as the scan, so badges agree with the Models-page Eye tag.
 pub(crate) fn has_mmproj_sibling(path: &std::path::Path) -> bool {
+    find_mmproj_sibling(path).is_some()
+}
+
+/// Sibling mmproj path for a model (pairing rule matches the scan); used to
+/// auto-attach the projector when a launch leaves it unset.
+pub fn find_mmproj_sibling(path: &std::path::Path) -> Option<PathBuf> {
     let filename = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     if filename.is_empty() {
-        return false;
+        return None;
     }
-    find_mmproj(path, &filename, &GgufCache::new()).is_some()
+    find_mmproj(path, &filename, &GgufCache::new())
 }
 
 struct CachedMeta {
