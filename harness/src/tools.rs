@@ -802,6 +802,16 @@ impl Tool for ExecTool {
 
 pub struct SpawnSubagentTool;
 
+impl SpawnSubagentTool {
+    /// `agent_type` enum extended with discovered agent names.
+    pub fn set_custom_agents(agents: &[crate::agents::AgentDef]) {
+        let names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
+        *CUSTOM_AGENTS.lock().unwrap() = names;
+    }
+}
+
+static CUSTOM_AGENTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 impl Tool for SpawnSubagentTool {
     fn name(&self) -> String {
         "spawn_subagent".to_string()
@@ -810,11 +820,27 @@ impl Tool for SpawnSubagentTool {
         "Delegate a focused task to an ephemeral specialist subagent ('coder' to implement, 'researcher' to investigate). The subagent gets a fresh isolated context; only its final report returns. Use it to keep your own context small, and to parallelize independent workstreams (each may take an optional 'branch' for an isolated worktree). If a task needs a capability you lack — e.g. viewing attached images — delegate it: the worker receives attached images automatically, and reports what it saw.".to_string()
     }
     fn parameters(&self) -> Value {
+        let mut enum_values: Vec<Value> = ["coder", "researcher"]
+            .iter()
+            .map(|s| Value::String(s.to_string()))
+            .collect();
+        enum_values.extend(
+            CUSTOM_AGENTS
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|n| Value::String(n.clone())),
+        );
+        let agent_desc = if enum_values.len() > 2 {
+            "coder implements code changes; researcher investigates and reports; other names are custom agents defined in the project or global agents folder".to_string()
+        } else {
+            "coder implements code changes; researcher investigates and reports".to_string()
+        };
         json!({
             "type": "object",
             "properties": {
                 "goal": { "type": "string", "description": "The specific, self-contained task for the subagent" },
-                "agent_type": { "type": "string", "enum": ["coder", "researcher"], "description": "coder implements code changes; researcher investigates and reports" },
+                "agent_type": { "type": "string", "enum": enum_values, "description": agent_desc },
                 "ctx_files": { "type": "array", "items": { "type": "string" }, "description": "Optional file paths (relative to the project) to hand to the subagent as context" },
                 "branch": { "type": "string", "description": "Optional git branch: run isolated in a sibling worktree on this branch (created if missing). Use for parallel implementation streams." }
             },

@@ -189,6 +189,12 @@ pub struct Subagents {
     /// The WORKER model's own context window (role override / launch ctx);
     /// None = inherit the orchestrator's limit.
     pub context_limit: Option<u64>,
+    /// Delegation depth of the runs spawned from here (0 = orchestrator's
+    /// own spawns). Durable in the session header once recursion is ever
+    /// allowed; today children cannot delegate at all.
+    pub depth: usize,
+    /// Declarative agent definitions (md files); spawnable by name.
+    pub custom: Vec<crate::agents::AgentDef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,8 +284,10 @@ impl AgentRun<'_> {
                 )
                 .await?
                 {
-                    compactions.push(info.cut);
-                    self.compactions_log.lock().unwrap().push(info.cut);
+                    if let Some(cut) = info.cut {
+                        compactions.push(cut);
+                        self.compactions_log.lock().unwrap().push(cut);
+                    }
                 }
             }
             turns_used += 1;
@@ -287,7 +295,9 @@ impl AgentRun<'_> {
                 bail!("Turn budget exhausted ({} turns)", self.max_turns);
             }
 
-            // Deltas ≈ tokens; reasoning excluded from metrics.
+            // Deltas ≈ tokens; reasoning deltas count too — the final tok/s is
+            // the average over ALL generated tokens (the live counter already
+            // includes them, and a mismatch reads as "wrong t/s" in the footer).
             let mut collector = StreamCollector::default();
             let mut text_acc = String::new();
             let mut deltas = 0usize;
@@ -302,6 +312,7 @@ impl AgentRun<'_> {
                     }
                     StreamEvent::ReasoningDelta { text } => {
                         reasoning_acc.push_str(text);
+                        deltas += 1;
                     }
                     StreamEvent::ToolCallDelta { .. } => deltas += 1,
                     StreamEvent::Usage { prompt_tokens, completion_tokens } => {
@@ -317,7 +328,7 @@ impl AgentRun<'_> {
                 on_stream(ev);
             };
             let turn_started = std::time::Instant::now();
-            // Overflow recovery (dsh pattern): a confirmed context-overflow
+            // Overflow recovery: a confirmed context-overflow
             // error condenses the history and retries ONCE — a self-heal that
             // beats a hard failure when the estimate lagged reality.
             let mut finish = self
@@ -348,8 +359,10 @@ impl AgentRun<'_> {
                     .await
                     {
                         Ok(Some(info)) => {
-                            compactions.push(info.cut);
-                            self.compactions_log.lock().unwrap().push(info.cut);
+                            if let Some(cut) = info.cut {
+                                compactions.push(cut);
+                                self.compactions_log.lock().unwrap().push(cut);
+                            }
                             finish = self
                                 .client
                                 .chat_stream(
@@ -634,10 +647,35 @@ impl AgentRun<'_> {
             .unwrap_or("")
             .trim()
             .to_string();
-        let kind = SubagentKind::parse(args.get("agent_type").and_then(|a| a.as_str()).unwrap_or(""));
+        let agent_type_arg = args
+            .get("agent_type")
+            .and_then(|a| a.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let gate = gate.clone();
         Box::pin(async move {
-            let kind = kind?;
+            // Builtin kinds first; otherwise a declarative agent by name.
+            let (kind, custom) = match SubagentKind::parse(&agent_type_arg) {
+                Ok(k) => (Some(k), None),
+                Err(_) => {
+                    let def = sub
+                        .custom
+                        .iter()
+                        .find(|d| d.name.eq_ignore_ascii_case(&agent_type_arg))
+                        .cloned();
+                    if def.is_none() {
+                        let mut known: Vec<String> =
+                            vec!["coder".to_string(), "researcher".to_string()];
+                        known.extend(sub.custom.iter().map(|d| d.name.clone()));
+                        bail!(
+                            "Unknown agent type '{agent_type_arg}' (expected one of: {})",
+                            known.join(", ")
+                        );
+                    }
+                    (None, def)
+                }
+            };
             if goal.is_empty() {
                 bail!("spawn_subagent requires a non-empty 'goal'");
             }
@@ -666,19 +704,33 @@ impl AgentRun<'_> {
                 anyhow::anyhow!("Cannot sandbox worktree {}: {e:#}", work_root.display())
             })?);
             let call_ref = format!("subagent-{seq}");
+            let kind_name = custom
+                .as_ref()
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| kind.as_ref().map(|k| k.name().to_string()).unwrap_or_default());
             on_event(AgentEvent::SubagentSpawned {
                 call_id: call_ref.clone(),
-                kind: kind.name().into(),
+                kind: kind_name.clone(),
                 goal: goal.clone(),
                 branch: branch.clone(),
             });
 
             // Lazy worker load: eager double-load crawls VRAM-tight machines.
-            if let Some(worker) = &sub.model {
+            // A custom agent may pin its own model instead.
+            let custom_model = custom.as_ref().and_then(|d| d.model.clone());
+            if let Some(worker) = custom_model.as_ref().or(sub.model.as_ref()) {
                 Self::ensure_router_model(self.client, worker, &should_stop, on_event).await?;
             }
 
-            let mut history = vec![ChatMessage::system(kind.prompt(&sub.skills))];
+            let mut history = vec![ChatMessage::system(match &custom {
+                Some(def) => format!(
+                    "{} {}{}",
+                    def.prompt,
+                    os_shell_snippet(),
+                    crate::skills::system_prompt_listing(&sub.skills)
+                ),
+                None => kind.as_ref().expect("custom is None only when kind is Some").prompt(&sub.skills),
+            })];
             let mut initial = match &worktree_note {
                 Some(note) => format!("{note}\nGoal: {goal}\n"),
                 None => format!("Goal: {goal}\n"),
@@ -720,18 +772,43 @@ impl AgentRun<'_> {
                 });
             }
 
-            let registry = SubagentKind::subagent_registry(
-                work_jail,
-                &sub.skills,
-                &sub.mcp_tools,
-                kind,
-                sub.exec_enabled,
-            );
+            // Custom agents scope their own tool allowlist (def.tools; empty
+            // = the coder default set) and pin their own model.
+            let registry = match &custom {
+                Some(def) => {
+                    let mut registry = ToolRegistry::project_tools(work_jail.clone())
+                        .without(&["spawn_subagent"]);
+                    if !sub.exec_enabled {
+                        registry = registry.without(&["exec"]);
+                    }
+                    let mut allowed: Vec<String> = def.tools.clone();
+                    if !sub.skills.is_empty() {
+                        registry = registry.add(Arc::new(crate::skills::SkillTool::new(sub.skills.clone())));
+                        allowed.push("skill".to_string());
+                    }
+                    for tool in &sub.mcp_tools {
+                        let name = tool.name();
+                        if allowed.contains(&name) {
+                            registry = registry.add(Arc::new(tool.clone()));
+                        }
+                    }
+                    let refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
+                    Arc::new(registry.only(&refs))
+                }
+                None => SubagentKind::subagent_registry(
+                    work_jail,
+                    &sub.skills,
+                    &sub.mcp_tools,
+                    kind.expect("custom is None only when kind is Some"),
+                    sub.exec_enabled,
+                ),
+            };
             let run = AgentRun {
                 client: self.client,
                 registry,
                 engine: self.engine.clone(),
-                model: sub.model.clone().or_else(|| self.model.clone()),
+                // Custom model pin > worker role > orchestrator.
+                model: custom_model.or_else(|| sub.model.clone().or_else(|| self.model.clone())),
                 project: self.project.clone(),
                 reasoning_effort: self.reasoning_effort.clone(),
                 max_turns: sub.max_turns,
@@ -787,9 +864,17 @@ impl AgentRun<'_> {
                     work_root.display()
                 ));
             }
+            // Full report to the UI (tool card details keep everything); the
+            // caller caps what enters the transcript.
+            on_event(AgentEvent::ToolResult {
+                call_id: call_ref.clone(),
+                ok: true,
+                output: report.clone(),
+                images: Vec::new(),
+            });
             on_event(AgentEvent::SubagentFinished {
                 call_id: call_ref,
-                kind: kind.name().into(),
+                kind: kind_name,
                 summary: short_args(&report),
             });
             Ok(report)

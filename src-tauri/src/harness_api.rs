@@ -643,8 +643,20 @@ fn harness_exec_enabled(config: &crate::config::AppConfig) -> bool {
         || config.server_tools.iter().any(|t| t == "exec_shell_command")
 }
 
+/// Agent definition roots: global ({data_dir}/catapult/agents) + project
+/// (.catapult/agents). Rediscovered per run so edits take effect immediately.
+fn agent_roots(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(data) = dirs::data_dir() {
+        roots.push(data.join("catapult").join("agents"));
+    }
+    roots.push(root.join(".catapult").join("agents"));
+    roots
+}
+
 /// Build the tool registry for a run: native sandboxed tools + the skill tool
 /// (when skills are discovered) + namespaced MCP tools (when servers connect).
+/// Also returns the discovered declarative agent definitions (spawnable).
 fn build_registry(
     jail: Arc<PathJail>,
     state: &AppState,
@@ -1336,6 +1348,11 @@ pub async fn harness_agent_send(
     let exec_enabled =
         harness_exec_enabled(&state.config.lock().unwrap());
     let (registry, skills) = build_registry(jail.clone(), &state, &root);
+    // Declarative subagents: markdown agent definitions,
+    // rediscovered every send so edits apply immediately. The delegation
+    // tool's schema lists them by name.
+    let custom_agents = harness::agents::discover(&agent_roots(&root));
+    harness::tools::SpawnSubagentTool::set_custom_agents(&custom_agents);
     let registry = if subagents_enabled {
         registry
     } else {
@@ -1500,6 +1517,8 @@ pub async fn harness_agent_send(
                 exec_enabled,
                 vision: worker_vision,
                 context_limit: worker_context_limit(&state),
+                depth: 0,
+                custom: custom_agents,
             })
         } else {
             None
@@ -2042,12 +2061,21 @@ pub async fn harness_agent_compact(state: State<'_, AppState>) -> Result<String,
         None => Ok("Nothing to compact — the transcript is already small.".to_string()),
         Some(info) => {
             *state.harness.history.lock().unwrap() = history;
-            shift_meta_for_compaction(&state, &[info.cut]);
+            if let Some(cut) = info.cut {
+                shift_meta_for_compaction(&state, &[cut]);
+            }
             save_session(&state);
-            Ok(format!(
-                "Compacted {} older messages into a summary.",
-                info.removed
-            ))
+            if info.cut.is_none() {
+                Ok(format!(
+                    "Trimmed {} oversized tool result(s) — no summary needed.",
+                    info.removed
+                ))
+            } else {
+                Ok(format!(
+                    "Compacted {} older messages into a summary.",
+                    info.removed
+                ))
+            }
         }
     }
 }
