@@ -1036,15 +1036,15 @@ function HarnessChat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Auto-grow the input with content, capped at a third of the view
-  // (scrollbar past that). Measured in a layout effect so pasted text counts.
-  const [inputHeight, setInputHeight] = useState("2.5rem");
+  // (scrollbar past that). Measured and applied directly on the DOM node —
+  // going through state would skip re-applying an unchanged height after the
+  // direct "0px" reset (React diffs against its own last render).
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "0px";
-    const natural = el.scrollHeight + 2;
-    const cap = Math.floor(window.innerHeight / 3);
-    setInputHeight(`${Math.min(Math.max(natural, 40), cap)}px`);
+    const cap = Math.max(120, Math.floor(window.innerHeight / 3));
+    el.style.height = `${Math.min(el.scrollHeight + 2, cap)}px`;
   }, [input]);
   // Chat text scale (zoom on the transcript; persists in localStorage).
   const [chatZoom, setChatZoom] = useState(() => {
@@ -1886,7 +1886,7 @@ function HarnessChat() {
             <textarea
               ref={inputRef}
               className="input flex-1 resize-none text-sm overflow-y-auto"
-              style={{ height: inputHeight, minHeight: "2.5rem", maxHeight: `${Math.floor(window.innerHeight / 3)}px` }}
+              style={{ minHeight: "2.5rem", maxHeight: `${Math.floor(window.innerHeight / 3)}px` }}
               placeholder={
                 !canSend
                   ? activeProject == null

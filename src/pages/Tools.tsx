@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Pencil, Plus, Trash2, X, Wrench, Globe, AlertTriangle, CheckCircle2, RefreshCw, ExternalLink, FolderOpen } from "lucide-react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import Toggle from "../components/Toggle";
+import ApiCard from "./Api";
 import { KNOWN_TOOLS, toolsArgValue } from "../utils/tools";
 import type { AppConfig, McpInfo, McpServerEntry, ServerStatus, ServerToolInfo } from "../types";
 
@@ -436,6 +437,8 @@ export default function Tools() {
           </div>
         )}
       </div>
+
+      <ApiCard />
     </div>
   );
 }

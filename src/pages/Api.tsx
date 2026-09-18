@@ -31,7 +31,8 @@ function CopyRow({ label, value, mono = false }: { label: string; value: string;
   );
 }
 
-export default function Api() {
+// API section card (lives on the Tools page).
+export default function ApiCard() {
   const [status, setStatus] = useState<ServerStatus>({ type: "stopped" });
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,9 +76,9 @@ export default function Api() {
 
   if (status.type !== "running") {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
-        <Server size={28} className="text-gray-600" />
-        <p className="text-sm text-gray-600">Start the server to see API connection details.</p>
+      <div className="card flex items-center gap-3 text-gray-500">
+        <Server size={16} className="text-gray-600" />
+        <p className="text-xs">API details appear when the server is running.</p>
       </div>
     );
   }
@@ -88,19 +89,15 @@ export default function Api() {
     : "";
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-100">API</h1>
-          <p className="text-gray-500 text-sm mt-1">
-            Connection details for the running server — OpenAI-compatible.
-          </p>
-        </div>
-        <button className="btn-secondary text-xs" onClick={loadInfo} disabled={refreshing}>
-          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+    <div className="card">
+      <div className="flex items-center justify-between">
+        <h2 className="section-title mb-0">API</h2>
+        <button className="btn-ghost text-xs py-1 px-2" onClick={loadInfo} disabled={refreshing}>
+          <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
           Refresh
         </button>
       </div>
+      <p className="section-desc">Connection details for the running server — OpenAI-compatible.</p>
 
       {error && (
         <div className="card border-accent-red/30 bg-accent-red/5">
@@ -108,97 +105,99 @@ export default function Api() {
         </div>
       )}
 
-      <div className="card">
-        <h2 className="section-title">Endpoints</h2>
-        <div className="space-y-1.5 mt-3">
-          <CopyRow label="Base URL" value={info?.base_url ?? ""} mono />
-          <CopyRow label="Chat" value={`${info?.base_url ?? ""}/chat/completions`} mono />
-          <CopyRow label="Completions" value={`${info?.base_url ?? ""}/completions`} mono />
-          <CopyRow label="Embeddings" value={`${info?.base_url ?? ""}/embeddings`} mono />
-          <CopyRow label="List models" value={`${info?.base_url ?? ""}/models`} mono />
-          <CopyRow label="API key" value={info?.api_key ?? "(none — open server)"} mono />
-        </div>
-      </div>
-
-      <div className="card">
-        <h2 className="section-title">
-          {info?.router_mode ? "Serving Model (router)" : "Loaded Model"}
-        </h2>
-        {info?.router_mode && !info.model_id && (
-          <p className="text-xs text-gray-500 mt-2">
-            No model loaded — the router loads on demand.
-          </p>
-        )}
-        <div className="space-y-1.5 mt-3">
-          <CopyRow label="Model ID" value={info?.model_id ?? ""} mono />
-          {!info?.router_mode && (
-            <CopyRow label="Alias" value={info?.model_alias ?? ""} mono />
-          )}
-          <CopyRow label="Path" value={info?.model_path ?? ""} mono />
-          <CopyRow label="Context (n_ctx)" value={info ? String(info.n_ctx) : ""} mono />
-          {!info?.router_mode && (
-            <>
-              <CopyRow label="Max tokens" value={info ? String(info.n_predict) : ""} mono />
-              <CopyRow
-                label="Slots"
-                value={info ? `${info.slots_idle} idle / ${info.total_slots} total` : ""}
-              />
-            </>
-          )}
-        </div>
-      </div>
-
-      {info?.router_mode && (info.models ?? []).length > 0 && (
-        <div className="card">
-          <h2 className="section-title">Registered Models</h2>
-          <div className="space-y-1.5 mt-3">
-            {info.models!.map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center gap-3 px-3 py-2 border border-border bg-surface-2"
-              >
-                <span className="flex-1 text-xs text-gray-200 font-mono truncate">{m.id}</span>
-                <span
-                  className={`text-[10px] shrink-0 ${m.status === "loaded" ? "text-accent-green" : "text-gray-500"}`}
-                >
-                  {m.status}
-                </span>
-              </div>
-            ))}
+      <div className="space-y-4 mt-3">
+        <div>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Endpoints</h3>
+          <div className="space-y-1.5">
+            <CopyRow label="Base URL" value={info?.base_url ?? ""} mono />
+            <CopyRow label="Chat" value={`${info?.base_url ?? ""}/chat/completions`} mono />
+            <CopyRow label="Completions" value={`${info?.base_url ?? ""}/completions`} mono />
+            <CopyRow label="Embeddings" value={`${info?.base_url ?? ""}/embeddings`} mono />
+            <CopyRow label="List models" value={`${info?.base_url ?? ""}/models`} mono />
+            <CopyRow label="API key" value={info?.api_key ?? "(none — open server)"} mono />
           </div>
         </div>
-      )}
 
-      {info && (
-        <div className="card">
-          <h2 className="section-title">Client Configuration</h2>
-          <p className="text-xs text-gray-600 mt-1 mb-3">
-            Environment variables for OpenAI-compatible SDKs (Python, Node, curl…).
-          </p>
-          <div className="flex items-center gap-3">
-            <pre className="flex-1 bg-surface-0 p-3 font-mono text-xs text-gray-300 overflow-x-auto select-text whitespace-pre-wrap">
-              {envConfig}
-            </pre>
-            <button
-              className="text-gray-600 hover:text-gray-300 transition-colors shrink-0"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(envConfig);
-                } catch {}
-              }}
-              title="Copy environment variables"
-            >
-              <Copy size={14} />
-            </button>
-          </div>
-          {apiKeyLine && (
-            <p className="text-xs text-gray-600 mt-2">
-              <Database size={11} className="inline mr-1" />
-              The server was started with an API key — include it in all requests.
+        <div>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+            {info?.router_mode ? "Serving Model (router)" : "Loaded Model"}
+          </h3>
+          {info?.router_mode && !info.model_id && (
+            <p className="text-xs text-gray-500 mb-2">
+              No model loaded — the router loads on demand.
             </p>
           )}
+          <div className="space-y-1.5">
+            <CopyRow label="Model ID" value={info?.model_id ?? ""} mono />
+            {!info?.router_mode && (
+              <CopyRow label="Alias" value={info?.model_alias ?? ""} mono />
+            )}
+            <CopyRow label="Path" value={info?.model_path ?? ""} mono />
+            <CopyRow label="Context (n_ctx)" value={info ? String(info.n_ctx) : ""} mono />
+            {!info?.router_mode && (
+              <>
+                <CopyRow label="Max tokens" value={info ? String(info.n_predict) : ""} mono />
+                <CopyRow
+                  label="Slots"
+                  value={info ? `${info.slots_idle} idle / ${info.total_slots} total` : ""}
+                />
+              </>
+            )}
+          </div>
         </div>
-      )}
+
+        {info?.router_mode && (info.models ?? []).length > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Registered Models</h3>
+            <div className="space-y-1.5">
+              {info.models!.map((m) => (
+                <div
+                  key={m.id}
+                  className="flex items-center gap-3 px-3 py-2 border border-border bg-surface-2"
+                >
+                  <span className="flex-1 text-xs text-gray-200 font-mono truncate">{m.id}</span>
+                  <span
+                    className={`text-[10px] shrink-0 ${m.status === "loaded" ? "text-accent-green" : "text-gray-500"}`}
+                  >
+                    {m.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {info && (
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Client Configuration</h3>
+            <p className="text-xs text-gray-600 mb-3">
+              Environment variables for OpenAI-compatible SDKs (Python, Node, curl…).
+            </p>
+            <div className="flex items-center gap-3">
+              <pre className="flex-1 bg-surface-0 p-3 font-mono text-xs text-gray-300 overflow-x-auto select-text whitespace-pre-wrap">
+                {envConfig}
+              </pre>
+              <button
+                className="text-gray-600 hover:text-gray-300 transition-colors shrink-0"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(envConfig);
+                  } catch {}
+                }}
+                title="Copy environment variables"
+              >
+                <Copy size={14} />
+              </button>
+            </div>
+            {apiKeyLine && (
+              <p className="text-xs text-gray-600 mt-2">
+                <Database size={11} className="inline mr-1" />
+                The server was started with an API key — include it in all requests.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

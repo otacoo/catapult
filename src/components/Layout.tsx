@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -10,7 +11,6 @@ import {
   Wrench,
   Play,
   MessageSquare,
-  Plug,
   FlaskConical,
   Settings,
 } from "lucide-react";
@@ -20,6 +20,7 @@ import CatapultIcon from "./CatapultIcon";
 import WindowControls from "./WindowControls";
 import OptionsPanel from "./OptionsPanel";
 import Chat from "../pages/Chat";
+import type { ServerStatus } from "../types";
 import {
   getQuickBenchEnabled,
   getUpdateState,
@@ -36,7 +37,6 @@ const navItems: { to: string; label: string; icon: LucideIcon; quickBench?: bool
   { to: "/tools", label: "Tools", icon: Wrench },
   { to: "/server", label: "Run", icon: Play },
   { to: "/bench", label: "Bench", icon: FlaskConical, quickBench: true },
-  { to: "/api", label: "API", icon: Plug },
   { to: "/chat", label: "Chat", icon: MessageSquare },
 ];
 
@@ -64,15 +64,25 @@ export default function Layout() {
   const optionsBtnRef = useRef<HTMLButtonElement | null>(null);
   const [quickBench, setQuickBench] = useState(getQuickBenchEnabled());
   const [updateState, setUpdateStateLocal] = useState(getUpdateState());
+  const [serverRunning, setServerRunning] = useState(false);
 
   useEffect(() => {
     loadQuickBenchEnabled();
     checkForAppUpdateOnStartup();
     const unsubQuick = subscribeQuickBench(setQuickBench);
     const unsubUpdate = subscribeUpdateState(setUpdateStateLocal);
+    // Nav highlight: server state feeds the Run/Chat icons.
+    const poll = () => {
+      invoke<ServerStatus>("get_server_status")
+        .then((s) => setServerRunning(s.type === "running" || s.type === "starting"))
+        .catch(() => setServerRunning(false));
+    };
+    poll();
+    const id = setInterval(poll, 2000);
     return () => {
       unsubQuick();
       unsubUpdate();
+      clearInterval(id);
     };
   }, []);
 
@@ -130,7 +140,16 @@ export default function Layout() {
         <nav className="relative z-10 flex items-center gap-0.5">
           {navItems
             .filter((item) => !item.quickBench || quickBench)
-            .map(({ to, label, icon: Icon }) => (
+            .map(({ to, label, icon: Icon }) => {
+              // Run turns green with the server; Chat lights up white when
+              // the server runs (chats are consultable, sending needs it).
+              const highlight =
+                to === "/server" && serverRunning
+                  ? "text-accent-green"
+                  : to === "/chat" && serverRunning
+                    ? "text-gray-100"
+                    : null;
+              return (
             <NavLink
               key={to}
               to={to}
@@ -139,14 +158,17 @@ export default function Layout() {
                   "flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition-colors",
                   isActive
                     ? "bg-primary/20 text-primary-light"
-                    : "text-gray-400 hover:text-gray-200 hover:bg-primary/10"
+                    : highlight
+                      ? `${highlight} hover:bg-primary/10`
+                      : "text-gray-400 hover:text-gray-200 hover:bg-primary/10"
                 )
               }
             >
               <Icon size={13} />
               {label}
             </NavLink>
-          ))}
+              );
+            })}
         </nav>
 
         <div className="relative z-10 ml-auto flex items-center">
