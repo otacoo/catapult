@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.5.5] - 2026-09-18
+
+Version bump, nothing new.
+
 ## [0.5.4] - 2026-09-18
 
 ### Added
