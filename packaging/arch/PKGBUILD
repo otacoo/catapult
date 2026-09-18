@@ -1,0 +1,33 @@
+# Catapult prebuilt package: repacks the official .deb from GitHub releases.
+# Build from a release checkout or tag:  makepkg -si
+# For AUR use, update pkgver/sha256sums per release.
+
+pkgname=catapult-bin
+pkgver=0.5.6
+pkgrel=1
+pkgdesc="A desktop launcher for llama.cpp"
+arch=('x86_64')
+url="https://github.com/otacoo/catapult"
+license=('Apache')
+depends=(
+  'webkit2gtk-4.1'
+  'gtk3'
+  'librsvg'
+  'gstreamer'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'gst-plugins-bad'
+  'libayatana-appindicator'
+)
+provides=('catapult')
+conflicts=('catapult')
+source=("Catapult_${pkgver}_amd64.deb::https://github.com/otacoo/catapult/releases/download/v${pkgver}/Catapult_${pkgver}_amd64.deb")
+sha256sums=('SKIP')
+
+package() {
+  cd "${srcdir}"
+
+  # Unpack the .deb payload into the filesystem root; the deb ships
+  # /usr/bin/catapult, the .desktop entry, and hicolor icons.
+  bsdtar -xf data.tar.* -C "${pkgdir}"
+}
