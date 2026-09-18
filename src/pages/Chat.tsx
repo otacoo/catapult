@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { playNotificationSound } from "../utils/sounds";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -18,6 +19,7 @@ import {
   Copy,
   Download,
   Eye,
+  ExternalLink,
   FileWarning,
   FolderOpen,
   MoreHorizontal,
@@ -476,6 +478,7 @@ function ChatSidebar({ onProjectChanged, onSessionPicked }: {
                   <span className="flex-1 truncate">{p.name}</span>
                   <RowMenu
                     items={[
+                      { label: "Open location", icon: <ExternalLink size={11} />, onClick: async () => { try { await revealItemInDir(p.path); } catch {} } },
                       { label: "Rename", icon: <Pencil size={11} />, onClick: () => setEditing({ kind: "project", id: p.id, value: p.name }) },
                       { label: "Delete (Shift+Click)", icon: <Trash2 size={11} />, danger: true, onClick: () => removeProject(p.id) },
                     ]}
@@ -1031,6 +1034,18 @@ function HarnessChat() {
   };
   const approvalSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Auto-grow the input with content, capped at a third of the view
+  // (scrollbar past that). Measured in a layout effect so pasted text counts.
+  const [inputHeight, setInputHeight] = useState("2.5rem");
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    const natural = el.scrollHeight + 2;
+    const cap = Math.floor(window.innerHeight / 3);
+    setInputHeight(`${Math.min(Math.max(natural, 40), cap)}px`);
+  }, [input]);
   // Chat text scale (zoom on the transcript; persists in localStorage).
   const [chatZoom, setChatZoom] = useState(() => {
     const z = Number(localStorage.getItem("catapult_chat_zoom"));
@@ -1869,7 +1884,9 @@ function HarnessChat() {
               <Paperclip size={14} />
             </button>
             <textarea
-              className="input flex-1 resize-none h-16 text-sm"
+              ref={inputRef}
+              className="input flex-1 resize-none text-sm overflow-y-auto"
+              style={{ height: inputHeight, minHeight: "2.5rem", maxHeight: `${Math.floor(window.innerHeight / 3)}px` }}
               placeholder={
                 !canSend
                   ? activeProject == null

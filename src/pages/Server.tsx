@@ -563,7 +563,8 @@ export default function Server() {
     } catch (e) { setError(String(e)); }
   };
 
-  const loadPreset = async (name: string, modelPath?: string) => {
+  // Apply a preset's options; true on success (missing file → false).
+  const applyPresetByName = async (name: string): Promise<boolean> => {
     try {
       const loaded = await invoke<ServerConfig>("load_server_preset", { name });
       if (loaded.extra_params) loaded.extra_params = sanitizeTools(migrateExtraParams(loaded.extra_params));
@@ -574,14 +575,22 @@ export default function Server() {
         mmproj_path: prev.mmproj_path,
         working_dir: prev.working_dir,
       }));
-      setActivePreset(name);
-      setShowPresetMenu(false);
-      // Save model→preset association (use provided path or fall back to current config)
-      const pathToSave = modelPath ?? config.model_path;
-      if (pathToSave) {
-        await invoke("set_model_preset", { modelPath: pathToSave, presetName: name }).catch(() => {});
-      }
-    } catch (e) { setError(String(e)); }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const loadPreset = async (name: string, modelPath?: string) => {
+    const ok = await applyPresetByName(name);
+    if (!ok) { setError(`Preset "${name}" could not be loaded.`); return; }
+    setActivePreset(name);
+    setShowPresetMenu(false);
+    // Save model→preset association (use provided path or fall back to current config)
+    const pathToSave = modelPath ?? config.model_path;
+    if (pathToSave) {
+      await invoke("set_model_preset", { modelPath: pathToSave, presetName: name }).catch(() => {});
+    }
   };
 
   const deletePreset = async (name: string) => {
@@ -652,9 +661,15 @@ export default function Server() {
     if (cfg.server_working_dir && !config.working_dir) {
       setConfig((c) => ({ ...c, working_dir: cfg.server_working_dir }));
     }
-    // Restore the last preset across app restarts (session wins within a run)
+    // Restore the last preset across app restarts — its OPTIONS, not just the
+    // label (session wins within a run). Falls back to defaults when the
+    // preset file is gone or no preset was recorded.
     if (cfg.last_preset && !sessionStorage.getItem(SESSION_PRESET_KEY)) {
-      setActivePreset(cfg.last_preset);
+      const ok = await applyPresetByName(cfg.last_preset);
+      if (ok) setActivePreset(cfg.last_preset);
+      else { setActivePreset(null); await loadDefaults(); }
+    } else if (!sessionStorage.getItem(SESSION_CONFIG_KEY)) {
+      await loadDefaults();
     }
     // No model is auto-selected: an empty model_path means router mode — the
     // user picks models on demand (WebUI picker / harness roles).
@@ -663,8 +678,6 @@ export default function Server() {
   useEffect(() => {
     loadData();
     refreshPresets();
-    // Only load defaults if no session-restored config
-    if (!loadSessionConfig()) loadDefaults();
     // Load any existing logs (e.g. server started from Dashboard)
     invoke<string[]>("get_server_logs").then((existing) => {
       if (existing.length > 0) {
