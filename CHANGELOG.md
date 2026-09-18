@@ -1,19 +1,55 @@
 # Changelog
 
+## [0.5.7] - 2026-09-18
+
+### Added
+
+- Context compaction: the oldest turns are summarized into one message when the transcript nears the context window; overflow errors condense and retry once; `/compact` forces it on demand
+- Declarative subagents: markdown agent definitions (`name`/`description`/`tools`/`model`) in `{data}/catapult/agents/` or `<project>/.catapult/agents/` — spawnable by name, rediscovered every send
+- Token-budget compaction keeps ~8k tokens of recent history instead of a fixed message count; oversized tool results are trimmed in place (often skipping the summary call); summaries list created/modified files
+- Subagents compact under the worker model's own context window; delegation depth tracked; full subagent reports kept in the tool card details
+- API tab merged into Tools
+- Nav status colors: Run turns green and Chat turns white while the server runs
+- Auto-growing chat input (caps at a third of the view)
+- "Open location" in the project folder menu
+
+### Changed
+
+- Router preset regenerated through one shared builder for both launch and role resolution, so the Run tab context override sticks in harness mode
+- Live slot sizes (per-model, scoped router queries, cached) beat the GGUF training max everywhere: context ring, API tab, compaction limit
+- Token estimate counts text parts only (base64 images no longer blow up the trigger)
+- Slot/caches cleared on router reload and server stop/start
+- Attachment sandboxing also reads the originals' parent dirs; clearer locations block
+- Preset restore on startup applies the preset's options, not just the label
+- Model-selection suggestions no longer overwrite an existing context override
+- Stale mmproj cleared in harness router launches
+
+### Fixed
+
+- Live reasoning appears instantly; its block ends with the reasoning phase
+- Reasoning tokens count in the final tokens/second average
+- Subagent compaction no longer claims the main transcript was compacted
+- Wizard no longer labels Muse Glimmer as MoE
+- Turn budgets saved as 0 repair to the defaults on load
+- Worker picker disabled when subagents are off; subagents toggle above model selection
+- Windows verbatim `\\?\` prefixes stripped from user-visible paths
+- Hash-like GGUF names fall back to the filename-derived name
+- Wizard model download failures no longer lock the step; "file not found" fixed for repos whose files are nested under owner/model
+- Speculative draft sidecars with short names pair correctly; quant matching is case-insensitive
+
 ## [0.5.6] - 2026-09-18
 
 ### Added
 
 - Window state remembered
--Last preset restored on restart
-
+- Last preset restored on restart
 
 ### Changed
 
 - Flush close button
 - Bonsai removed from the recommended models list
-
-
+- Single instance: a second launch focuses the existing window
+- Live context ring (per-turn usage) and streaming run stats (t/s, elapsed, ctx) under the in-flight message
 ## [0.5.5] - 2026-09-18
 
 Version bump, nothing new.
