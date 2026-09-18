@@ -53,7 +53,7 @@ fn locations_block(
         return None;
     }
     Some(format!(
-        "Attachment locations (relative paths resolve from the project root; absolute paths work everywhere):\n{}",
+        "Attachment locations — read files with read_file using EXACTLY these paths:\n{}",
         lines.join("\n")
     ))
 }

@@ -802,9 +802,10 @@ fn project_root(state: &AppState) -> Result<PathBuf, String> {
 }
 
 /// Copy outside attachments into `{project}/.catapult/attachments/<ts>/` so
-/// the model reads them with plain paths. Files already inside the project
-/// stay put; the copies' dir doubles as an extra read root for worktree
-/// subagents. Copies older than a day are pruned.
+/// the model reads them with plain paths. Returns the copies' dir plus the
+/// originals' parent dirs (both become extra read roots: models echo either
+/// path, and worktree subagents reach both). Files already inside the project
+/// stay put. Copies older than a day are pruned.
 fn sandbox_attachments(
     root: &std::path::Path,
     attachments: &mut [crate::attachments::Attachment],
@@ -814,6 +815,7 @@ fn sandbox_attachments(
     };
     let base = root.join(".catapult").join("attachments");
     let mut dir: Option<PathBuf> = None;
+    let mut original_dirs: Vec<PathBuf> = Vec::new();
     for a in attachments.iter_mut() {
         let Some(src) = a
             .path
@@ -830,6 +832,13 @@ fn sandbox_attachments(
         if src_abs.starts_with(&root_abs) {
             a.path = Some(src_abs.to_string_lossy().to_string());
             continue;
+        }
+        // The original's folder stays readable too — models often repeat the
+        // path they were given instead of the sandboxed copy.
+        if let Some(parent) = src_abs.parent() {
+            if !original_dirs.iter().any(|d| d == parent) {
+                original_dirs.push(parent.to_path_buf());
+            }
         }
         let d = dir.get_or_insert_with(|| {
             let ts = std::time::SystemTime::now()
@@ -857,7 +866,9 @@ fn sandbox_attachments(
             a.path = None;
         }
     }
-    dir.into_iter().collect()
+    let mut roots = original_dirs;
+    roots.extend(dir);
+    roots
 }
 
 fn prune_attachment_dirs(base: &std::path::Path) {

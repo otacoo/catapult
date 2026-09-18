@@ -2,9 +2,9 @@
 //!
 //! Sandbox-jailed tool execution, an orchestrator loop, and ephemeral
 //! subagents over any OpenAI-compatible endpoint (llama.cpp first).
-//! Design notes live in `plan.md`.
 
 pub mod agent;
+pub mod agents;
 pub mod client;
 pub mod compact;
 pub mod git;

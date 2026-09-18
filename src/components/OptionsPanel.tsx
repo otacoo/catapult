@@ -157,8 +157,9 @@ function RolePickers({ appConfig, onSet, onSetParams, subagentsEnabled }: {
         </p>
       )}
       <p className="text-[11px] text-gray-600 leading-snug">
-        A distinct worker model requires router mode: launch on the Run page with no single model selected.
-        The orchestrator model loads at run start; a small worker alongside a big planner speeds up execution.
+        Launching with a distinct worker uses router mode automatically (one server, models load on demand).
+        The orchestrator loads when the run starts; the worker loads lazily on first delegation.
+        Per-role context and GPU overrides travel with each model.
       </p>
     </div>
   );
