@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.6] - 2026-09-18
+
+### Added
+
+- Window state remembered
+-Last preset restored on restart
+
+
+### Changed
+
+- Flush close button
+- Bonsai removed from the recommended models list
+
+
 ## [0.5.5] - 2026-09-18
 
 Version bump, nothing new.
