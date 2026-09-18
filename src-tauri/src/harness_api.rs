@@ -980,43 +980,27 @@ async fn resolve_roles(
         }
     }
 
-    // Regenerate the preset so role models are registered, then reload. The
-    // registry keeps every installed model (same as server start) so a reload
-    // never evicts models the user loaded via the WebUI.
+    // Regenerate the preset so role models are registered, then reload. Uses
+    // the SAME shared builder as server start (server::router_preset_entries)
+    // — ctx seeding and role overrides stay identical across both writers.
+    // The registry keeps every installed model (same as server start) so a
+    // reload never evicts models the user loaded via the WebUI.
     let dir = dirs::data_dir()
         .ok_or("Cannot find data directory")?
         .join("catapult");
     let worker_path = roles.worker.clone();
     let app_config = state.config.lock().unwrap().clone();
-    let mut entries: Vec<crate::server::PresetEntry> = app_config
-        .router_models
-        .iter()
-        .map(|p| crate::server::PresetEntry { path: p.clone(), ..Default::default() })
-        .collect();
-    if let Ok(installed) = crate::models::list_installed_models(&app_config) {
-        entries.extend(installed.iter().map(|m| crate::server::PresetEntry {
-            path: m.path.to_string_lossy().to_string(),
-            ..Default::default()
-        }));
-    }
-    // Role models carry their per-role server overrides (ctx-size / layers).
-    let params = &app_config.harness_role_params;
-    if let Some(p) = roles.orchestrator.clone() {
-        entries.push(crate::server::PresetEntry {
-            path: p,
-            ctx_size: params.orchestrator.ctx_size,
-            n_gpu_layers: params.orchestrator.n_gpu_layers,
-        });
-    }
-    if let Some(p) = worker_path.clone() {
-        entries.push(crate::server::PresetEntry {
-            path: p,
-            ctx_size: params.worker.ctx_size,
-            n_gpu_layers: params.worker.n_gpu_layers,
-        });
-    }
+    // The launch config's n_ctx seeds ctx-size (Run tab override); with no
+    // running server config, fall back to the persisted one.
+    let launch_cfg = state.server.lock().unwrap().config.clone();
+    let fallback_cfg = crate::server::ServerConfig::default();
+    let cfg_ref = launch_cfg.as_ref().unwrap_or(&fallback_cfg);
+    let entries = crate::server::router_preset_entries_with_roles(cfg_ref, &app_config, &roles);
     let _preset = crate::server::write_router_preset_entries(&dir, &entries).map_err(|e| e.to_string())?;
     client.router_reload().await.map_err(|e| e.to_string())?;
+    // The reload may re-register children with new ctx sizes — cached slot
+    // sizes and last-run usage are stale the moment this returns.
+    clear_context_caches(state);
 
     // Map role paths → registered ids (section name = file stem). The reload
     // applies asynchronously, so poll briefly for the expected id instead of
@@ -1503,6 +1487,7 @@ pub async fn harness_agent_send(
         reasoning_effort: reasoning_effort.filter(|e| !e.is_empty() && e != "default"),
         max_turns: max_turns as usize,
         context_limit: effective_context_limit(&state, &client).await,
+        compactions_log: Arc::new(Mutex::new(Vec::new())),
         subagents: if subagents_enabled {
             Some(harness::agent::Subagents {
                 jail,
@@ -1514,6 +1499,7 @@ pub async fn harness_agent_send(
                 attachment_texts: sub_texts,
                 exec_enabled,
                 vision: worker_vision,
+                context_limit: worker_context_limit(&state),
             })
         } else {
             None
@@ -1540,9 +1526,19 @@ pub async fn harness_agent_send(
         None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
     };
     // Footer stats for the finished turn stick to its transcript message so
-    // they survive restarts (recorded before the save below).
+    // they survive restarts (recorded before the save below). Meta must shift
+    // on EVERY outcome: the compacted history is stored either way, so the
+    // cut log has to be drained on error/abort too — not just success.
+    let cuts = {
+        let mut log = run.compactions_log.lock().unwrap().drain(..).collect::<Vec<_>>();
+        if let Ok(outcome) = &result {
+            log.extend(outcome.compactions.iter().copied());
+        }
+        log.sort();
+        log
+    };
+    shift_meta_for_compaction(&state, &cuts);
     if let Ok(outcome) = &result {
-        shift_meta_for_compaction(&state, &outcome.compactions);
         let history = state.harness.history.lock().unwrap();
         if let Some(idx) = history
             .iter()
@@ -1894,7 +1890,9 @@ pub async fn harness_session_export(id: String, path: String) -> Result<(), Stri
 
 /// Effective context size for compaction: live slot size on single-model
 /// servers (reflects --ctx-size/--fit), per-model slots in router mode,
-/// else the GGUF training length.
+/// the CONFIGURED context (role override, launch n_ctx) before the GGUF
+/// training length. The configured value kills the load race: while the child
+/// is still loading, slots report nothing and the GGUF header would lie.
 async fn effective_context_limit(state: &AppState, client: &LlmClient) -> Option<u64> {
     if is_router_mode(state) {
         if let Some((ctx, _)) = router_model_slot(state, client).await {
@@ -1910,6 +1908,18 @@ async fn effective_context_limit(state: &AppState, client: &LlmClient) -> Option
             return Some(n);
         }
     }
+    // Configured: the launch config's n_ctx (Run tab override / fit seed).
+    if let Some(n) = state
+        .server
+        .lock()
+        .unwrap()
+        .config
+        .as_ref()
+        .filter(|c| c.n_ctx > 0)
+        .map(|c| c.n_ctx as u64)
+    {
+        return Some(n);
+    }
     if let Some(path) = active_model_path(state) {
         if let Some(n) = crate::models::read_model_metadata(std::path::Path::new(&path))
             .and_then(|m| m.context_length)
@@ -1923,6 +1933,31 @@ async fn effective_context_limit(state: &AppState, client: &LlmClient) -> Option
             crate::models::read_model_metadata(std::path::Path::new(&path))
                 .and_then(|m| m.context_length)
         })
+}
+
+/// The WORKER role's own context limit (Fix: subagents compact under their
+/// model's window, not the orchestrator's): role ctx override → launch n_ctx
+/// → worker GGUF length. `None` = inherit the orchestrator's.
+fn worker_context_limit(state: &AppState) -> Option<u64> {
+    let config = state.config.lock().unwrap();
+    let worker_path = config.harness_roles.worker.clone()?;
+    let params = &config.harness_role_params.worker;
+    if let Some(n) = params.ctx_size.filter(|n| *n > 0) {
+        return Some(n as u64);
+    }
+    let launch_n_ctx = state
+        .server
+        .lock()
+        .unwrap()
+        .config
+        .as_ref()
+        .filter(|c| c.n_ctx > 0)
+        .map(|c| c.n_ctx as u64);
+    if let Some(n) = launch_n_ctx {
+        return Some(n);
+    }
+    crate::models::read_model_metadata(std::path::Path::new(&worker_path))
+        .and_then(|m| m.context_length)
 }
 
 /// Reindex footer metadata after compaction cuts: each cut removed
@@ -1953,6 +1988,16 @@ fn shifted_index(mut idx: usize, cuts: &[usize]) -> Option<usize> {
         }
     }
     Some(idx)
+}
+
+/// Slot-size and usage caches: cleared on router reload and server stop/start
+/// so the ring and compaction never see the previous server's numbers.
+pub fn clear_context_caches(state: &AppState) {
+    *state.harness.router_slot_ctx.lock().unwrap() = None;
+    *state.harness.last_prompt_tokens.lock().unwrap() = None;
+    *state.harness.last_gen_tokens.lock().unwrap() = None;
+    *state.harness.metrics_cache.lock().unwrap() = ServerThroughput::default();
+    *state.harness.metrics_at.lock().unwrap() = None;
 }
 
 /// Manually compact the transcript (/compact): summarize the oldest turns

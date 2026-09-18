@@ -699,13 +699,20 @@ async fn fetch_router_info(
     let mut n_ctx: u64 = 0;
     if let Some(active) = loaded {
         model_id = active.id.clone();
+        // Runtime ctx from the scoped slot query beats the GGUF training max.
+        let client = harness::client::LlmClient::new(base.to_string());
+        if let Ok(Some((ctx, _))) = client.slot_fill_for(Some(&active.id)).await {
+            n_ctx = ctx;
+        }
         if let Some(cfg) = app_config {
             if let Ok(installed) = crate::models::list_installed_models(cfg) {
                 if let Some(m) = installed.iter().find(|m| {
                     m.path.file_stem().and_then(|s| s.to_str()) == Some(active.id.as_str())
                 }) {
                     model_path = m.path.to_string_lossy().to_string();
-                    n_ctx = m.context_length.unwrap_or(0);
+                    if n_ctx == 0 {
+                        n_ctx = m.context_length.unwrap_or(0);
+                    }
                 }
             }
         }
@@ -1244,11 +1251,28 @@ pub fn write_router_preset(
         .context("Cannot find data directory")?
         .join("catapult");
     std::fs::create_dir_all(&dir)?;
-    // Register every installed model so the router (and the harness roles)
-    // can load any of them on demand — an unloaded entry is cheap. The Run
-    // tab's context override (when set) seeds every entry's ctx-size; role
-    // overrides still win. Children otherwise inherit nothing and pick their
-    // own (fit/auto) context.
+    let entries = router_preset_entries(config, app_config);
+    write_router_preset_entries(&dir, &entries)
+}
+
+/// The single source of truth for router-preset contents, shared by the
+/// launch-time writer and the per-send rewrite in `resolve_roles` — the two
+/// writers must never disagree about ctx seeding again.
+///
+/// Registers pinned + installed models (cheap unloaded entries) and the
+/// harness role models. The Run tab's context override (`config.n_ctx`, when
+/// set) seeds every entry's ctx-size; role overrides win via `.or(base_ctx)`.
+pub fn router_preset_entries(config: &ServerConfig, app_config: &AppConfig) -> Vec<PresetEntry> {
+    router_preset_entries_with_roles(config, app_config, &app_config.harness_roles)
+}
+
+/// Core builder with explicit roles (lets `resolve_roles` pass the same roles
+/// it is resolving, keeping the INI consistent mid-flight).
+pub fn router_preset_entries_with_roles(
+    config: &ServerConfig,
+    app_config: &AppConfig,
+    roles: &crate::config::HarnessRoles,
+) -> Vec<PresetEntry> {
     let base_ctx = if config.n_ctx > 0 { Some(config.n_ctx) } else { None };
     let mut entries: Vec<PresetEntry> = app_config
         .router_models
@@ -1263,21 +1287,21 @@ pub fn write_router_preset(
         }));
     }
     let params = &app_config.harness_role_params;
-    if let Some(p) = app_config.harness_roles.orchestrator.clone() {
+    if let Some(p) = roles.orchestrator.clone() {
         entries.push(PresetEntry {
             path: p,
             ctx_size: params.orchestrator.ctx_size.or(base_ctx),
             n_gpu_layers: params.orchestrator.n_gpu_layers,
         });
     }
-    if let Some(p) = app_config.harness_roles.worker.clone() {
+    if let Some(p) = roles.worker.clone() {
         entries.push(PresetEntry {
             path: p,
             ctx_size: params.worker.ctx_size.or(base_ctx),
             n_gpu_layers: params.worker.n_gpu_layers,
         });
     }
-    write_router_preset_entries(&dir, &entries)
+    entries
 }
 
 /// Build a suggested config based on system info and model size

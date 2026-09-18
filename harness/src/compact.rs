@@ -22,13 +22,25 @@ const MESSAGE_CAP_CHARS: usize = 2_000;
 /// Summary message marker; the UI renders these distinctly.
 pub const SUMMARY_MARKER: &str = "[Compacted context";
 
-/// Chars/4 estimate, consistent with the context ring's fallback.
+/// Chars/4 estimate, consistent with the context ring's fallback. Array
+/// content counts text parts only — counting the raw JSON would charge every
+/// attached image's base64 payload to the transcript.
 pub fn estimate_tokens(history: &[ChatMessage]) -> u64 {
     let chars: usize = history
         .iter()
         .filter_map(|m| m.content.as_ref())
         .map(|c| match c {
             Value::String(s) => s.len(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| {
+                    if p.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        p.get("text").and_then(|t| t.as_str()).map(|s| s.len())
+                    } else {
+                        None
+                    }
+                })
+                .sum::<usize>(),
             other => other.to_string().len(),
         })
         .sum();

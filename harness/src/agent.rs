@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,16 @@ fn short_args(pretty: &str) -> String {
     s
 }
 
+/// llama-server's context-overflow rejection, matched loosely across builds
+/// ("the request exceeds the available context size", "too many tokens", …).
+fn is_context_overflow(err: &str) -> bool {
+    let l = err.to_lowercase();
+    (l.contains("exceed") && (l.contains("context") || l.contains("token")))
+        || (l.contains("context") && l.contains("overflow"))
+        || l.contains("too many tokens")
+        || l.contains("maximum context length")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -176,6 +186,9 @@ pub struct Subagents {
     /// `image_url` parts forwarded so visual work can be delegated.
     pub images: Vec<serde_json::Value>,
     pub attachment_texts: Vec<String>,
+    /// The WORKER model's own context window (role override / launch ctx);
+    /// None = inherit the orchestrator's limit.
+    pub context_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +229,9 @@ pub struct AgentRun<'a> {
     pub vision: bool,
     /// Effective context size for compaction; None disables it.
     pub context_limit: Option<u64>,
+    /// Compaction cuts (first-kept index) recorded as they happen — read by
+    /// the caller after ANY outcome so meta reindexing survives errors too.
+    pub compactions_log: Arc<Mutex<Vec<usize>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -263,6 +279,7 @@ impl AgentRun<'_> {
                 .await?
                 {
                     compactions.push(info.cut);
+                    self.compactions_log.lock().unwrap().push(info.cut);
                 }
             }
             turns_used += 1;
@@ -300,7 +317,10 @@ impl AgentRun<'_> {
                 on_stream(ev);
             };
             let turn_started = std::time::Instant::now();
-            let finish = self
+            // Overflow recovery (dsh pattern): a confirmed context-overflow
+            // error condenses the history and retries ONCE — a self-heal that
+            // beats a hard failure when the estimate lagged reality.
+            let mut finish = self
                 .client
                 .chat_stream(
                     self.model.as_deref(),
@@ -310,7 +330,45 @@ impl AgentRun<'_> {
                     &*should_stop,
                     &mut on_delta,
                 )
-                .await?;
+                .await;
+            if let Err(e) = &finish {
+                if is_context_overflow(&e.to_string()) && self.context_limit.is_some() {
+                    on_event(AgentEvent::Notice {
+                        text: "Context overflow — compacting and retrying…".into(),
+                    });
+                    match crate::compact::compact_history(
+                        self.client,
+                        self.model.as_deref(),
+                        history,
+                        self.context_limit.unwrap_or(u64::MAX),
+                        true,
+                        &*should_stop,
+                        &mut on_event,
+                    )
+                    .await
+                    {
+                        Ok(Some(info)) => {
+                            compactions.push(info.cut);
+                            self.compactions_log.lock().unwrap().push(info.cut);
+                            finish = self
+                                .client
+                                .chat_stream(
+                                    self.model.as_deref(),
+                                    history,
+                                    Some(&self.registry.tool_schemas()),
+                                    self.reasoning_effort.as_deref(),
+                                    &*should_stop,
+                                    &mut on_delta,
+                                )
+                                .await;
+                        }
+                        // Nothing to cut or summarizer failed — surface the
+                        // original overflow error.
+                        _ => {}
+                    }
+                }
+            }
+            let finish = finish?;
             if should_stop() {
                 bail!("aborted");
             }
@@ -679,8 +737,11 @@ impl AgentRun<'_> {
                 max_turns: sub.max_turns,
                 subagents: None, // stripped above; belt-and-braces
                 vision: sub.vision,
-                // Same window as the orchestrator run (worker models usually match).
-                context_limit: self.context_limit,
+                // The worker compacts under ITS model's window (role ctx
+                // override), falling back to the orchestrator's.
+                context_limit: sub.context_limit.or(self.context_limit),
+                // Separate log: the nested run's cuts reindex its own meta scope.
+                compactions_log: Arc::new(Mutex::new(Vec::new())),
             };
             let mut nested = |ev: AgentEvent| {
                 let ev = match ev {
@@ -694,6 +755,12 @@ impl AgentRun<'_> {
                         ok,
                         output,
                         images,
+                    },
+                    // A subagent compacting ITS OWN history is not a main-
+                    // transcript event; demote it so the UI never claims the
+                    // parent transcript was touched.
+                    AgentEvent::Compacted { removed } => AgentEvent::Notice {
+                        text: format!("Subagent compacted {removed} of its own messages."),
                     },
                     other => other,
                 };
@@ -736,6 +803,18 @@ mod tests {
     use crate::client::FunctionCall;
 
     // Loop needs a live SSE endpoint; composed units have their own suites.
+    #[test]
+    fn is_context_overflow_matches_build_wordings() {
+        assert!(is_context_overflow(
+            "Chat request failed (400): the request exceeds the available context size"
+        ));
+        assert!(is_context_overflow("context overflow in request"));
+        assert!(is_context_overflow("error: too many tokens"));
+        assert!(is_context_overflow("maximum context length is 4096 tokens"));
+        assert!(!is_context_overflow("Chat request failed (500): internal error"));
+        assert!(!is_context_overflow("model failed to load"));
+    }
+
     #[test]
     fn short_args_truncates() {
         let long = "x".repeat(500);
@@ -889,6 +968,7 @@ mod tests {
             subagents: None,
             vision,
             context_limit: None,
+            compactions_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 

@@ -669,6 +669,8 @@ async fn start_server(
 
     // Router mode: register pinned models via a generated preset for on-demand load.
     let router_preset = server::write_router_preset(&config, &app_config).map_err(|e| e.to_string())?;
+    // A fresh server means fresh slot sizes/usage — never the previous run's.
+    harness_api::clear_context_caches(&state);
 
     server::start_server(
         &server_binary,
@@ -686,6 +688,7 @@ async fn start_server(
 
 #[tauri::command]
 async fn stop_server(state: State<'_, AppState>) -> Result<(), String> {
+    harness_api::clear_context_caches(&state);
     server::stop_server(&state.server)
         .await
         .map_err(|e| e.to_string())

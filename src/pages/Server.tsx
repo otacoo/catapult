@@ -737,10 +737,12 @@ export default function Server() {
       const suggested = await invoke<ServerConfig>("suggest_server_config", {
         modelPath, modelSizeMb: Math.round(model.size_bytes / (1024 * 1024)),
       });
-      // Only apply hardware-dependent suggestions; preserve all user settings
+      // Only apply hardware-dependent suggestions; preserve all user settings.
+      // A non-zero n_ctx is a deliberate override — never silently replaced
+      // (and never made to light up the override toggle by auto-suggestion).
       setConfig((prev) => ({
         ...prev,
-        n_ctx: suggested.n_ctx,
+        n_ctx: prev.n_ctx !== 0 ? prev.n_ctx : suggested.n_ctx,
         n_gpu_layers: suggested.n_gpu_layers,
       }));
     } catch {}
@@ -848,10 +850,11 @@ export default function Server() {
       const single = !harness.worker || harness.worker === harness.orch;
       if (single && !harness.orch) { setError("Set an orchestrator model in Settings → Chat."); return; }
       const modelPath = single ? (harness.orch ?? "") : "";
+      const mmproj = single ? config.mmproj_path : null; // router mode: per-model mmproj comes from the preset
       setError(null); setLogs([]); setShowLogs(true);
-      setConfig((c) => ({ ...c, model_path: modelPath }));
+      setConfig((c) => ({ ...c, model_path: modelPath, mmproj_path: mmproj }));
       try {
-        await invoke("start_server", { config: { ...config, model_path: modelPath } });
+        await invoke("start_server", { config: { ...config, model_path: modelPath, mmproj_path: mmproj } });
       }
       catch (e) { setError(String(e)); }
       return;
