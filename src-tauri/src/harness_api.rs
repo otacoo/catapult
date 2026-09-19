@@ -1550,10 +1550,37 @@ pub async fn harness_agent_send(
     // conversation stays inspectable and resumes after a restart).
     *state.harness.history.lock().unwrap() = history;
 
-    // Resolve the display model name: the role model id, else the loaded one.
+    // Resolve the display model name: the role model id, else the single
+    // serving model — as a file stem (single-model servers report the full
+    // path as their id when no alias was set).
+    let display_stem = |p: &str| -> String {
+        std::path::Path::new(p)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(p)
+            .to_string()
+    };
     let model = match orchestrator_id.clone() {
         Some(id) => Some(id),
-        None => client.router_models().await.ok().and_then(|m| m.first().map(|x| x.id.clone())),
+        None => {
+            let serving = state
+                .server
+                .lock()
+                .unwrap()
+                .config
+                .as_ref()
+                .map(|c| c.model_path.clone())
+                .unwrap_or_default();
+            if !serving.is_empty() {
+                Some(display_stem(&serving))
+            } else {
+                client
+                    .router_models()
+                    .await
+                    .ok()
+                    .and_then(|m| m.first().map(|x| x.id.clone()))
+            }
+        }
     };
     // Footer stats for the finished turn stick to its transcript message so
     // they survive restarts (recorded before the save below). Meta must shift

@@ -658,10 +658,25 @@ pub async fn fetch_server_info(
         .and_then(|c| c.extra_params.get("api-key").map(|k| k.clone()))
         .filter(|k| !k.is_empty());
 
+    // Single-model servers report their model PATH as the id when no --alias
+    // was set — display the file stem instead (the stem is also what clients
+    // may pass as OPENAI_MODEL: llama-server accepts any name in this mode).
+    let display_name = |s: &str| -> String {
+        if s.contains('/') || s.contains('\\') {
+            std::path::Path::new(s)
+                .file_stem()
+                .and_then(|x| x.to_str())
+                .unwrap_or(s)
+                .to_string()
+        } else {
+            s.to_string()
+        }
+    };
+
     Ok(ServerInfo {
         base_url: format!("{}/v1", base),
-        model_id,
-        model_alias,
+        model_id: display_name(&model_id),
+        model_alias: display_name(&model_alias),
         model_path,
         n_ctx,
         n_predict,
