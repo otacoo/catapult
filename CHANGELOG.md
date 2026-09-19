@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.8] - 2026-09-18
+
+### Fixed
+
+- Auto-attach mmproj in single-model launches with harness (fixes error 500)
+- Fix KV memory math estimate
+
 ## [0.5.7] - 2026-09-18
 
 ### Added
